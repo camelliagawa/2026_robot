@@ -60,21 +60,30 @@ class DHParams:
         Build DH parameter table for all 6 joints.
 
         Modified DH parameters — Z-up base frame convention.
-        At home (q=all zeros) the arm extends horizontally in +X.
-        (a_mm, alpha_deg, d_mm, theta_offset_deg)
+        Dimensions derived from ROS-Industrial URDF (fanuc_lrmate200id_support)
+        and scaled to 200iD/14L (911mm reach, same kinematics as 7L variant).
 
-          J1: a=0,   alpha=0,    d=330, offset=0   base rotation (Z vertical)
-          J2: a=75,  alpha=-90,  d=0,   offset=0   shoulder
-          J3: a=450, alpha=0,    d=0,   offset=0   upper arm (14L long variant)
-          J4: a=75,  alpha=-90,  d=450, offset=0   forearm  (14L long variant)
-          J5: a=0,   alpha=90,   d=0,   offset=0   wrist pitch
-          J6: a=0,   alpha=-90,  d=80,  offset=0   wrist roll + flange
+        URDF joint origins (metres → mm):
+          joint_1: xyz="0 0 0.330"   → d1 = 330
+          joint_2: xyz="0.050 0 0"   → a1 = 50
+          joint_3: xyz="0 0 0.440"   → a2 = 440  (7L/14L long-arm)
+          joint_4: xyz="0 0 0.035"   → a3 = 35
+          joint_5: xyz="0.420 0 0"   → d4 = 420  (7L/14L long-arm)
+          joint_6: xyz="0.080 0 0"   → d6 = 80
+
+        Verified reach:
+          max reach to wrist center (J6 axis) = 911mm ✓  (FANUC spec)
+          max reach to flange (tool0)         = 991mm    (wrist + d6=80mm)
+          FANUC reach spec excludes the flange offset d6.
+
+        Standard 200iD:  a2=330, d4=335 → reach 717mm
+        7L / 14L:        a2=440, d4=420 → reach 911mm  (same kinematics)
         """
         return [
             DHJoint(a=0,   alpha=0,   d=330, theta_offset=0, joint_min=-170, joint_max=170,  name="J1"),
-            DHJoint(a=75,  alpha=-90, d=0,   theta_offset=0, joint_min=-85,  joint_max=145,  name="J2"),
-            DHJoint(a=450, alpha=0,   d=0,   theta_offset=0, joint_min=-175, joint_max=255,  name="J3"),
-            DHJoint(a=75,  alpha=-90, d=450, theta_offset=0, joint_min=-190, joint_max=190,  name="J4"),
+            DHJoint(a=50,  alpha=-90, d=0,   theta_offset=0, joint_min=-85,  joint_max=145,  name="J2"),
+            DHJoint(a=440, alpha=0,   d=0,   theta_offset=0, joint_min=-175, joint_max=255,  name="J3"),
+            DHJoint(a=35,  alpha=-90, d=420, theta_offset=0, joint_min=-190, joint_max=190,  name="J4"),
             DHJoint(a=0,   alpha=90,  d=0,   theta_offset=0, joint_min=-135, joint_max=135,  name="J5"),
             DHJoint(a=0,   alpha=-90, d=80,  theta_offset=0, joint_min=-360, joint_max=360,  name="J6"),
         ]
