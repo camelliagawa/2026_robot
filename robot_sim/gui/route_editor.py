@@ -13,7 +13,6 @@ import numpy as np
 
 if TYPE_CHECKING:
     from ..path.route import Route, Waypoint
-    from .viewport import Viewport3D
 
 from ..path.route import Waypoint, Route, MotionType
 

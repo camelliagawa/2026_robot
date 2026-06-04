@@ -51,7 +51,6 @@ import numpy as np
 
 from .route import Route, Waypoint, MotionType
 from ..robot.kinematics import Kinematics
-from ..robot.dh_params import DHParams
 
 
 class TPExporter:

@@ -20,6 +20,7 @@ Layout:
 from __future__ import annotations
 
 import os
+import time
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -858,7 +859,6 @@ class MainWindow:
                             f"({pct}%)")
 
                     self.root.after(0, _update)
-                    import time
                     time.sleep(0.03)
 
                 q_prev = q_target

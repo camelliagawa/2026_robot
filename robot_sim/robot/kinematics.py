@@ -8,7 +8,7 @@ Inverse Kinematics: Analytical closed-form solution for 6R robot with spherical 
 import numpy as np
 from scipy.optimize import minimize
 from typing import Optional, List, Tuple
-from .dh_params import DHParams, DHJoint
+from .dh_params import DHParams
 
 
 class Kinematics:
@@ -146,13 +146,13 @@ class Kinematics:
         R = T[:3, :3]
 
         dh = self.dh.joints
-        # Parameters
-        d1 = dh[0].d   # 330
-        a1 = dh[0].a   # 75
-        a2 = dh[1].a   # 450
-        a3 = dh[2].a   # 75
-        d4 = dh[3].d   # 450
-        d6 = dh[5].d   # 80
+        # Parameters (mm) — matches DHParams: d1=330, a1=0, a2=50, a3=440, d4=420, d6=80
+        d1 = dh[0].d   # 330 — J1 vertical offset (base height)
+        a1 = dh[0].a   # 0   — J1 link length
+        a2 = dh[1].a   # 50  — J2 link length (shoulder offset)
+        a3 = dh[2].a   # 440 — J3 link length (upper arm)
+        d4 = dh[3].d   # 420 — J4 link offset (forearm length)
+        d6 = dh[5].d   # 80  — J6 link offset (wrist to flange)
 
         # Wrist center: subtract d6 along EE z-axis
         p_wc = p_ee - d6 * R[:, 2]

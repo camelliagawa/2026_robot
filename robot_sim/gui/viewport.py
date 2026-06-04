@@ -216,7 +216,7 @@ class Viewport3D:
 
     def _draw_workspace(self):
         """Workspace boundary circles."""
-        reach = 911
+        reach = self.kin.dh.REACH_MM
         theta = np.linspace(0, 2 * np.pi, 72)
         base_z = 330
 
