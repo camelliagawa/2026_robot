@@ -125,7 +125,8 @@ class Viewport3D:
         self._elev: float = 22.0
         self._azim: float = -55.0
 
-        self.fig = plt.figure(figsize=(7, 6), facecolor="#161B22")
+        self.fig = plt.figure(facecolor="#161B22")
+        self.fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
         self._setup_axes()
 
@@ -133,10 +134,11 @@ class Viewport3D:
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
 
-        toolbar_frame = tk.Frame(parent, bg="#161B22")
-        toolbar_frame.pack(fill=tk.X)
-        toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
-        toolbar.update()
+        # Disable built-in 3D left-drag rotation
+        for cid in list(getattr(self.ax, '_cids', [])):
+            self.canvas.mpl_disconnect(cid)
+        if hasattr(self.ax, '_cids'):
+            self.ax._cids.clear()
 
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
         self.update_robot(self._joint_angles)
@@ -209,15 +211,8 @@ class Viewport3D:
 
         for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:
             pane.fill = False
-            pane.set_edgecolor("#21262D")
-        ax.grid(True, alpha=0.15, color="#444C56")
-
-        # Ground grid
-        for gv in np.linspace(-lim, lim, 7):
-            ax.plot([gv, gv], [-lim, lim], [0, 0],
-                    color="#21262D", lw=0.5, alpha=0.5)
-            ax.plot([-lim, lim], [gv, gv], [0, 0],
-                    color="#21262D", lw=0.5, alpha=0.5)
+            pane.set_edgecolor("none")
+        ax.grid(False)
 
     def _draw_workspace(self):
         """Workspace boundary circles."""

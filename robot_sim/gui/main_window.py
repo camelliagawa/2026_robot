@@ -282,13 +282,13 @@ class MainWindow:
         pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
 
         # 左：3D ビューポート
-        left = ttk.LabelFrame(pane, text="  3D ビューポート — マウスドラッグで視点回転 / ホイールで拡大縮小")
-        pane.add(left, weight=3)
+        left = ttk.LabelFrame(pane, text="  3D ビューポート — ホイールで拡大縮小")
+        pane.add(left, weight=5)
         self.viewport = Viewport3D(left, self.kin)
 
         # 右：ルートエディタ + 更新履歴
         right = ttk.Frame(pane)
-        pane.add(right, weight=1)
+        pane.add(right, weight=2)
 
         route_lf = ttk.LabelFrame(right,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
