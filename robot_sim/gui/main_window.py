@@ -30,6 +30,7 @@ from ..robot.user_frame import UserFrame
 from ..path.route import Route, Waypoint, MotionType
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
+from ..path.route_generator import SharpeningParams, generate_sharpening_route
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION
@@ -131,6 +132,7 @@ class MainWindow:
         route_menu = tk.Menu(menubar, tearoff=0, bg="#2A2A2A", fg="#DDDDDD",
                              activebackground="#4A4A6A")
         route_menu.add_command(label="サンプルルートを読み込む", command=self._load_sample_route)
+        route_menu.add_command(label="刃付けルートを自動生成...", command=self._auto_generate_route)
         route_menu.add_command(label="ルートをクリア", command=self._clear_route)
         route_menu.add_separator()
         route_menu.add_command(label="▶ シミュレーション実行", command=self._start_simulation, accelerator="F5")
@@ -646,6 +648,73 @@ class MainWindow:
         self.viewport.set_route(self.route)
         self.viewport.refresh()
         self._set_status(f"サンプルルート読込: {len(self.route)} 点")
+
+    def _auto_generate_route(self):
+        """Open the auto-route generation dialog."""
+        win = tk.Toplevel(self.root)
+        win.title("刃付けルート自動生成")
+        win.geometry("440x520")
+        win.configure(bg="#1A1A1A")
+        win.resizable(False, False)
+
+        tk.Label(win, text="刃付けルート自動生成", bg="#1A1A1A", fg="#F5C400",
+                 font=("", 12, "bold")).pack(pady=(12, 4))
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+
+        def row(label, default):
+            f = ttk.Frame(frame)
+            f.pack(fill=tk.X, pady=2)
+            ttk.Label(f, text=label, width=30, anchor="w").pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(f, textvariable=var, width=10).pack(side=tk.LEFT)
+            return var
+
+        ttk.Label(frame, text="砥石位置 (ロボット基準座標)", foreground="#888888",
+                  font=("", 8)).pack(anchor="w", pady=(6, 0))
+        v_sx   = row("砥石 X mm (前方):", 400)
+        v_sy   = row("砥石 Y mm (左右):", 0)
+        v_sz   = row("砥石 Z mm (高さ):", 250)
+
+        ttk.Label(frame, text="砥石寸法", foreground="#888888",
+                  font=("", 8)).pack(anchor="w", pady=(6, 0))
+        v_slen = row("砥石の長さ mm (ストローク方向):", 200)
+        v_swid = row("砥石の幅  mm (包丁送り方向):", 70)
+
+        ttk.Label(frame, text="刃付けパラメータ", foreground="#888888",
+                  font=("", 8)).pack(anchor="w", pady=(6, 0))
+        v_ang  = row("刃角度 deg:", 15)
+        v_blen = row("研磨刃長 mm:", 180)
+        v_strk = row("往復ストローク回数:", 5)
+        v_spd  = row("ストローク速度 mm/s:", 30)
+
+        def on_generate():
+            try:
+                p = SharpeningParams(
+                    stone_x=float(v_sx.get()), stone_y=float(v_sy.get()),
+                    stone_z=float(v_sz.get()),
+                    stone_length=float(v_slen.get()), stone_width=float(v_swid.get()),
+                    blade_angle_deg=float(v_ang.get()),
+                    blade_length_mm=float(v_blen.get()),
+                    num_strokes=int(v_strk.get()),
+                    stroke_speed_mms=float(v_spd.get()),
+                    utool=self._active_tool.number,
+                    uframe=self._active_uframe.number,
+                )
+                new_route = generate_sharpening_route(p)
+                self.route.waypoints = new_route.waypoints
+                self.route.name = new_route.name
+                self.route_editor.set_route(self.route)
+                self.viewport.set_route(self.route)
+                self.viewport.refresh()
+                self._set_status(f"ルート自動生成完了: {len(self.route)} 点")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("エラー", str(e), parent=win)
+
+        ttk.Button(win, text="ルートを生成", command=on_generate).pack(pady=6)
+        ttk.Button(win, text="キャンセル", command=win.destroy).pack(pady=2)
 
     def _clear_route(self):
         if messagebox.askyesno("確認", "ルートをすべてクリアしますか？"):
