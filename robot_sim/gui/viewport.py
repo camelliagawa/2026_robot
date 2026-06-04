@@ -122,11 +122,11 @@ class Viewport3D:
         self._jog_target: Optional[np.ndarray]  = None
 
         self._zoom_scale: float = 1.0
-        self._elev: float = 22.0
-        self._azim: float = -55.0
+        self._elev: float = 25.0
+        self._azim: float = -45.0
 
         self.fig = plt.figure(facecolor="#161B22")
-        self.fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+        self.fig.subplots_adjust(left=-0.08, right=1.08, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
         self._setup_axes()
 
@@ -199,19 +199,19 @@ class Viewport3D:
         ax = self.ax
         ax.set_facecolor("#0D1117")
 
-        lim = 900 * self._zoom_scale
+        lim = 700 * self._zoom_scale
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
         ax.set_zlim(0, lim * 1.6)
 
-        ax.set_xlabel("X (mm)", color="#8B949E", fontsize=8, labelpad=6)
-        ax.set_ylabel("Y (mm)", color="#8B949E", fontsize=8, labelpad=6)
-        ax.set_zlabel("Z (mm)", color="#8B949E", fontsize=8, labelpad=6)
-        ax.tick_params(colors="#444C56", labelsize=7)
+        ax.set_xlabel(""); ax.set_ylabel(""); ax.set_zlabel("")
+        ax.set_xticklabels([]); ax.set_yticklabels([]); ax.set_zticklabels([])
+        ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False,
+                       colors="#444C56", labelsize=0, length=0)
 
         for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:
             pane.fill = False
-            pane.set_edgecolor("none")
+            pane.set_edgecolor("#21262D")
         ax.grid(False)
 
     def _draw_workspace(self):
