@@ -2,16 +2,20 @@
 Main tkinter window for the FANUC LR Mate 200iD/14L knife sharpening simulator.
 
 Layout:
-  ┌──────────────────────────────────────────────────────────────────┐
-  │  Menu bar                                                         │
-  ├──────────────────────────┬───────────────────────────────────────┤
-  │  3D Viewport             │  Route Editor (waypoint list)         │
-  │                          │  [ Add ] [Edit] [Del] [↑] [↓]        │
-  ├──────────────────────────┴───────────────────────────────────────┤
-  │  Joint sliders J1-J6   |  Speed Override   |  UTool / UFrame     │
-  ├──────────────────────────────────────────────────────────────────┤
-  │  Jog panel  |  File I/O  |  Simulation  |  IK  |  FK result      │
-  └──────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  Menu bar                                                             │
+  ├────────────────────────────┬─────────────────────────────────────────┤
+  │  3D Viewport               │  経路点リスト (Waypoint List)            │
+  │  (matplotlib 3D)           │  追加/編集/削除/並べ替え                  │
+  │                            │  Selected Waypoint Details               │
+  │                            │  更新履歴パネル                           │
+  ├────────────────────────────┴─────────────────────────────────────────┤
+  │  関節角度スライダー J1-J6  │  速度OVR  │  UTool  │  UFrame            │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │  ジョグ操作  │  ファイル  │  シミュレーション  │  IK  │  FK結果         │
+  ├──────────────────────────────────────────────────────────────────────┤
+  │  ステータスバー                                              [v0.3.1]  │
+  └──────────────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
 
@@ -33,37 +37,41 @@ from ..path.tp_exporter import TPExporter
 from ..path.route_generator import SharpeningParams, generate_sharpening_route
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
-from .changelog import show_changelog, APP_VERSION
+from .changelog import show_changelog, APP_VERSION, CHANGELOG
+
+# ── カラーパレット ──────────────────────────────────────────────────────
+BG_DARK    = "#161B22"   # 最暗背景（GitHub dark風）
+BG_PANEL   = "#21262D"   # パネル背景
+BG_WIDGET  = "#2D333B"   # 入力欄・スライダー
+BORDER     = "#444C56"   # 枠線
+FG_PRIMARY = "#E6EDF3"   # 主テキスト（明）
+FG_SUB     = "#8B949E"   # 補助テキスト（暗）
+ACCENT     = "#F5C400"   # 強調色（黄）
+ACCENT2    = "#58A6FF"   # アクセント2（青）
+OK_GREEN   = "#3FB950"   # 成功色
+ERR_RED    = "#F85149"   # エラー色
+BTN_PRIMARY = "#1F6FEB"  # プライマリボタン
+BTN_HOVER   = "#388BFD"
 
 
 class MainWindow:
     """Top-level application window."""
 
-    APP_TITLE = "FANUC LR Mate 200iD/14L  |  刃付けロボットシミュレータ"
-    MIN_WIDTH = 1280
-    MIN_HEIGHT = 820
+    APP_TITLE = "FANUC LR Mate 200iD/14L  ｜  刃付けロボットシミュレータ"
+    MIN_WIDTH  = 1340
+    MIN_HEIGHT = 860
 
-    # Available tool frames
-    TOOL_FRAMES = [
-        ToolFrame.flange(),
-        ToolFrame.default_knife(),
-    ]
-    # Available user frames
-    USER_FRAMES = [
-        UserFrame.world(),
-        UserFrame.default_stone(),
-    ]
+    TOOL_FRAMES  = [ToolFrame.flange(), ToolFrame.default_knife()]
+    USER_FRAMES  = [UserFrame.world(), UserFrame.default_stone()]
 
     def __init__(self):
-        self.kin = Kinematics()
+        self.kin   = Kinematics()
         self.route = Route.default_sharpening_route()
-        self._joint_angles = self.kin.dh.ready_position().copy()
+        self._joint_angles  = self.kin.dh.ready_position().copy()
         self._sim_thread: Optional[threading.Thread] = None
-        self._sim_running = False
-        self._simulator = None
-
-        self._active_tool = self.TOOL_FRAMES[1]   # KNIFE default
-        self._active_uframe = self.USER_FRAMES[0]  # WORLD default
+        self._sim_running   = False
+        self._active_tool   = self.TOOL_FRAMES[1]
+        self._active_uframe = self.USER_FRAMES[0]
 
         self._build_root()
         self._build_menu()
@@ -78,312 +86,518 @@ class MainWindow:
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
 
-    # ------------------------------------------------------------------
-    # Root window
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Root window & style
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_root(self):
         self.root = tk.Tk()
         self.root.title(self.APP_TITLE)
         self.root.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
-        self.root.configure(bg="#1E1E1E")
+        self.root.configure(bg=BG_DARK)
 
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(".", background="#2A2A2A", foreground="#DDDDDD",
-                        fieldbackground="#333333", bordercolor="#555555")
-        style.configure("TButton", padding=4, relief="flat",
-                        background="#3A3A3A", foreground="#DDDDDD")
-        style.map("TButton", background=[("active", "#4A4A6A")])
-        style.configure("TLabel", background="#2A2A2A", foreground="#DDDDDD")
-        style.configure("TFrame", background="#2A2A2A")
-        style.configure("TLabelframe", background="#2A2A2A", foreground="#AAAAAA")
-        style.configure("TLabelframe.Label", background="#2A2A2A", foreground="#AAAAAA")
-        style.configure("TEntry", fieldbackground="#333333", foreground="#DDDDDD")
-        style.configure("TCombobox", fieldbackground="#333333", foreground="#DDDDDD")
-        style.configure("Treeview", background="#2A2A2A", foreground="#DDDDDD",
-                        fieldbackground="#2A2A2A")
-        style.configure("Jog.TButton", padding=2, width=3,
-                        background="#3A3A4A", foreground="#DDDDDD")
-        style.map("Jog.TButton", background=[("active", "#5A5A8A")])
+        s = ttk.Style()
+        s.theme_use("clam")
+
+        # 基本設定
+        s.configure(".",
+            background=BG_PANEL, foreground=FG_PRIMARY,
+            fieldbackground=BG_WIDGET, bordercolor=BORDER,
+            troughcolor=BG_WIDGET, selectbackground=BTN_PRIMARY,
+            selectforeground=FG_PRIMARY, font=("Yu Gothic UI", 9))
+
+        # フレーム・ラベル
+        s.configure("TFrame",      background=BG_PANEL)
+        s.configure("TLabel",      background=BG_PANEL, foreground=FG_PRIMARY)
+        s.configure("TLabelframe", background=BG_PANEL, foreground=FG_SUB,
+                    bordercolor=BORDER, relief="flat")
+        s.configure("TLabelframe.Label",
+                    background=BG_PANEL, foreground=ACCENT2,
+                    font=("Yu Gothic UI", 9, "bold"))
+
+        # ボタン
+        s.configure("TButton",
+            padding=(8, 4), relief="flat",
+            background=BG_WIDGET, foreground=FG_PRIMARY,
+            bordercolor=BORDER, focuscolor=BG_WIDGET)
+        s.map("TButton",
+            background=[("active", "#3D444D"), ("pressed", BTN_PRIMARY)],
+            foreground=[("active", FG_PRIMARY)])
+
+        # プライマリボタン（実行系）
+        s.configure("Primary.TButton",
+            padding=(8, 4), relief="flat",
+            background=BTN_PRIMARY, foreground="white",
+            bordercolor=BTN_PRIMARY, font=("Yu Gothic UI", 9, "bold"))
+        s.map("Primary.TButton",
+            background=[("active", BTN_HOVER), ("pressed", "#1A5CC8")])
+
+        # 危険ボタン（停止）
+        s.configure("Danger.TButton",
+            padding=(8, 4), relief="flat",
+            background="#3D1E1E", foreground=ERR_RED,
+            bordercolor="#6E2222")
+        s.map("Danger.TButton",
+            background=[("active", "#5A2020")])
+
+        # ジョグボタン
+        s.configure("Jog.TButton",
+            padding=(2, 3), relief="flat", width=3,
+            background="#2A3A4A", foreground=ACCENT2,
+            bordercolor="#3D5A6E", font=("", 10, "bold"))
+        s.map("Jog.TButton",
+            background=[("active", "#3D5A6E")])
+
+        # 入力欄
+        s.configure("TEntry",    fieldbackground=BG_WIDGET, foreground=FG_PRIMARY,
+                    bordercolor=BORDER, insertcolor=FG_PRIMARY)
+        s.configure("TCombobox", fieldbackground=BG_WIDGET, foreground=FG_PRIMARY,
+                    selectbackground=BTN_PRIMARY, arrowcolor=FG_SUB)
+        s.map("TCombobox", fieldbackground=[("readonly", BG_WIDGET)])
+
+        # スライダー
+        s.configure("TScale", background=BG_PANEL, troughcolor=BG_WIDGET,
+                    sliderlength=14, sliderrelief="flat")
+
+        # Spinbox
+        s.configure("TSpinbox", fieldbackground=BG_WIDGET, foreground=FG_PRIMARY,
+                    arrowcolor=FG_SUB, bordercolor=BORDER)
+
+        # Treeview（ルートエディタ）
+        s.configure("Treeview",
+            background=BG_WIDGET, foreground=FG_PRIMARY,
+            fieldbackground=BG_WIDGET, rowheight=20,
+            bordercolor=BORDER)
+        s.configure("Treeview.Heading",
+            background=BG_PANEL, foreground=ACCENT2,
+            relief="flat", font=("Yu Gothic UI", 8, "bold"))
+        s.map("Treeview",
+            background=[("selected", BTN_PRIMARY)],
+            foreground=[("selected", "white")])
+
+        # セパレータ
+        s.configure("TSeparator", background=BORDER)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Menu bar
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_menu(self):
-        menubar = tk.Menu(self.root, bg="#1E1E1E", fg="#DDDDDD",
-                          activebackground="#4A4A6A", activeforeground="white")
+        menubar = tk.Menu(self.root, bg=BG_PANEL, fg=FG_PRIMARY,
+                          activebackground=BTN_PRIMARY, activeforeground="white",
+                          borderwidth=0, relief="flat")
 
-        # File
-        file_menu = tk.Menu(menubar, tearoff=0, bg="#2A2A2A", fg="#DDDDDD",
-                            activebackground="#4A4A6A")
-        file_menu.add_command(label="CSV を開く...", command=self._load_csv, accelerator="Ctrl+O")
-        file_menu.add_command(label="CSV として保存...", command=self._save_csv, accelerator="Ctrl+S")
-        file_menu.add_separator()
-        file_menu.add_command(label="TP プログラムをエクスポート...", command=self._export_tp, accelerator="Ctrl+E")
-        file_menu.add_separator()
-        file_menu.add_command(label="終了", command=self._on_close)
-        menubar.add_cascade(label="ファイル (File)", menu=file_menu)
+        def menu(label):
+            m = tk.Menu(menubar, tearoff=0, bg=BG_PANEL, fg=FG_PRIMARY,
+                        activebackground=BTN_PRIMARY, activeforeground="white",
+                        borderwidth=1, relief="solid")
+            menubar.add_cascade(label=label, menu=m)
+            return m
 
-        # Route
-        route_menu = tk.Menu(menubar, tearoff=0, bg="#2A2A2A", fg="#DDDDDD",
-                             activebackground="#4A4A6A")
-        route_menu.add_command(label="サンプルルートを読み込む", command=self._load_sample_route)
-        route_menu.add_command(label="刃付けルートを自動生成...", command=self._auto_generate_route)
-        route_menu.add_command(label="ルートをクリア", command=self._clear_route)
-        route_menu.add_separator()
-        route_menu.add_command(label="▶ シミュレーション実行", command=self._start_simulation, accelerator="F5")
-        menubar.add_cascade(label="ルート (Route)", menu=route_menu)
+        # ファイル
+        f = menu("  ファイル (File)  ")
+        f.add_command(label="  📂  CSV を開く...          Ctrl+O", command=self._load_csv)
+        f.add_command(label="  💾  CSV として保存...      Ctrl+S", command=self._save_csv)
+        f.add_separator()
+        f.add_command(label="  📤  FANUC TP 出力...       Ctrl+E", command=self._export_tp)
+        f.add_separator()
+        f.add_command(label="  ✕   終了", command=self._on_close)
 
-        # Robot
-        robot_menu = tk.Menu(menubar, tearoff=0, bg="#2A2A2A", fg="#DDDDDD",
-                              activebackground="#4A4A6A")
-        robot_menu.add_command(label="ホームポジション", command=self._go_home)
-        robot_menu.add_command(label="レディポジション", command=self._go_ready)
-        robot_menu.add_separator()
-        robot_menu.add_command(label="ツールフレームを編集...", command=self._edit_tool_frame)
-        robot_menu.add_command(label="ユーザーフレームを編集...", command=self._edit_user_frame)
-        robot_menu.add_separator()
-        robot_menu.add_command(label="DH パラメータを表示", command=self._show_dh_params)
-        robot_menu.add_command(label="ロボット仕様を表示", command=self._show_robot_specs)
-        menubar.add_cascade(label="ロボット (Robot)", menu=robot_menu)
+        # ルート
+        r = menu("  ルート (Route)  ")
+        r.add_command(label="  📋  サンプルルートを読み込む", command=self._load_sample_route)
+        r.add_command(label="  ⚙   刃付けルートを自動生成...", command=self._auto_generate_route)
+        r.add_command(label="  🗑   ルートをクリア",           command=self._clear_route)
+        r.add_separator()
+        r.add_command(label="  ▶   シミュレーション実行      F5", command=self._start_simulation)
 
-        # Help
-        help_menu = tk.Menu(menubar, tearoff=0, bg="#2A2A2A", fg="#DDDDDD",
-                            activebackground="#4A4A6A")
-        help_menu.add_command(label=f"チェンジログ (v{APP_VERSION})...", command=lambda: show_changelog(self.root))
-        help_menu.add_command(label="About", command=self._show_about)
-        menubar.add_cascade(label="ヘルプ (Help)", menu=help_menu)
+        # ロボット
+        rb = menu("  ロボット (Robot)  ")
+        rb.add_command(label="  🏠  ホームポジションへ移動",   command=self._go_home)
+        rb.add_command(label="  🦾  レディポジションへ移動",   command=self._go_ready)
+        rb.add_separator()
+        rb.add_command(label="  🔧  ツールフレーム (UTool) 編集...", command=self._edit_tool_frame)
+        rb.add_command(label="  📐  ユーザーフレーム (UFrame) 編集...", command=self._edit_user_frame)
+        rb.add_separator()
+        rb.add_command(label="  📊  DH パラメータを表示",     command=self._show_dh_params)
+        rb.add_command(label="  📋  ロボット仕様を表示",       command=self._show_robot_specs)
+
+        # ヘルプ
+        h = menu("  ヘルプ (Help)  ")
+        h.add_command(label=f"  📝  更新履歴 (v{APP_VERSION})...", command=lambda: show_changelog(self.root))
+        h.add_command(label="  ℹ   About",                        command=self._show_about)
 
         self.root.config(menu=menubar)
         self.root.bind("<Control-o>", lambda e: self._load_csv())
         self.root.bind("<Control-s>", lambda e: self._save_csv())
         self.root.bind("<Control-e>", lambda e: self._export_tp())
-        self.root.bind("<F5>", lambda e: self._start_simulation())
+        self.root.bind("<F5>",        lambda e: self._start_simulation())
 
-    # ------------------------------------------------------------------
-    # Main panels
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Main panels (3D viewport + route editor)
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_main_panels(self):
         pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        pane.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
 
-        left_frame = ttk.LabelFrame(pane, text="3D ビューポート (3D Viewport)")
-        pane.add(left_frame, weight=3)
-        self.viewport = Viewport3D(left_frame, self.kin)
+        # 左：3D ビューポート
+        left = ttk.LabelFrame(pane, text="  3D ビューポート — マウスドラッグで視点回転 / ホイールで拡大縮小")
+        pane.add(left, weight=3)
+        self.viewport = Viewport3D(left, self.kin)
 
-        right_frame = ttk.LabelFrame(pane, text="ルートエディタ (Route Editor)")
-        pane.add(right_frame, weight=1)
+        # 右：ルートエディタ + 更新履歴
+        right = ttk.Frame(pane)
+        pane.add(right, weight=1)
+
+        route_lf = ttk.LabelFrame(right,
+            text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
+        route_lf.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
         self.route_editor = RouteEditor(
-            right_frame, self.route,
+            route_lf, self.route,
             on_change=self._on_route_changed,
             on_select=self._on_waypoint_selected,
         )
         self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
-        self._build_changelog_panel(right_frame)
 
-    # ------------------------------------------------------------------
-    # Joint sliders + Speed Override + UTool/UFrame
-    # ------------------------------------------------------------------
+        self._build_changelog_panel(right)
+
+    # ──────────────────────────────────────────────────────────────────
+    # 更新履歴パネル（右サイドバー下部）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_changelog_panel(self, parent):
+        frame = ttk.LabelFrame(parent,
+            text=f"  更新履歴 (Update History) — 最新: v{APP_VERSION}")
+        frame.pack(fill=tk.X, padx=4, pady=(0, 4))
+
+        txt = tk.Text(
+            frame, height=7,
+            bg="#0D1117", fg=FG_SUB,
+            font=("Consolas", 8),
+            wrap=tk.WORD, borderwidth=0,
+            highlightthickness=0, state="normal",
+            cursor="arrow", selectbackground=BTN_PRIMARY,
+        )
+        txt.pack(fill=tk.X, padx=6, pady=(4, 2))
+
+        for ver, date, time_, items in CHANGELOG:
+            txt.insert(tk.END, f"▶ v{ver}  {date}  {time_}\n", "ver")
+            for item in items:
+                txt.insert(tk.END, f"    • {item}\n", "item")
+            txt.insert(tk.END, "\n")
+
+        txt.tag_config("ver",  foreground=ACCENT,  font=("Consolas", 8, "bold"))
+        txt.tag_config("item", foreground="#ADBAC7")
+        txt.config(state="disabled")
+
+        ttk.Button(frame, text="詳細を見る (Full Changelog)...",
+                   command=lambda: show_changelog(self.root)
+                   ).pack(anchor="e", padx=6, pady=(0, 6))
+
+    # ──────────────────────────────────────────────────────────────────
+    # 関節角度スライダー + 速度オーバーライド + UTool / UFrame
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_joint_sliders(self):
         outer = ttk.Frame(self.root)
-        outer.pack(fill=tk.X, padx=4, pady=2)
+        outer.pack(fill=tk.X, padx=6, pady=(4, 0))
 
-        # Joint sliders
-        slider_frame = ttk.LabelFrame(outer, text="ジョイント角度 (Joint Angles)")
-        slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # ---- 関節スライダー ----
+        slider_lf = ttk.LabelFrame(outer,
+            text="  関節角度 (Joint Angles) — スライダーを動かすと3D表示がリアルタイムに更新されます")
+        slider_lf.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         lower, upper = self.kin.dh.get_joint_limits_deg()
         self._slider_vars = []
+        speeds = self.kin.dh.get_joint_max_speeds()
 
         for i in range(6):
-            col = ttk.Frame(slider_frame)
-            col.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4, pady=2)
+            col = ttk.Frame(slider_lf)
+            col.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4, pady=4)
+
+            # 軸名
+            lbl = tk.Label(col, text=f"J{i+1}",
+                           bg=BG_PANEL, fg=ACCENT2,
+                           font=("Consolas", 9, "bold"))
+            lbl.pack()
+
             init_deg = np.rad2deg(self._joint_angles[i])
             var = tk.DoubleVar(value=init_deg)
             self._slider_vars.append(var)
-            ttk.Label(col, text=f"J{i+1}", width=4, anchor="center").pack()
-            ttk.Scale(col, from_=lower[i], to=upper[i], variable=var,
-                      orient=tk.VERTICAL, length=90,
-                      command=lambda val, idx=i: self._on_slider_change(idx, float(val))
-                      ).pack()
-            ttk.Label(col, textvariable=var, width=6, anchor="center").pack()
+
+            ttk.Scale(col,
+                from_=lower[i], to=upper[i],
+                variable=var, orient=tk.VERTICAL, length=80,
+                command=lambda val, idx=i: self._on_slider_change(idx, float(val))
+            ).pack()
+
+            # 現在角度
+            deg_lbl = tk.Label(col, textvariable=var,
+                               bg=BG_PANEL, fg=FG_PRIMARY,
+                               font=("Consolas", 8), width=7)
+            deg_lbl.pack()
+
+            # 可動範囲・最大速度
+            rng_lbl = tk.Label(col,
+                text=f"{lower[i]:.0f}°〜{upper[i]:.0f}°\n{speeds[i]:.0f}°/s",
+                bg=BG_PANEL, fg=FG_SUB, font=("", 6), justify="center")
+            rng_lbl.pack()
+
+        # FK 結果（スライダー行の右端）
+        self._fk_display_var = tk.StringVar()
+        fk_lbl = tk.Label(slider_lf,
+            textvariable=self._fk_display_var,
+            bg=BG_PANEL, fg=ACCENT2,
+            font=("Consolas", 8), anchor="w", justify="left")
+        fk_lbl.pack(side=tk.RIGHT, padx=10)
 
         self._angles_display_var = tk.StringVar()
-        ttk.Label(slider_frame, textvariable=self._angles_display_var,
-                  font=("Courier", 8), foreground="#888888").pack(side=tk.RIGHT, padx=8)
-        self._update_angles_display()
 
-        # Right side: Speed Override + UTool + UFrame
+        # ---- 右列：速度OVR + UTool + UFrame ----
         right_col = ttk.Frame(outer)
-        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
 
-        # Speed override
-        spd_frame = ttk.LabelFrame(right_col, text="速度オーバーライド (%)")
-        spd_frame.pack(fill=tk.X, pady=2)
+        # 速度オーバーライド
+        spd_lf = ttk.LabelFrame(right_col,
+            text="  速度オーバーライド — 全軸速度の上限を % で設定")
+        spd_lf.pack(fill=tk.X, pady=(4, 2))
+
+        spd_inner = ttk.Frame(spd_lf)
+        spd_inner.pack(fill=tk.X, padx=6, pady=4)
         self._speed_override = tk.IntVar(value=100)
-        ttk.Scale(spd_frame, from_=1, to=100, variable=self._speed_override,
-                  orient=tk.HORIZONTAL, length=120).pack(side=tk.LEFT, padx=4)
-        ttk.Label(spd_frame, textvariable=self._speed_override, width=4).pack(side=tk.LEFT)
 
-        # UTool selector
-        tool_frame_ui = ttk.LabelFrame(right_col, text="UTool")
-        tool_frame_ui.pack(fill=tk.X, pady=2)
+        ttk.Scale(spd_inner,
+            from_=1, to=100,
+            variable=self._speed_override,
+            orient=tk.HORIZONTAL, length=130
+        ).pack(side=tk.LEFT)
+
+        spd_val = tk.Label(spd_inner,
+            textvariable=self._speed_override,
+            bg=BG_PANEL, fg=ACCENT,
+            font=("Consolas", 10, "bold"), width=4)
+        spd_val.pack(side=tk.LEFT)
+
+        tk.Label(spd_inner, text="%",
+                 bg=BG_PANEL, fg=FG_SUB,
+                 font=("", 9)).pack(side=tk.LEFT)
+
+        # UTool
+        tool_lf = ttk.LabelFrame(right_col,
+            text="  UTool — ロボット先端に取り付けたツールの定義")
+        tool_lf.pack(fill=tk.X, pady=2)
+
         self._utool_var = tk.StringVar(value=self._active_tool.name)
-        tool_names = [f"UT{t.number}: {t.name}" for t in self.TOOL_FRAMES]
-        self._utool_combo = ttk.Combobox(tool_frame_ui, textvariable=self._utool_var,
-                                          values=tool_names, state="readonly", width=14)
+        tool_names = [f"UT{t.number}: {t.name}  (z={t.z:.0f}mm)" for t in self.TOOL_FRAMES]
+        self._utool_combo = ttk.Combobox(tool_lf,
+            textvariable=self._utool_var,
+            values=tool_names, state="readonly", width=20)
         self._utool_combo.current(1)
-        self._utool_combo.pack(padx=4, pady=2)
+        self._utool_combo.pack(padx=6, pady=4)
         self._utool_combo.bind("<<ComboboxSelected>>", self._on_utool_change)
 
-        # UFrame selector
-        uf_frame_ui = ttk.LabelFrame(right_col, text="UFrame")
-        uf_frame_ui.pack(fill=tk.X, pady=2)
+        # UFrame
+        uf_lf = ttk.LabelFrame(right_col,
+            text="  UFrame — 作業座標系（砥石などの基準座標）の定義")
+        uf_lf.pack(fill=tk.X, pady=(2, 4))
+
         self._uframe_var = tk.StringVar(value=self._active_uframe.name)
         uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
-        self._uframe_combo = ttk.Combobox(uf_frame_ui, textvariable=self._uframe_var,
-                                           values=uf_names, state="readonly", width=14)
+        self._uframe_combo = ttk.Combobox(uf_lf,
+            textvariable=self._uframe_var,
+            values=uf_names, state="readonly", width=20)
         self._uframe_combo.current(0)
-        self._uframe_combo.pack(padx=4, pady=2)
+        self._uframe_combo.pack(padx=6, pady=4)
         self._uframe_combo.bind("<<ComboboxSelected>>", self._on_uframe_change)
+
+        self._update_fk_display()
 
     def _on_slider_change(self, joint_idx: int, value_deg: float):
         self._joint_angles[joint_idx] = np.deg2rad(value_deg)
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
-        self._update_angles_display()
-
-    def _update_angles_display(self):
-        deg = np.rad2deg(self._joint_angles)
-        self._angles_display_var.set(
-            "  ".join(f"J{i+1}:{d:+6.1f}°" for i, d in enumerate(deg))
-        )
 
     def _on_utool_change(self, event=None):
         idx = self._utool_combo.current()
         self._active_tool = self.TOOL_FRAMES[idx]
         self.viewport.set_tool_frame(self._active_tool)
-        self._set_status(f"UTool → {self._active_tool.name}")
+        self._set_status(f"✔  UTool 変更 → {self._active_tool.name}  "
+                         f"(TCP オフセット: Z={self._active_tool.z:.0f}mm)")
 
     def _on_uframe_change(self, event=None):
         idx = self._uframe_combo.current()
         self._active_uframe = self.USER_FRAMES[idx]
         self.viewport.set_user_frame(self._active_uframe)
-        self._set_status(f"UFrame → {self._active_uframe.name}")
+        self._set_status(f"✔  UFrame 変更 → {self._active_uframe.name}")
 
-    # ------------------------------------------------------------------
-    # Bottom controls: Jog | File I/O | Sim | IK | FK
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # 下部コントロールバー
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_bottom_controls(self):
         ctrl = ttk.Frame(self.root)
-        ctrl.pack(fill=tk.X, padx=4, pady=4)
+        ctrl.pack(fill=tk.X, padx=6, pady=6)
 
-        # ---- Jog panel ----
-        jog_outer = ttk.LabelFrame(ctrl, text="ジョグ (Jog)")
-        jog_outer.pack(side=tk.LEFT, padx=4, fill=tk.Y)
+        # ── ジョグ操作 ──────────────────────────────────────────────
+        jog_lf = ttk.LabelFrame(ctrl,
+            text="  ジョグ操作 — ▲▼ボタンで各軸を手動で動かせます（Joint: 関節角度 / Cartesian: 直交座標）")
+        jog_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+
+        top = ttk.Frame(jog_lf)
+        top.pack(fill=tk.X, padx=6, pady=(4, 0))
 
         self._jog_mode = tk.StringVar(value="Joint")
-        ttk.Radiobutton(jog_outer, text="Joint", variable=self._jog_mode,
-                        value="Joint").pack(side=tk.LEFT, padx=2)
-        ttk.Radiobutton(jog_outer, text="Cartesian", variable=self._jog_mode,
-                        value="Cartesian").pack(side=tk.LEFT, padx=2)
+        ttk.Radiobutton(top, text="Joint（関節）",
+                        variable=self._jog_mode, value="Joint").pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(top, text="Cartesian（直交）",
+                        variable=self._jog_mode, value="Cartesian").pack(side=tk.LEFT, padx=4)
 
-        step_frame = ttk.Frame(jog_outer)
-        step_frame.pack(side=tk.LEFT, padx=4)
-        ttk.Label(step_frame, text="Step:").pack(side=tk.LEFT)
+        ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
+        tk.Label(top, text="ステップ幅:", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
         self._jog_step = tk.StringVar(value="5")
-        ttk.Combobox(step_frame, textvariable=self._jog_step,
+        ttk.Combobox(top, textvariable=self._jog_step,
                      values=["0.5", "1", "5", "10", "45"],
-                     width=5, state="readonly").pack(side=tk.LEFT)
+                     width=5, state="readonly").pack(side=tk.LEFT, padx=2)
+        tk.Label(top, text="° / mm", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
-        axes_frame = ttk.Frame(jog_outer)
-        axes_frame.pack(side=tk.LEFT, padx=4)
-        jog_axes = ["J1/X", "J2/Y", "J3/Z", "J4/Rx", "J5/Ry", "J6/Rz"]
-        for col, label in enumerate(jog_axes):
+        axes_frame = ttk.Frame(jog_lf)
+        axes_frame.pack(padx=6, pady=4)
+
+        # Joint モード用ラベル / Cartesian モード用ラベル
+        joint_labels = ["J1\n(旋回)", "J2\n(肩)", "J3\n(肘)", "J4\n(前腕)", "J5\n(手首↑↓)", "J6\n(手首回転)"]
+        cart_labels  = ["X\n(前後)", "Y\n(左右)", "Z\n(上下)", "Rx\n(ロール)", "Ry\n(ピッチ)", "Rz\n(ヨー)"]
+
+        self._jog_axis_labels = []
+        for col in range(6):
             f = ttk.Frame(axes_frame)
-            f.grid(row=0, column=col, padx=1)
-            ttk.Label(f, text=label, font=("", 7), width=5, anchor="center").pack()
+            f.grid(row=0, column=col, padx=3)
+
+            lbl = tk.Label(f,
+                text=joint_labels[col],
+                bg=BG_PANEL, fg=ACCENT2,
+                font=("", 7), width=6, justify="center")
+            lbl.pack()
+            self._jog_axis_labels.append((lbl, joint_labels[col], cart_labels[col]))
+
             ttk.Button(f, text="▲", style="Jog.TButton",
                        command=lambda ax=col: self._jog(ax, +1)).pack()
             ttk.Button(f, text="▼", style="Jog.TButton",
                        command=lambda ax=col: self._jog(ax, -1)).pack()
 
-        # ---- File I/O ----
-        io_frame = ttk.LabelFrame(ctrl, text="ファイル I/O")
-        io_frame.pack(side=tk.LEFT, padx=4)
-        ttk.Button(io_frame, text="CSV 読込", command=self._load_csv, width=9).pack(side=tk.LEFT, padx=2, pady=2)
-        ttk.Button(io_frame, text="CSV 保存", command=self._save_csv, width=9).pack(side=tk.LEFT, padx=2, pady=2)
-        ttk.Button(io_frame, text="TP 出力", command=self._export_tp, width=9).pack(side=tk.LEFT, padx=2, pady=2)
+        def _update_jog_labels(*_):
+            mode = self._jog_mode.get()
+            for lbl, jlbl, clbl in self._jog_axis_labels:
+                lbl.config(text=jlbl if mode == "Joint" else clbl)
+        self._jog_mode.trace_add("write", _update_jog_labels)
 
-        # ---- Simulation ----
-        sim_frame = ttk.LabelFrame(ctrl, text="シミュレーション")
-        sim_frame.pack(side=tk.LEFT, padx=4)
-        self._sim_btn = ttk.Button(sim_frame, text="▶ 実行", command=self._start_simulation, width=8)
-        self._sim_btn.pack(side=tk.LEFT, padx=2, pady=2)
-        ttk.Button(sim_frame, text="■ 停止", command=self._stop_simulation, width=6).pack(side=tk.LEFT, padx=2, pady=2)
+        # ── ファイル I/O ─────────────────────────────────────────────
+        io_lf = ttk.LabelFrame(ctrl,
+            text="  ファイル — 経路の保存・読込・FANUC TP 出力")
+        io_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
 
-        # ---- IK ----
-        ik_frame = ttk.LabelFrame(ctrl, text="逆運動学 (IK)")
-        ik_frame.pack(side=tk.LEFT, padx=4)
+        io_inner = ttk.Frame(io_lf)
+        io_inner.pack(padx=6, pady=6)
+        ttk.Button(io_inner, text="📂 CSV 読込",
+                   command=self._load_csv).pack(pady=2, fill=tk.X)
+        ttk.Button(io_inner, text="💾 CSV 保存",
+                   command=self._save_csv).pack(pady=2, fill=tk.X)
+        ttk.Button(io_inner, text="📤 TP 出力",
+                   command=self._export_tp).pack(pady=2, fill=tk.X)
+
+        # ── シミュレーション ─────────────────────────────────────────
+        sim_lf = ttk.LabelFrame(ctrl,
+            text="  シミュレーション — 経路点を順に補間してロボットを動かします")
+        sim_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+
+        sim_inner = ttk.Frame(sim_lf)
+        sim_inner.pack(padx=6, pady=6)
+        self._sim_btn = ttk.Button(sim_inner, text="▶  実行 (F5)",
+                                   style="Primary.TButton",
+                                   command=self._start_simulation)
+        self._sim_btn.pack(pady=2, fill=tk.X)
+        ttk.Button(sim_inner, text="■  停止",
+                   style="Danger.TButton",
+                   command=self._stop_simulation).pack(pady=2, fill=tk.X)
+
+        self._sim_progress_var = tk.StringVar(value="待機中")
+        tk.Label(sim_inner,
+            textvariable=self._sim_progress_var,
+            bg=BG_PANEL, fg=FG_SUB, font=("", 7)
+        ).pack()
+
+        # ── 逆運動学 (IK) ────────────────────────────────────────────
+        ik_lf = ttk.LabelFrame(ctrl,
+            text="  逆運動学 (IK) — 経路点の位置から関節角度を自動計算")
+        ik_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+
+        ik_inner = ttk.Frame(ik_lf)
+        ik_inner.pack(padx=6, pady=6)
+
+        wp_row = ttk.Frame(ik_inner)
+        wp_row.pack(fill=tk.X, pady=2)
+        tk.Label(wp_row, text="経路点 P[",
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
         self._ik_wp_var = tk.IntVar(value=1)
-        ttk.Label(ik_frame, text="WP:").pack(side=tk.LEFT)
-        ttk.Spinbox(ik_frame, from_=1, to=999, textvariable=self._ik_wp_var, width=4).pack(side=tk.LEFT, padx=2)
-        ttk.Button(ik_frame, text="IK 計算", command=self._compute_ik_for_wp, width=7).pack(side=tk.LEFT, padx=2, pady=2)
+        ttk.Spinbox(wp_row, from_=1, to=999,
+                    textvariable=self._ik_wp_var, width=4).pack(side=tk.LEFT)
+        tk.Label(wp_row, text="]",
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
-        # ---- FK result ----
-        fk_frame = ttk.LabelFrame(ctrl, text="FK 結果 (mm / deg)")
-        fk_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        self._fk_display_var = tk.StringVar()
-        ttk.Label(fk_frame, textvariable=self._fk_display_var,
-                  font=("Courier", 8), foreground="#88CCFF").pack(anchor="w", padx=4)
+        ttk.Button(ik_inner, text="IK 計算 → 移動",
+                   command=self._compute_ik_for_wp).pack(pady=2, fill=tk.X)
 
-    def _build_changelog_panel(self, parent):
-        """Compact changelog panel shown in the right sidebar."""
-        from .changelog import CHANGELOG
-        frame = ttk.LabelFrame(parent, text=f"更新履歴  (Update History)  — v{APP_VERSION}")
-        frame.pack(fill=tk.X, padx=4, pady=(0, 4))
+        # ── FK 結果 ──────────────────────────────────────────────────
+        fk_lf = ttk.LabelFrame(ctrl,
+            text="  TCP 位置 / 姿勢 (FK) — 現在の関節角度から計算した先端位置")
+        fk_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        txt = tk.Text(
-            frame, height=7, bg="#111111", fg="#AAAAAA",
-            font=("Courier", 8), wrap=tk.WORD,
-            borderwidth=0, highlightthickness=0, state="normal",
-            cursor="arrow",
-        )
-        txt.pack(fill=tk.X, padx=4, pady=4)
+        self._fk_detail_var = tk.StringVar()
+        fk_detail = tk.Label(fk_lf,
+            textvariable=self._fk_detail_var,
+            bg=BG_PANEL, fg=ACCENT2,
+            font=("Consolas", 9), anchor="w", justify="left")
+        fk_detail.pack(padx=10, pady=8, anchor="w")
 
-        for ver, date, time_, items in CHANGELOG:
-            txt.insert(tk.END, f"v{ver}  {date}  {time_}\n", "ver")
-            for item in items:
-                txt.insert(tk.END, f" • {item}\n", "item")
-            txt.insert(tk.END, "\n")
-
-        txt.tag_config("ver", foreground="#F5C400", font=("Courier", 8, "bold"))
-        txt.tag_config("item", foreground="#CCCCCC")
-        txt.config(state="disabled")
-
-        ttk.Button(frame, text="詳細を見る...",
-                   command=lambda: show_changelog(self.root),
-                   width=14).pack(anchor="e", padx=4, pady=(0, 4))
+    # ──────────────────────────────────────────────────────────────────
+    # ステータスバー
+    # ──────────────────────────────────────────────────────────────────
 
     def _build_status_bar(self):
-        self._status_var = tk.StringVar(value=f"Ready  /  準備完了   [v{APP_VERSION}]")
-        ttk.Label(self.root, textvariable=self._status_var,
-                  relief=tk.SUNKEN, anchor=tk.W, font=("", 8)
-                  ).pack(fill=tk.X, side=tk.BOTTOM, padx=2, pady=1)
+        bar = tk.Frame(self.root, bg=BG_DARK, height=24)
+        bar.pack(fill=tk.X, side=tk.BOTTOM)
 
-    # ------------------------------------------------------------------
+        # 左：ステータスメッセージ
+        self._status_var = tk.StringVar(value="準備完了 — ショートカットキー: Ctrl+O 読込 / Ctrl+S 保存 / Ctrl+E TP出力 / F5 実行")
+        tk.Label(bar,
+            textvariable=self._status_var,
+            bg=BG_DARK, fg=FG_SUB,
+            font=("Yu Gothic UI", 8), anchor="w"
+        ).pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
+
+        # 右：バージョン
+        tk.Label(bar,
+            text=f"v{APP_VERSION}",
+            bg=BG_DARK, fg=ACCENT,
+            font=("Consolas", 8, "bold")
+        ).pack(side=tk.RIGHT, padx=8)
+
+        tk.Frame(bar, bg=BORDER, width=1).pack(side=tk.RIGHT, fill=tk.Y, pady=4)
+
+        # 右：ロボット名
+        tk.Label(bar,
+            text="FANUC LR Mate 200iD/14L",
+            bg=BG_DARK, fg=FG_SUB,
+            font=("", 8)
+        ).pack(side=tk.RIGHT, padx=8)
+
+    # ──────────────────────────────────────────────────────────────────
     # Jog
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _jog(self, axis: int, direction: int):
-        """Jog robot in joint or Cartesian mode."""
         try:
             step = float(self._jog_step.get())
         except ValueError:
@@ -396,7 +610,6 @@ class MainWindow:
             q[axis] = float(np.clip(q[axis], lower[axis], upper[axis]))
             self._set_angles(q)
         else:
-            # Cartesian jog: compute FK, shift position/orientation, IK
             T = self.kin.forward(self._joint_angles)
             if axis < 3:
                 T[:3, 3][axis] += step * direction
@@ -411,38 +624,46 @@ class MainWindow:
                 self._set_angles(q)
                 self.viewport.set_jog_target(T[:3, 3])
             else:
-                self._set_status("Cartesian jog: IK 失敗 — 可動範囲外")
+                self._set_status("⚠  Cartesian ジョグ: IK 失敗 — 可動範囲外の位置です")
 
-    # ------------------------------------------------------------------
-    # Viewport & FK helpers
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Viewport & FK
+    # ──────────────────────────────────────────────────────────────────
 
     def _update_viewport_from_angles(self, q: np.ndarray):
         self.viewport.update_robot(q)
 
     def _update_fk_display(self):
-        T = self.kin.forward(self._joint_angles)
+        T  = self.kin.forward(self._joint_angles)
         x, y, z, rx, ry, rz = self.kin.transform_to_pose(T)
-        self._fk_display_var.set(
-            f"Pos: ({x:7.1f}, {y:7.1f}, {z:7.1f}) mm  "
-            f"RPY: ({rx:6.1f}, {ry:6.1f}, {rz:6.1f}) deg"
+        text = (
+            f"  位置 X: {x:8.1f} mm    姿勢 Rx: {rx:7.1f} °\n"
+            f"  位置 Y: {y:8.1f} mm    姿勢 Ry: {ry:7.1f} °\n"
+            f"  位置 Z: {z:8.1f} mm    姿勢 Rz: {rz:7.1f} °"
         )
+        self._fk_display_var.set(
+            f"Pos: ({x:7.1f}, {y:7.1f}, {z:7.1f}) mm   "
+            f"RPY: ({rx:6.1f}, {ry:6.1f}, {rz:6.1f}) °"
+        )
+        if hasattr(self, "_fk_detail_var"):
+            self._fk_detail_var.set(text)
 
-    # ------------------------------------------------------------------
-    # Route event handlers
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Route events
+    # ──────────────────────────────────────────────────────────────────
 
     def _on_route_changed(self):
         self.viewport.set_route(self.route)
         self.viewport.refresh()
-        self._set_status(f"ルート更新 — {len(self.route)} 点")
+        n   = len(self.route)
+        self._set_status(f"✔  経路更新 — {n} 点")
 
     def _on_waypoint_selected(self, idx: int):
         self.viewport.set_selected_waypoint(idx)
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # File I/O
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _load_csv(self):
         path = filedialog.askopenfilename(
@@ -453,14 +674,14 @@ class MainWindow:
         try:
             loaded = RouteCSVIO.route_from_csv(path)
             self.route.waypoints = loaded.waypoints
-            self.route.name = loaded.name
-            self.route.comment = loaded.comment
+            self.route.name      = loaded.name
+            self.route.comment   = loaded.comment
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)
             self.viewport.refresh()
-            self._set_status(f"読込完了: {len(self.route)} 点 ← {os.path.basename(path)}")
+            self._set_status(f"✔  読込完了: {len(self.route)} 点 ← {os.path.basename(path)}")
         except Exception as e:
-            messagebox.showerror("Error", f"CSV 読込失敗:\n{e}")
+            messagebox.showerror("読込エラー", f"CSV 読込に失敗しました:\n{e}")
 
     def _save_csv(self):
         path = filedialog.asksaveasfilename(
@@ -471,13 +692,13 @@ class MainWindow:
             return
         try:
             RouteCSVIO.route_to_csv(self.route, path)
-            self._set_status(f"保存完了: {os.path.basename(path)}")
+            self._set_status(f"✔  保存完了: {os.path.basename(path)}")
         except Exception as e:
-            messagebox.showerror("Error", f"CSV 保存失敗:\n{e}")
+            messagebox.showerror("保存エラー", f"CSV 保存に失敗しました:\n{e}")
 
     def _export_tp(self):
         if not self.route.waypoints:
-            messagebox.showwarning("Warning", "ウェイポイントがありません。")
+            messagebox.showwarning("経路点なし", "経路点が1つもありません。\nまず経路点を追加してください。")
             return
         path = filedialog.asksaveasfilename(
             title="FANUC TP プログラムをエクスポート", defaultextension=".ls",
@@ -485,7 +706,7 @@ class MainWindow:
             initialfile=f"{self.route.name}.ls")
         if not path:
             return
-        self._set_status("IK 計算中...")
+        self._set_status("IK 計算中 — しばらくお待ちください...")
         self.root.update()
         try:
             exporter = TPExporter(self.kin)
@@ -493,31 +714,30 @@ class MainWindow:
                             utool=self._active_tool.number,
                             uframe=self._active_uframe.number,
                             speed_override=self._speed_override.get())
-            self._set_status(f"TP 出力完了: {os.path.basename(path)}")
+            self._set_status(f"✔  TP 出力完了: {os.path.basename(path)}")
             with open(path) as f:
                 content = f.read()
-            self._show_text_preview(f"TP: {os.path.basename(path)}", content)
+            self._show_text_preview(f"TP プレビュー: {os.path.basename(path)}", content)
         except Exception as e:
-            messagebox.showerror("Error", f"TP エクスポート失敗:\n{e}")
+            messagebox.showerror("TP エクスポートエラー", f"エクスポートに失敗しました:\n{e}")
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Simulation
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _start_simulation(self):
         if not self.route.waypoints:
-            messagebox.showwarning("Warning", "ウェイポイントがありません。")
+            messagebox.showwarning("経路点なし", "経路点が1つもありません。")
             return
         if self._sim_thread and self._sim_thread.is_alive():
             return
         self._sim_running = True
         self._sim_btn.config(state="disabled")
-        self._set_status("シミュレーション実行中...")
-
         override = self._speed_override.get() / 100.0
+        total    = len(self.route.waypoints)
 
         def run():
-            q_prev = self._joint_angles.copy()
+            q_prev    = self._joint_angles.copy()
             waypoints = list(self.route.waypoints)
             for i, wp in enumerate(waypoints):
                 if not self._sim_running:
@@ -525,31 +745,33 @@ class MainWindow:
                 T = wp.to_transform()
                 q_target, ok = self.kin.inverse(T, q_init=q_prev)
                 if not ok:
-                    self.root.after(0, lambda i=i: self._set_status(f"IK 失敗: P[{i+1}]"))
+                    self.root.after(0, lambda i=i: self._set_status(
+                        f"⚠  IK 失敗: P[{i+1}] — 可動範囲外の可能性があります"))
                     q_target = q_prev
 
-                # Compute frames based on max joint speed and override
                 speeds_rad = np.deg2rad(self.kin.dh.get_joint_max_speeds()) * override
-                delta = np.abs(q_target - q_prev)
-                max_time = float(np.max(delta / np.maximum(speeds_rad, 1e-6)))
-                steps = max(20, int(max_time / 0.03))
+                delta      = np.abs(q_target - q_prev)
+                max_time   = float(np.max(delta / np.maximum(speeds_rad, 1e-6)))
+                steps      = max(20, int(max_time / 0.03))
 
                 for step in range(steps + 1):
                     if not self._sim_running:
                         break
-                    alpha = step / steps
+                    alpha   = step / steps
                     q_interp = q_prev + alpha * (q_target - q_prev)
 
                     def _update(q=q_interp.copy(), idx=i):
                         self._joint_angles = q
                         self._update_viewport_from_angles(q)
                         self._update_fk_display()
-                        self._update_angles_display()
                         for j, var in enumerate(self._slider_vars):
                             var.set(np.rad2deg(q[j]))
                         self.viewport.set_selected_waypoint(idx)
-                        self._set_status(f"移動中: P[{idx+1}] / {len(waypoints)}  "
-                                         f"({wp.label})")
+                        pct = int((idx + alpha) / total * 100)
+                        self._sim_progress_var.set(f"P[{idx+1}]/{total}  {pct}%")
+                        self._set_status(
+                            f"▶  シミュレーション実行中 — P[{idx+1}/{total}]  {wp.label}  "
+                            f"({pct}%)")
 
                     self.root.after(0, _update)
                     import time
@@ -570,40 +792,44 @@ class MainWindow:
         self._sim_btn.config(state="normal")
         self.viewport.set_selected_waypoint(None)
         self.viewport.set_jog_target(None)
-        self._set_status("シミュレーション完了")
+        self._sim_progress_var.set("完了")
+        self._set_status("✔  シミュレーション完了")
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # IK
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _compute_ik_for_wp(self):
         idx = self._ik_wp_var.get() - 1
         if idx < 0 or idx >= len(self.route.waypoints):
-            messagebox.showwarning("Warning", f"P[{idx+1}] が存在しません。")
+            messagebox.showwarning("範囲外", f"P[{idx+1}] は存在しません。")
             return
         wp = self.route.waypoints[idx]
-        T = wp.to_transform()
-        self._set_status(f"IK 計算中: P[{idx+1}]...")
+        T  = wp.to_transform()
+        self._set_status(f"IK 計算中: P[{idx+1}] ({wp.label})...")
         self.root.update()
         q, ok = self.kin.inverse(T, q_init=self._joint_angles)
         if ok:
             self._set_angles(q)
             self.viewport.set_selected_waypoint(idx)
-            self._set_status(f"IK 成功: P[{idx+1}]")
+            self._set_status(f"✔  IK 成功: P[{idx+1}] ({wp.label})")
         else:
             messagebox.showwarning("IK 失敗",
-                                   f"P[{idx+1}] の逆運動学計算に失敗しました。\n"
-                                   f"位置: ({wp.x:.1f}, {wp.y:.1f}, {wp.z:.1f}) mm")
+                f"P[{idx+1}] ({wp.label}) の逆運動学計算に失敗しました。\n"
+                f"位置が可動範囲外の可能性があります。\n"
+                f"  X={wp.x:.1f}, Y={wp.y:.1f}, Z={wp.z:.1f} mm")
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Robot presets
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _go_home(self):
         self._set_angles(self.kin.dh.home_position())
+        self._set_status("✔  ホームポジション (全軸 0°) に移動しました")
 
     def _go_ready(self):
         self._set_angles(self.kin.dh.ready_position())
+        self._set_status("✔  レディポジション (J2=-45° J3=+30° J5=-60°) に移動しました")
 
     def _set_angles(self, q: np.ndarray):
         self._joint_angles = q.copy()
@@ -611,18 +837,20 @@ class MainWindow:
             var.set(np.rad2deg(q[i]))
         self._update_viewport_from_angles(q)
         self._update_fk_display()
-        self._update_angles_display()
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Tool / User frame dialogs
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _edit_tool_frame(self):
         tf = self._active_tool
         self._frame_editor_dialog(
             title=f"ツールフレーム編集: {tf.name}",
-            obj=tf, fields=["x", "y", "z", "rx", "ry", "rz"],
-            labels=["X (mm)", "Y (mm)", "Z (mm)", "Rx (°)", "Ry (°)", "Rz (°)"],
+            desc="フランジ（J6先端）からTCP（ツール中心点）までのオフセットを設定します。\n包丁の場合、刃の中心まで Z方向に延長します。",
+            obj=tf,
+            fields=["x", "y", "z", "rx", "ry", "rz"],
+            labels=["X オフセット (mm)", "Y オフセット (mm)", "Z オフセット (mm)",
+                    "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
             on_apply=lambda: self.viewport.set_tool_frame(self._active_tool)
         )
 
@@ -630,22 +858,35 @@ class MainWindow:
         uf = self._active_uframe
         self._frame_editor_dialog(
             title=f"ユーザーフレーム編集: {uf.name}",
-            obj=uf, fields=["x", "y", "z", "rx", "ry", "rz"],
-            labels=["X (mm)", "Y (mm)", "Z (mm)", "Rx (°)", "Ry (°)", "Rz (°)"],
+            desc="作業座標系の原点を設定します。\n砥石の場合、砥石面の中心をユーザーフレーム原点とします。",
+            obj=uf,
+            fields=["x", "y", "z", "rx", "ry", "rz"],
+            labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)",
+                    "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
             on_apply=lambda: self.viewport.set_user_frame(self._active_uframe)
         )
 
-    def _frame_editor_dialog(self, title, obj, fields, labels, on_apply):
+    def _frame_editor_dialog(self, title, desc, obj, fields, labels, on_apply):
         win = tk.Toplevel(self.root)
         win.title(title)
-        win.geometry("320x280")
-        win.configure(bg="#1E1E1E")
+        win.geometry("380x340")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+
+        tk.Label(win, text=title, bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 10, "bold")).pack(pady=(12, 2), padx=12, anchor="w")
+        tk.Label(win, text=desc, bg=BG_DARK, fg=FG_SUB,
+                 font=("Yu Gothic UI", 8), justify="left",
+                 wraplength=350).pack(padx=12, anchor="w")
+
+        ttk.Separator(win).pack(fill=tk.X, padx=12, pady=8)
 
         vars_ = {}
-        for i, (f, lbl) in enumerate(zip(fields, labels)):
+        for f, lbl in zip(fields, labels):
             row = ttk.Frame(win)
-            row.pack(fill=tk.X, padx=12, pady=3)
-            ttk.Label(row, text=lbl, width=8).pack(side=tk.LEFT)
+            row.pack(fill=tk.X, padx=16, pady=2)
+            tk.Label(row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=18, anchor="w").pack(side=tk.LEFT)
             v = tk.StringVar(value=str(getattr(obj, f)))
             vars_[f] = v
             ttk.Entry(row, textvariable=v, width=12).pack(side=tk.LEFT, padx=4)
@@ -657,66 +898,78 @@ class MainWindow:
                 except ValueError:
                     pass
             on_apply()
-            self._set_status(f"{title} 更新完了")
+            self._set_status(f"✔  {title} を更新しました")
             win.destroy()
 
         btn_row = ttk.Frame(win)
-        btn_row.pack(pady=8)
-        ttk.Button(btn_row, text="適用 (Apply)", command=apply).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_row, text="キャンセル", command=win.destroy).pack(side=tk.LEFT, padx=4)
+        btn_row.pack(pady=12)
+        ttk.Button(btn_row, text="適用して閉じる",
+                   style="Primary.TButton", command=apply).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="キャンセル", command=win.destroy).pack(side=tk.LEFT, padx=6)
 
-    # ------------------------------------------------------------------
-    # Route sample
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
+    # Route operations
+    # ──────────────────────────────────────────────────────────────────
 
     def _load_sample_route(self):
         sample = Route.default_sharpening_route()
         self.route.waypoints = sample.waypoints
-        self.route.name = sample.name
+        self.route.name      = sample.name
         self.route_editor.set_route(self.route)
         self.viewport.set_route(self.route)
         self.viewport.refresh()
-        self._set_status(f"サンプルルート読込: {len(self.route)} 点")
+        self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
 
     def _auto_generate_route(self):
-        """Open the auto-route generation dialog."""
         win = tk.Toplevel(self.root)
         win.title("刃付けルート自動生成")
-        win.geometry("440x520")
-        win.configure(bg="#1A1A1A")
+        win.geometry("460x560")
+        win.configure(bg=BG_DARK)
         win.resizable(False, False)
 
-        tk.Label(win, text="刃付けルート自動生成", bg="#1A1A1A", fg="#F5C400",
-                 font=("", 12, "bold")).pack(pady=(12, 4))
+        tk.Label(win, text="⚙  刃付けルート自動生成",
+                 bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(14, 2), padx=16, anchor="w")
+        tk.Label(win,
+            text="砥石の位置・寸法と刃付けパラメータを入力すると、\n往復研磨ルートを自動で生成します。",
+            bg=BG_DARK, fg=FG_SUB,
+            font=("Yu Gothic UI", 8), justify="left").pack(padx=16, anchor="w")
+
+        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
 
         frame = ttk.Frame(win)
-        frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16)
 
-        def row(label, default):
+        def section(text):
+            tk.Label(frame, text=text, bg=BG_PANEL, fg=ACCENT2,
+                     font=("Yu Gothic UI", 8, "bold")).pack(anchor="w", pady=(8, 2))
+
+        def row(label, default, hint=""):
             f = ttk.Frame(frame)
             f.pack(fill=tk.X, pady=2)
-            ttk.Label(f, text=label, width=30, anchor="w").pack(side=tk.LEFT)
+            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
+                     font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
             var = tk.StringVar(value=str(default))
-            ttk.Entry(f, textvariable=var, width=10).pack(side=tk.LEFT)
+            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
+            if hint:
+                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
+                         font=("", 7)).pack(side=tk.LEFT, padx=4)
             return var
 
-        ttk.Label(frame, text="砥石位置 (ロボット基準座標)", foreground="#888888",
-                  font=("", 8)).pack(anchor="w", pady=(6, 0))
-        v_sx   = row("砥石 X mm (前方):", 400)
-        v_sy   = row("砥石 Y mm (左右):", 0)
-        v_sz   = row("砥石 Z mm (高さ):", 250)
+        section("▸ 砥石の位置（ロボット基準座標）")
+        v_sx = row("砥石 X mm（前方距離）:", 400, "ロボット正面方向")
+        v_sy = row("砥石 Y mm（左右）:",      0,   "正値=左")
+        v_sz = row("砥石 Z mm（高さ）:",    250,   "床面からの高さ")
 
-        ttk.Label(frame, text="砥石寸法", foreground="#888888",
-                  font=("", 8)).pack(anchor="w", pady=(6, 0))
-        v_slen = row("砥石の長さ mm (ストローク方向):", 200)
-        v_swid = row("砥石の幅  mm (包丁送り方向):", 70)
+        section("▸ 砥石の寸法")
+        v_slen = row("砥石の長さ mm（包丁スライド方向）:", 200)
+        v_swid = row("砥石の幅  mm（包丁送り方向）:",      70)
 
-        ttk.Label(frame, text="刃付けパラメータ", foreground="#888888",
-                  font=("", 8)).pack(anchor="w", pady=(6, 0))
-        v_ang  = row("刃角度 deg:", 15)
-        v_blen = row("研磨刃長 mm:", 180)
-        v_strk = row("往復ストローク回数:", 5)
-        v_spd  = row("ストローク速度 mm/s:", 30)
+        section("▸ 刃付けパラメータ")
+        v_ang  = row("刃の角度 °（砥石面に対する傾き）:", 15, "一般的: 10〜20°")
+        v_blen = row("研磨する刃の長さ mm:",              180)
+        v_strk = row("往復ストローク回数:",                5)
+        v_spd  = row("ストローク速度 mm/s:",              30, "推奨: 20〜50")
 
         def on_generate():
             try:
@@ -733,93 +986,107 @@ class MainWindow:
                 )
                 new_route = generate_sharpening_route(p)
                 self.route.waypoints = new_route.waypoints
-                self.route.name = new_route.name
+                self.route.name      = new_route.name
                 self.route_editor.set_route(self.route)
                 self.viewport.set_route(self.route)
                 self.viewport.refresh()
-                self._set_status(f"ルート自動生成完了: {len(self.route)} 点")
+                self._set_status(
+                    f"✔  ルート自動生成完了 — {len(self.route)} 点  "
+                    f"(ストローク: {int(v_strk.get())} 往復 × "
+                    f"{max(1, int(float(v_blen.get())/(float(v_swid.get())-10)))} パス)")
                 win.destroy()
             except Exception as e:
-                messagebox.showerror("エラー", str(e), parent=win)
+                messagebox.showerror("生成エラー", str(e), parent=win)
 
-        ttk.Button(win, text="ルートを生成", command=on_generate).pack(pady=6)
-        ttk.Button(win, text="キャンセル", command=win.destroy).pack(pady=2)
+        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=4)
+        ttk.Button(btn_row, text="⚙  ルートを生成する",
+                   style="Primary.TButton",
+                   command=on_generate).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="キャンセル",
+                   command=win.destroy).pack(side=tk.LEFT, padx=6)
 
     def _clear_route(self):
-        if messagebox.askyesno("確認", "ルートをすべてクリアしますか？"):
+        if messagebox.askyesno("確認", "経路点をすべて削除しますか？\nこの操作は元に戻せません。"):
             self.route.clear()
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)
             self.viewport.refresh()
-            self._set_status("ルートをクリアしました")
+            self._set_status("✔  経路をクリアしました")
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Info dialogs
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _show_dh_params(self):
-        self._show_text_preview("DH パラメータ", repr(self.kin.dh))
+        self._show_text_preview("DH パラメータ — Modified DH (Craig notation)", repr(self.kin.dh))
 
     def _show_robot_specs(self):
         dh = self.kin.dh
         specs = (
             f"FANUC LR Mate 200iD/14L  ロボット仕様\n"
-            f"{'='*50}\n"
-            f"ペイロード      : {dh.PAYLOAD_KG} kg\n"
-            f"最大リーチ      : {dh.REACH_MM} mm (手首中心まで)\n"
-            f"繰り返し精度    : ±{dh.REPEATABILITY_MM} mm\n"
-            f"ロボット質量    : {dh.WEIGHT_KG} kg\n"
-            f"コントローラ    : {dh.CONTROLLER}\n"
-            f"防塵防水        : {dh.IP_RATING}\n"
-            f"\n{'='*50}\n"
-            f"{'軸':4} {'最小(°)':>10} {'最大(°)':>10} {'最大速度(°/s)':>14}\n"
-            f"{'-'*40}\n"
+            f"{'='*54}\n"
+            f"  ペイロード       : {dh.PAYLOAD_KG} kg\n"
+            f"  最大リーチ       : {dh.REACH_MM} mm  (手首中心まで)\n"
+            f"  フランジリーチ   : {dh.REACH_MM + 80} mm  (フランジ端面まで)\n"
+            f"  繰り返し精度     : ±{dh.REPEATABILITY_MM} mm\n"
+            f"  ロボット質量     : {dh.WEIGHT_KG} kg\n"
+            f"  コントローラ     : {dh.CONTROLLER}\n"
+            f"  防塵防水         : {dh.IP_RATING}\n"
+            f"\n{'='*54}\n"
+            f"  {'軸':5} {'可動範囲最小':>12} {'可動範囲最大':>12} {'最大速度':>12}\n"
+            f"  {'-'*46}\n"
         )
         for j in dh.joints:
-            specs += f"{j.name:4} {j.joint_min:>10.0f} {j.joint_max:>10.0f} {j.joint_max_speed:>14.0f}\n"
-        self._show_text_preview("ロボット仕様", specs)
+            specs += f"  {j.name:5} {j.joint_min:>10.0f}°    {j.joint_max:>10.0f}°    {j.joint_max_speed:>8.0f}°/s\n"
+        specs += (
+            f"\n{'='*54}\n"
+            f"  DHパラメータ (Modified DH / Z-up 座標系)\n"
+            f"  {'軸':5} {'a (mm)':>8} {'alpha (°)':>10} {'d (mm)':>8}\n"
+            f"  {'-'*36}\n"
+        )
+        for j in dh.joints:
+            specs += f"  {j.name:5} {j.a:>8.0f}   {j.alpha:>10.0f}   {j.d:>8.0f}\n"
+        self._show_text_preview("FANUC LR Mate 200iD/14L ロボット仕様", specs)
 
     def _show_about(self):
-        msg = (
+        messagebox.showinfo("About",
             f"FANUC LR Mate 200iD/14L\n"
             f"刃付けロボットシミュレータ  v{APP_VERSION}\n\n"
             f"Knife Sharpening Robot Simulator\n\n"
-            f"Tech: Python · matplotlib · tkinter\n"
-            f"Kinematics: Modified DH (6-DOF, Z-up)\n"
-            f"IK: Analytical + Numerical fallback\n"
-        )
-        messagebox.showinfo("About", msg)
+            f"Python  ·  matplotlib  ·  tkinter\n"
+            f"運動学: Modified DH 法 (6-DOF, Z-up)\n"
+            f"IK: 解析解 + scipy 数値フォールバック")
 
     def _show_text_preview(self, title: str, content: str):
         win = tk.Toplevel(self.root)
         win.title(title)
-        win.geometry("700x500")
+        win.geometry("720x540")
+        win.configure(bg=BG_DARK)
         txt = scrolledtext.ScrolledText(
-            win, font=("Courier", 9), bg="#1A1A1A", fg="#DDDDDD",
-            insertbackground="white", wrap=tk.NONE)
+            win, font=("Consolas", 9),
+            bg="#0D1117", fg=FG_PRIMARY,
+            insertbackground=FG_PRIMARY, wrap=tk.NONE,
+            borderwidth=0, highlightthickness=0)
         txt.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         txt.insert(tk.END, content)
         txt.config(state="disabled")
-        ttk.Button(win, text="Close", command=win.destroy).pack(pady=4)
+        ttk.Button(win, text="閉じる", command=win.destroy).pack(pady=6)
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Status bar
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _set_status(self, msg: str):
-        self._status_var.set(f"{msg}   [v{APP_VERSION}]")
+        self._status_var.set(msg)
 
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
     # Lifecycle
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────
 
     def _on_close(self):
         self._sim_running = False
-        if self._simulator is not None:
-            try:
-                self._simulator.stop()
-            except Exception:
-                pass
         self.viewport.destroy()
         self.root.destroy()
 

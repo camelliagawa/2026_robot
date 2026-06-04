@@ -2,10 +2,19 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 # (version, date, time, changes)
 CHANGELOG = [
+    ("0.3.2", "2026-06-04", "21:30", [
+        "UI デザインを全面刷新: GitHub Dark テーマ、カラーコード統一",
+        "各パネルに日本語説明文を追加（ジョグ操作・IK・速度OVR・UTool/UFrame）",
+        "ジョグ軸ラベルを Joint/Cartesian モードに応じて切替表示",
+        "シミュレーション進捗を % 表示で確認可能に",
+        "FK 結果を X/Y/Z・Rx/Ry/Rz の見やすいフォーマットで表示",
+        "ステータスバー右端にロボット名とバージョンを常時表示",
+        "ダイアログに説明文を追加 (UTool/UFrame 編集・自動生成)",
+    ]),
     ("0.3.1", "2026-06-04", "20:30", [
         "更新履歴に更新時刻 (時:分) を追加",
         "launch.bat 改良: 起動時に自動で最新版を取得 (git pull)",
