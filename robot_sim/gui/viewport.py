@@ -1,7 +1,7 @@
 """
 3D Viewport for the robot simulation using matplotlib.
 
-Renders the FANUC LR Mate 200iD/14L with realistic cylindrical arm segments,
+Renders the FANUC LR Mate 200iD/14L with realistic geometry,
 route waypoints, user frame axes, TCP marker, and workspace boundary.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 FANUC_YELLOW    = "#F5C400"   # FANUC ロボット本体色
 FANUC_YELLOW_D  = "#C49A00"   # 暗面
 FANUC_BLACK     = "#1A1A1A"   # 関節部
+FANUC_DARK_GRAY = "#2E2E2E"   # ベース台座
 KNIFE_BLADE     = "#C8C8D0"
 KNIFE_HANDLE    = "#3A2010"
 ROUTE_COLOR     = "#2288FF"
@@ -35,7 +36,6 @@ WP_ACTIVE       = "#00FF88"
 TCP_COLOR       = "#00FFCC"
 UFRAME_COLOR    = "#FF88FF"
 JOG_COLOR       = "#44FF44"
-GRID_ALPHA      = 0.25
 
 KNIFE_HANDLE_LEN  = 150.0
 KNIFE_BLADE_LEN   = 200.0
@@ -45,7 +45,7 @@ KNIFE_BLADE_WIDTH = 45.0
 # ── 3D プリミティブ描画ヘルパー ─────────────────────────────────────────
 
 def _cylinder(ax, p1, p2, radius: float, color: str,
-              alpha: float = 1.0, n: int = 10, shade: bool = True):
+              alpha: float = 1.0, n: int = 10):
     """Draw a cylinder from p1 to p2."""
     p1 = np.asarray(p1, float)
     p2 = np.asarray(p2, float)
@@ -54,16 +54,11 @@ def _cylinder(ax, p1, p2, radius: float, color: str,
     if ln < 1e-6:
         return
     v_u = v / ln
-
-    # Two perpendicular axes
     ref = [1, 0, 0] if abs(v_u[0]) < 0.9 else [0, 1, 0]
     e1  = np.cross(v_u, ref); e1 /= np.linalg.norm(e1)
     e2  = np.cross(v_u, e1)
-
     theta = np.linspace(0, 2 * np.pi, n + 1)
-    X = np.zeros((2, n + 1))
-    Y = np.zeros((2, n + 1))
-    Z = np.zeros((2, n + 1))
+    X = np.zeros((2, n + 1)); Y = np.zeros((2, n + 1)); Z = np.zeros((2, n + 1))
     for j, t in enumerate(theta):
         d = radius * (np.cos(t) * e1 + np.sin(t) * e2)
         for row, base in enumerate([p1, p2]):
@@ -71,7 +66,7 @@ def _cylinder(ax, p1, p2, radius: float, color: str,
             Y[row, j] = base[1] + d[1]
             Z[row, j] = base[2] + d[2]
     ax.plot_surface(X, Y, Z, color=color, alpha=alpha,
-                    shade=shade, linewidth=0, antialiased=False)
+                    shade=True, linewidth=0, antialiased=False)
 
 
 def _sphere(ax, center, radius: float, color: str,
@@ -106,6 +101,68 @@ def _disk(ax, center, normal, radius: float, color: str,
     verts = [c + radius * (np.cos(t) * e1 + np.sin(t) * e2) for t in theta]
     poly  = Poly3DCollection([verts], alpha=alpha,
                               facecolor=color, edgecolor="none")
+    ax.add_collection3d(poly)
+
+
+def _box_link(ax, p1, p2, w: float, h: float, color: str, alpha: float = 1.0):
+    """
+    Draw a rectangular-section link from p1 to p2.
+    w = width, h = height of the cross-section (perpendicular to link axis).
+    Gives a more realistic arm appearance than a cylinder.
+    """
+    p1 = np.asarray(p1, float)
+    p2 = np.asarray(p2, float)
+    v  = p2 - p1
+    ln = np.linalg.norm(v)
+    if ln < 1e-6:
+        return
+    v_u = v / ln
+    ref = [0, 0, 1] if abs(v_u[2]) < 0.9 else [1, 0, 0]
+    e1  = np.cross(v_u, ref); e1 /= np.linalg.norm(e1)
+    e2  = np.cross(v_u, e1)
+
+    hw, hh = w / 2, h / 2
+    # 8 corners: 4 at p1 end, 4 at p2 end
+    offsets = [hw * e1 + hh * e2, -hw * e1 + hh * e2,
+               -hw * e1 - hh * e2,  hw * e1 - hh * e2]
+    c = [p1 + o for o in offsets] + [p2 + o for o in offsets]
+
+    edge_c = FANUC_YELLOW_D if color == FANUC_YELLOW else "#444444"
+    faces = [
+        [c[0], c[1], c[2], c[3]],  # p1 cap
+        [c[4], c[5], c[6], c[7]],  # p2 cap
+        [c[0], c[1], c[5], c[4]],  # side A
+        [c[2], c[3], c[7], c[6]],  # side B
+        [c[1], c[2], c[6], c[5]],  # side C
+        [c[0], c[3], c[7], c[4]],  # side D
+    ]
+    poly = Poly3DCollection(faces, alpha=alpha, facecolor=color,
+                            edgecolor=edge_c, linewidth=0.4)
+    ax.add_collection3d(poly)
+
+
+def _rotated_box(ax, center, R: np.ndarray,
+                 lx: float, ly: float, lz: float,
+                 color: str, alpha: float = 1.0):
+    """
+    Draw a box rotated by matrix R, centered at `center`.
+    lx/ly/lz are full side lengths along R's x/y/z columns.
+    """
+    c = np.asarray(center, float)
+    signs = np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+                       [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]], float)
+    half  = np.array([lx/2, ly/2, lz/2])
+    verts = c + (R @ (signs * half).T).T
+
+    edge_c = FANUC_YELLOW_D if color == FANUC_YELLOW else "#444444"
+    v = verts
+    faces = [
+        [v[0],v[1],v[2],v[3]], [v[4],v[5],v[6],v[7]],
+        [v[0],v[1],v[5],v[4]], [v[2],v[3],v[7],v[6]],
+        [v[1],v[2],v[6],v[5]], [v[0],v[3],v[7],v[4]],
+    ]
+    poly = Poly3DCollection(faces, alpha=alpha, facecolor=color,
+                            edgecolor=edge_c, linewidth=0.4)
     ax.add_collection3d(poly)
 
 
@@ -215,124 +272,126 @@ class Viewport3D:
         ax.grid(False)
 
     def _draw_workspace(self):
-        """Workspace boundary circles."""
+        """Workspace boundary circle (horizontal plane at shoulder height)."""
         reach = self.kin.dh.REACH_MM
         theta = np.linspace(0, 2 * np.pi, 72)
-        base_z = 330
+        base_z = self.kin.dh.joints[0].d  # d1 = 330
 
         self.ax.plot(reach * np.cos(theta), reach * np.sin(theta),
                      np.full(72, base_z),
                      color="#1E3A5F", lw=1.0, alpha=0.5, linestyle="--")
-        self.ax.plot(reach * np.cos(theta), np.zeros(72),
-                     base_z + reach * np.sin(theta),
-                     color="#1E3A5F", lw=0.6, alpha=0.3, linestyle=":")
-        # Label
-        self.ax.text(reach * 0.72, 0, base_z + reach * 0.72,
-                     "911mm", color="#1E5A8F", fontsize=6, alpha=0.6)
+        self.ax.text(reach * 0.72, 0, base_z + 30,
+                     f"{int(reach)}mm", color="#1E5A8F", fontsize=6, alpha=0.6)
 
     def _draw_robot(self, q: np.ndarray):
-        """Draw FANUC LR Mate 200iD/14L with realistic cylindrical geometry."""
-        pos = self.kin.get_joint_positions(q)  # (7, 3)  Base + J1…J6
+        """
+        Draw FANUC LR Mate 200iD/14L with realistic geometry.
 
-        # Link radii (mm) — proportional to actual robot geometry
-        radii = [80, 55, 48, 38, 32, 24, 20]
+        Structure (Modified DH):
+          Base plate → J1 column → Shoulder housing
+          → Upper arm (J1→J2) → Elbow → Forearm (J2→J3)
+          → Wrist near (J3→J4) → Wrist mid (J4→J5)
+          → Wrist far (J5→J6) → Flange
+        """
+        pos = self.kin.get_joint_positions(q)   # (7,3): base+J1…J6
+        tfs = self.kin.forward_all(q)            # (7,) 4x4 transforms
 
-        # ── ベース（土台） ────────────────────────────────────────────
-        base    = pos[0].copy()
-        j1_pos  = pos[1].copy()
+        p0 = pos[0]   # base origin  [0,0,0]
+        p1 = pos[1]   # J2 shoulder axis
+        p2 = pos[2]   # J3 elbow axis
+        p3 = pos[3]   # J4 wrist-roll axis
+        p4 = pos[4]   # J5 wrist-pitch axis
+        p5 = pos[5]   # J6 wrist-spin axis
+        p6 = pos[6]   # TCP flange face
 
-        # 底板（黒い正方形台）
-        hw = 110
-        corners = np.array([
-            [-hw, -hw, 0], [hw, -hw, 0],
-            [hw,  hw, 0],  [-hw,  hw, 0],
-        ], float) + base
-        base_top_corners = corners.copy(); base_top_corners[:, 2] += 60
-        for a, b in zip(corners, base_top_corners):
-            self.ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]],
-                         color="#333333", lw=1.5)
-        for loop in [corners, base_top_corners]:
-            lp = np.vstack([loop, loop[0]])
-            self.ax.plot(lp[:, 0], lp[:, 1], lp[:, 2],
-                         color="#333333", lw=1.5)
+        R1 = tfs[1][:3, :3]   # J1 frame rotation (for shoulder housing)
 
-        # J1回転胴（円柱）— ベース上面〜J1位置
-        base_top = base.copy(); base_top[2] = 60
-        _cylinder(self.ax, base_top, j1_pos, 75, FANUC_BLACK, alpha=0.95, n=12)
-        _disk(self.ax, base_top, [0, 0, -1], 75, "#252525", alpha=0.9)
-        _disk(self.ax, j1_pos,  [0, 0,  1], 75, "#252525", alpha=0.9)
+        ax = self.ax
 
-        # ── 上腕（J1→J2）── 肩関節部 ───────────────────────────────
-        j2_pos = pos[2].copy()
+        # ─── ① ベース台座（固定・黄色ボックス） ──────────────────────────
+        # 実機: 幅広い矩形台座に4本のアンカーボルト穴
+        _rotated_box(ax, p0 + [0, 0, 45], np.eye(3),
+                     lx=220, ly=180, lz=90, color=FANUC_YELLOW)
+        # 底面リップ（わずかに広い）
+        _rotated_box(ax, p0 + [0, 0, 8], np.eye(3),
+                     lx=240, ly=200, lz=16, color=FANUC_DARK_GRAY)
 
-        # 肩球体
-        _sphere(self.ax, j1_pos, 55, FANUC_BLACK, alpha=0.9, n=10)
+        # ─── ② J1 回転胴（ベース上面〜肩まで・黄色円柱） ────────────────
+        # 実機: ベースから立ち上がる太い黄色コラム
+        col_bot = p0 + [0, 0, 90]
+        col_mid = p0 + [0, 0, 200]
+        _cylinder(ax, col_bot, col_mid, 78, FANUC_YELLOW, alpha=0.97, n=14)
+        _disk(ax, col_bot, [0, 0, -1], 78, FANUC_YELLOW_D)
+        _disk(ax, col_mid, [0, 0,  1], 78, FANUC_YELLOW_D)
 
-        # 上腕リンク（太い黄色円柱）
-        _cylinder(self.ax, j1_pos, j2_pos, 48, FANUC_YELLOW, alpha=1.0, n=12)
-        _disk(self.ax, j1_pos, -(j2_pos - j1_pos), 48, FANUC_YELLOW_D, alpha=0.9)
-        _disk(self.ax, j2_pos,   j2_pos - j1_pos,  48, FANUC_YELLOW_D, alpha=0.9)
+        # ─── ③ 肩ハウジング（J2軸まわりの大型ボックス・J1と共に回転） ──
+        # 実機: 左右に張り出したボックス形状。J2モーターを内包する。
+        # 位置: J1フレームのZ軸方向に col_mid から p1 の中間
+        shoulder_ctr = (col_mid + p1) / 2
+        _rotated_box(ax, shoulder_ctr, R1,
+                     lx=80, ly=150, lz=float(np.linalg.norm(p1 - col_mid)) + 20,
+                     color=FANUC_YELLOW)
+        # 肩側面ディスク（J2軸端面）
+        _disk(ax, p1,  R1[:, 1],  55, FANUC_YELLOW_D)
+        _disk(ax, p1, -R1[:, 1],  55, FANUC_YELLOW_D)
 
-        # ── 前腕（J2→J3）── 肘関節部 ────────────────────────────────
-        j3_pos = pos[3].copy()
+        # ─── ④ 上腕リンク（J2→J3・矩形断面） ────────────────────────────
+        # 実機: J2からJ3まで長い矩形断面アーム
+        _box_link(ax, p1, p2, w=85, h=65, color=FANUC_YELLOW)
 
-        # 肘球体
-        _sphere(self.ax, j2_pos, 48, FANUC_BLACK, alpha=0.9, n=10)
+        # ─── ⑤ 肘ジョイント（J3球体） ───────────────────────────────────
+        _sphere(ax, p2, 48, FANUC_BLACK, alpha=0.92, n=10)
 
-        # 前腕リンク
-        _cylinder(self.ax, j2_pos, j3_pos, 40, FANUC_YELLOW, alpha=1.0, n=12)
-        _disk(self.ax, j2_pos, -(j3_pos - j2_pos), 40, FANUC_YELLOW_D, alpha=0.9)
-        _disk(self.ax, j3_pos,   j3_pos - j2_pos,  40, FANUC_YELLOW_D, alpha=0.9)
+        # ─── ⑥ 前腕（J3→J4・矩形断面、テーパー付き） ───────────────────
+        # 実機: 肘から手首に向かって細くなる形状
+        _box_link(ax, p2, p3, w=70, h=55, color=FANUC_YELLOW)
 
-        # ── 手首部（J3→J4）─────────────────────────────────────────
-        j4_pos = pos[4].copy()
+        # ─── ⑦ 手首近位ジョイント（J4） ────────────────────────────────
+        _sphere(ax, p3, 40, FANUC_BLACK, alpha=0.92, n=10)
 
-        _sphere(self.ax, j3_pos, 40, FANUC_BLACK, alpha=0.9, n=10)
-        _cylinder(self.ax, j3_pos, j4_pos, 32, FANUC_YELLOW, alpha=1.0, n=10)
-        _disk(self.ax, j3_pos, -(j4_pos - j3_pos), 32, FANUC_YELLOW_D)
-        _disk(self.ax, j4_pos,   j4_pos - j3_pos,  32, FANUC_YELLOW_D)
+        # ─── ⑧ 手首近位リンク（J4→J5） ────────────────────────────────
+        # 実機: 手首3軸は円柱形のコンパクトな構造
+        _cylinder(ax, p3, p4, 32, FANUC_YELLOW, alpha=0.97, n=12)
+        _disk(ax, p3, -(p4 - p3), 32, FANUC_YELLOW_D)
+        _disk(ax, p4,   p4 - p3,  32, FANUC_YELLOW_D)
 
-        # ── 手首ピッチ（J4→J5）────────────────────────────────────
-        j5_pos = pos[5].copy()
+        # ─── ⑨ 手首中間ジョイント（J5） ────────────────────────────────
+        _sphere(ax, p4, 32, FANUC_BLACK, alpha=0.92, n=10)
 
-        _sphere(self.ax, j4_pos, 32, FANUC_BLACK, alpha=0.9, n=8)
-        _cylinder(self.ax, j4_pos, j5_pos, 26, FANUC_YELLOW, alpha=1.0, n=10)
-        _disk(self.ax, j4_pos, -(j5_pos - j4_pos), 26, FANUC_YELLOW_D)
-        _disk(self.ax, j5_pos,   j5_pos - j4_pos,  26, FANUC_YELLOW_D)
+        # ─── ⑩ 手首遠位リンク（J5→J6） ────────────────────────────────
+        _cylinder(ax, p4, p5, 26, FANUC_YELLOW, alpha=0.97, n=12)
+        _disk(ax, p4, -(p5 - p4), 26, FANUC_YELLOW_D)
+        _disk(ax, p5,   p5 - p4,  26, FANUC_YELLOW_D)
 
-        # ── フランジ（J5→J6）──────────────────────────────────────
-        j6_pos = pos[6].copy()
+        # ─── ⑪ 手首先端ジョイント（J6） ────────────────────────────────
+        _sphere(ax, p5, 26, FANUC_BLACK, alpha=0.92, n=8)
 
-        _sphere(self.ax, j5_pos, 26, FANUC_BLACK, alpha=0.9, n=8)
-        _cylinder(self.ax, j5_pos, j6_pos, 22, FANUC_YELLOW, alpha=1.0, n=10)
-
-        # フランジ板（黒い円盤）
-        ee_dir = j6_pos - j5_pos
+        # ─── ⑫ フランジ（J6→TCP） ──────────────────────────────────────
+        _cylinder(ax, p5, p6, 20, FANUC_YELLOW, alpha=0.97, n=12)
+        ee_dir = p6 - p5
         if np.linalg.norm(ee_dir) > 1e-3:
-            _disk(self.ax, j6_pos, ee_dir, 32, FANUC_BLACK, alpha=0.95)
-            _cylinder(self.ax, j6_pos, j6_pos + ee_dir / np.linalg.norm(ee_dir) * 15,
-                      32, "#222222", alpha=0.9, n=10)
+            nd = ee_dir / np.linalg.norm(ee_dir)
+            _disk(ax, p6,  nd, 30, FANUC_BLACK, alpha=0.95)  # フランジ面
+            _cylinder(ax, p6, p6 + nd * 12, 30, FANUC_DARK_GRAY, alpha=0.9, n=12)
 
-        # ── 地面の影 ─────────────────────────────────────────────────
-        shadow_xs = pos[:, 0]; shadow_ys = pos[:, 1]
-        self.ax.plot(shadow_xs, shadow_ys, np.zeros(len(pos)),
-                     color="#333333", lw=3, alpha=0.25, linestyle="-")
+        # ─── 地面への影（簡易） ─────────────────────────────────────────
+        ax.plot(pos[:, 0], pos[:, 1], np.zeros(len(pos)),
+                color="#444444", lw=2.5, alpha=0.2)
 
-        # ── EE 座標フレーム ───────────────────────────────────────────
+        # ─── EE 座標フレーム ─────────────────────────────────────────────
         T_ee = self.kin.forward(q)
         origin = T_ee[:3, 3]
         R = T_ee[:3, :3]
-        scale = 70
-        axis_colors = ["#FF4444", "#44FF44", "#4444FF"]
-        axis_names  = ["X", "Y", "Z"]
-        for col, (color, name) in enumerate(zip(axis_colors, axis_names)):
+        scale = 65
+        for col, (color, name) in enumerate(
+                zip(["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])):
             tip = origin + scale * R[:, col]
-            self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
-                         [origin[2], tip[2]], color=color, lw=2.0, alpha=0.9)
-            self.ax.text(tip[0], tip[1], tip[2], name,
-                         color=color, fontsize=6, alpha=0.85)
+            ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
+                    [origin[2], tip[2]], color=color, lw=2.0, alpha=0.9)
+            ax.text(tip[0], tip[1], tip[2], name,
+                    color=color, fontsize=6, alpha=0.85)
 
-        # ── 包丁・TCP ────────────────────────────────────────────────
+        # ─── 包丁・TCP ──────────────────────────────────────────────────
         self._draw_knife(q, T_ee)
         self._draw_tcp(q, T_ee)
 
@@ -343,27 +402,22 @@ class Viewport3D:
         z_axis = R[:, 2]
         y_axis = R[:, 1]
 
-        # ハンドル
         handle_end = origin + KNIFE_HANDLE_LEN * z_axis
         self.ax.plot([origin[0], handle_end[0]],
                      [origin[1], handle_end[1]],
                      [origin[2], handle_end[2]],
                      color=KNIFE_HANDLE, lw=5, solid_capstyle="round")
 
-        # 刃
         blade_tip = handle_end + KNIFE_BLADE_LEN * z_axis
         self.ax.plot([handle_end[0], blade_tip[0]],
                      [handle_end[1], blade_tip[1]],
                      [handle_end[2], blade_tip[2]],
                      color=KNIFE_BLADE, lw=2.5, solid_capstyle="round")
 
-        # 刃面（半透明ポリゴン）
         hw = KNIFE_BLADE_WIDTH / 2
         corners = np.array([
-            handle_end - hw * y_axis,
-            handle_end + hw * y_axis,
-            blade_tip  + hw * y_axis,
-            blade_tip  - hw * y_axis,
+            handle_end - hw * y_axis, handle_end + hw * y_axis,
+            blade_tip  + hw * y_axis, blade_tip  - hw * y_axis,
         ])
         poly = Poly3DCollection([corners], alpha=0.22,
                                 facecolor=KNIFE_BLADE,
@@ -397,9 +451,8 @@ class Viewport3D:
         R      = T_uf[:3, :3]
         scale  = 120
 
-        colors = [UFRAME_COLOR, "#88FF88", "#8888FF"]
-        labels = ["Ux", "Uy", "Uz"]
-        for col, (color, lbl) in enumerate(zip(colors, labels)):
+        for col, (color, lbl) in enumerate(
+                zip([UFRAME_COLOR, "#88FF88", "#8888FF"], ["Ux", "Uy", "Uz"])):
             tip = origin + scale * R[:, col]
             self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
                          [origin[2], tip[2]], color=color, lw=2.0, alpha=0.85)
@@ -435,7 +488,6 @@ class Viewport3D:
             return
 
         positions = self._route.positions_array()
-
         self.ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                      color=ROUTE_COLOR, lw=1.5, alpha=0.7, zorder=3)
 
