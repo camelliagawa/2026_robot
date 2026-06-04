@@ -54,6 +54,44 @@ BTN_PRIMARY = "#1F6FEB"  # プライマリボタン
 BTN_HOVER   = "#388BFD"
 
 
+# ── ツールチップ ────────────────────────────────────────────────────────
+
+class _Tooltip:
+    """マウスホバーで説明を表示するツールチップ。"""
+    def __init__(self, widget: tk.Widget, text: str):
+        self._w    = widget
+        self._text = text
+        self._win  = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, event=None):
+        if self._win:
+            return
+        x = self._w.winfo_rootx() + 16
+        y = self._w.winfo_rooty() + self._w.winfo_height() + 6
+        self._win = tw = tk.Toplevel(self._w)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tw, text=self._text, justify="left",
+            background="#1C2333", foreground="#E6EDF3",
+            relief="solid", borderwidth=1,
+            font=("Yu Gothic UI", 8),
+            wraplength=340, padx=8, pady=5,
+        ).pack()
+
+    def _hide(self, event=None):
+        if self._win:
+            self._win.destroy()
+            self._win = None
+
+
+def _tip(widget: tk.Widget, text: str) -> _Tooltip:
+    """ウィジェットにツールチップを設定して返す。"""
+    return _Tooltip(widget, text)
+
+
 class MainWindow:
     """Top-level application window."""
 
@@ -305,110 +343,119 @@ class MainWindow:
         outer = ttk.Frame(self.root)
         outer.pack(fill=tk.X, padx=6, pady=(4, 0))
 
-        # ---- 関節スライダー ----
-        slider_lf = ttk.LabelFrame(outer,
-            text="  関節角度 (Joint Angles) — スライダーを動かすと3D表示がリアルタイムに更新されます")
-        slider_lf.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # ---- 関節スライダー（横向き・コンパクト） ----
+        slider_lf = ttk.LabelFrame(outer, text="  関節角度 (Joint Angles)")
+        slider_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         lower, upper = self.kin.dh.get_joint_limits_deg()
-        self._slider_vars = []
         speeds = self.kin.dh.get_joint_max_speeds()
+        self._slider_vars = []
+        self._fk_display_var  = tk.StringVar()
+        self._angles_display_var = tk.StringVar()
+
+        JOINT_TIPS = [
+            "J1 — 旋回軸\n胴体全体が水平に回転します\n可動範囲: ±170°  最大速度: 210°/s",
+            "J2 — 肩軸\n上腕が前後方向に動きます\n可動範囲: -85°〜+145°  最大速度: 210°/s",
+            "J3 — 肘軸\n前腕が上下に動きます\n可動範囲: -175°〜+255°  最大速度: 275°/s",
+            "J4 — 前腕回転軸\n前腕がねじれ回転します\n可動範囲: ±190°  最大速度: 400°/s",
+            "J5 — 手首ピッチ軸\n手首が上下に傾きます\n可動範囲: ±135°  最大速度: 400°/s",
+            "J6 — 手首回転軸\nツール（包丁）が軸回転します\n可動範囲: ±360°  最大速度: 600°/s",
+        ]
 
         for i in range(6):
-            col = ttk.Frame(slider_lf)
-            col.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4, pady=4)
-
-            # 軸名
-            lbl = tk.Label(col, text=f"J{i+1}",
-                           bg=BG_PANEL, fg=ACCENT2,
-                           font=("Consolas", 9, "bold"))
-            lbl.pack()
+            row = ttk.Frame(slider_lf)
+            row.pack(fill=tk.X, padx=6, pady=1)
 
             init_deg = np.rad2deg(self._joint_angles[i])
             var = tk.DoubleVar(value=init_deg)
             self._slider_vars.append(var)
 
-            ttk.Scale(col,
-                from_=lower[i], to=upper[i],
-                variable=var, orient=tk.VERTICAL, length=80,
-                command=lambda val, idx=i: self._on_slider_change(idx, float(val))
-            ).pack()
+            # 軸名ラベル
+            jlbl = tk.Label(row, text=f"J{i+1}", width=3,
+                            bg=BG_PANEL, fg=ACCENT2,
+                            font=("Consolas", 9, "bold"), anchor="center")
+            jlbl.pack(side=tk.LEFT, padx=(0, 2))
+            _tip(jlbl, JOINT_TIPS[i])
 
-            # 現在角度
-            deg_lbl = tk.Label(col, textvariable=var,
-                               bg=BG_PANEL, fg=FG_PRIMARY,
-                               font=("Consolas", 8), width=7)
-            deg_lbl.pack()
+            # 水平スライダー
+            sc = ttk.Scale(row, from_=lower[i], to=upper[i],
+                           variable=var, orient=tk.HORIZONTAL, length=240,
+                           command=lambda val, idx=i: self._on_slider_change(idx, float(val)))
+            sc.pack(side=tk.LEFT)
+            _tip(sc, JOINT_TIPS[i])
 
-            # 可動範囲・最大速度
-            rng_lbl = tk.Label(col,
-                text=f"{lower[i]:.0f}°〜{upper[i]:.0f}°\n{speeds[i]:.0f}°/s",
-                bg=BG_PANEL, fg=FG_SUB, font=("", 6), justify="center")
-            rng_lbl.pack()
+            # 現在角度表示
+            tk.Label(row, textvariable=var,
+                     bg=BG_PANEL, fg=FG_PRIMARY,
+                     font=("Consolas", 8), width=8, anchor="e").pack(side=tk.LEFT, padx=2)
+            tk.Label(row, text="°",
+                     bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
-        # FK 結果（スライダー行の右端）
-        self._fk_display_var = tk.StringVar()
-        fk_lbl = tk.Label(slider_lf,
-            textvariable=self._fk_display_var,
-            bg=BG_PANEL, fg=ACCENT2,
-            font=("Consolas", 8), anchor="w", justify="left")
-        fk_lbl.pack(side=tk.RIGHT, padx=10)
-
-        self._angles_display_var = tk.StringVar()
+            # 可動範囲・速度（薄いメタ情報）
+            tk.Label(row,
+                text=f"  {lower[i]:.0f}〜{upper[i]:.0f}°   {speeds[i]:.0f}°/s",
+                bg=BG_PANEL, fg=FG_SUB, font=("", 7), anchor="w"
+            ).pack(side=tk.LEFT, padx=(4, 0))
 
         # ---- 右列：速度OVR + UTool + UFrame ----
         right_col = ttk.Frame(outer)
-        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
 
         # 速度オーバーライド
-        spd_lf = ttk.LabelFrame(right_col,
-            text="  速度オーバーライド — 全軸速度の上限を % で設定")
+        spd_lf = ttk.LabelFrame(right_col, text="  速度オーバーライド")
         spd_lf.pack(fill=tk.X, pady=(4, 2))
+        _tip(spd_lf,
+             "全軸の速度上限をパーセントで設定します。\n"
+             "100% = 最大速度（J1: 210°/s, J6: 600°/s など）\n"
+             "シミュレーションと TP 出力の両方に反映されます。\n"
+             "初回確認時は低い値から始めることを推奨します。")
 
         spd_inner = ttk.Frame(spd_lf)
         spd_inner.pack(fill=tk.X, padx=6, pady=4)
         self._speed_override = tk.IntVar(value=100)
-
-        ttk.Scale(spd_inner,
-            from_=1, to=100,
-            variable=self._speed_override,
-            orient=tk.HORIZONTAL, length=130
-        ).pack(side=tk.LEFT)
-
-        spd_val = tk.Label(spd_inner,
-            textvariable=self._speed_override,
-            bg=BG_PANEL, fg=ACCENT,
-            font=("Consolas", 10, "bold"), width=4)
-        spd_val.pack(side=tk.LEFT)
-
+        ovr_sc = ttk.Scale(spd_inner, from_=1, to=100,
+                           variable=self._speed_override,
+                           orient=tk.HORIZONTAL, length=110)
+        ovr_sc.pack(side=tk.LEFT)
+        _tip(ovr_sc, "左: 低速（1%）  右: 最大速度（100%）")
+        tk.Label(spd_inner, textvariable=self._speed_override,
+                 bg=BG_PANEL, fg=ACCENT,
+                 font=("Consolas", 10, "bold"), width=4).pack(side=tk.LEFT)
         tk.Label(spd_inner, text="%",
-                 bg=BG_PANEL, fg=FG_SUB,
-                 font=("", 9)).pack(side=tk.LEFT)
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 9)).pack(side=tk.LEFT)
 
         # UTool
-        tool_lf = ttk.LabelFrame(right_col,
-            text="  UTool — ロボット先端に取り付けたツールの定義")
+        tool_lf = ttk.LabelFrame(right_col, text="  UTool（ツール定義）")
         tool_lf.pack(fill=tk.X, pady=2)
-
+        _tip(tool_lf,
+             "UTool（ユーザーツール）:\n"
+             "ロボットフランジ先端に取り付けたツールの定義です。\n"
+             "・FLANGE: ツールなし（フランジ基準）\n"
+             "・KNIFE: 包丁（Z方向に200mmオフセット）\n"
+             "3Dビューのシアン色マーカー（TCP）の位置に反映されます。\n"
+             "ロボット メニューから数値編集もできます。")
         self._utool_var = tk.StringVar(value=self._active_tool.name)
         tool_names = [f"UT{t.number}: {t.name}  (z={t.z:.0f}mm)" for t in self.TOOL_FRAMES]
-        self._utool_combo = ttk.Combobox(tool_lf,
-            textvariable=self._utool_var,
-            values=tool_names, state="readonly", width=20)
+        self._utool_combo = ttk.Combobox(tool_lf, textvariable=self._utool_var,
+                                          values=tool_names, state="readonly", width=20)
         self._utool_combo.current(1)
         self._utool_combo.pack(padx=6, pady=4)
         self._utool_combo.bind("<<ComboboxSelected>>", self._on_utool_change)
 
         # UFrame
-        uf_lf = ttk.LabelFrame(right_col,
-            text="  UFrame — 作業座標系（砥石などの基準座標）の定義")
+        uf_lf = ttk.LabelFrame(right_col, text="  UFrame（作業座標系）")
         uf_lf.pack(fill=tk.X, pady=(2, 4))
-
+        _tip(uf_lf,
+             "UFrame（ユーザーフレーム）:\n"
+             "作業対象（砥石など）の座標系定義です。\n"
+             "・WORLD: ロボット基準座標（デフォルト）\n"
+             "・STONE: 砥石座標系（X=400mm前方, Z=200mm上方）\n"
+             "3Dビューの紫色の座標軸で位置を確認できます。\n"
+             "ロボット メニューから位置を編集できます。")
         self._uframe_var = tk.StringVar(value=self._active_uframe.name)
         uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
-        self._uframe_combo = ttk.Combobox(uf_lf,
-            textvariable=self._uframe_var,
-            values=uf_names, state="readonly", width=20)
+        self._uframe_combo = ttk.Combobox(uf_lf, textvariable=self._uframe_var,
+                                           values=uf_names, state="readonly", width=20)
         self._uframe_combo.current(0)
         self._uframe_combo.pack(padx=6, pady=4)
         self._uframe_combo.bind("<<ComboboxSelected>>", self._on_uframe_change)
@@ -442,9 +489,15 @@ class MainWindow:
         ctrl.pack(fill=tk.X, padx=6, pady=6)
 
         # ── ジョグ操作 ──────────────────────────────────────────────
-        jog_lf = ttk.LabelFrame(ctrl,
-            text="  ジョグ操作 — ▲▼ボタンで各軸を手動で動かせます（Joint: 関節角度 / Cartesian: 直交座標）")
+        jog_lf = ttk.LabelFrame(ctrl, text="  ジョグ操作 (Jog)")
         jog_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        _tip(jog_lf,
+             "ジョグ操作: ▲▼ボタンで各軸を1ステップずつ手動で動かします。\n\n"
+             "【Joint モード】各関節を個別に回転\n"
+             "  J1=旋回  J2=肩  J3=肘  J4=前腕  J5=手首↑↓  J6=手首回転\n\n"
+             "【Cartesian モード】TCP位置を直交座標で移動\n"
+             "  X=前後  Y=左右  Z=上下  Rx/Ry/Rz=姿勢回転\n\n"
+             "ステップ幅: 1回の▲▼で動く角度(°)または距離(mm)")
 
         top = ttk.Frame(jog_lf)
         top.pack(fill=tk.X, padx=6, pady=(4, 0))
@@ -494,23 +547,39 @@ class MainWindow:
         self._jog_mode.trace_add("write", _update_jog_labels)
 
         # ── ファイル I/O ─────────────────────────────────────────────
-        io_lf = ttk.LabelFrame(ctrl,
-            text="  ファイル — 経路の保存・読込・FANUC TP 出力")
+        io_lf = ttk.LabelFrame(ctrl, text="  ファイル (File I/O)")
         io_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        _tip(io_lf,
+             "経路データの保存・読込とFANUCコントローラへの出力\n\n"
+             "📂 CSV 読込: 保存済みの経路ファイルを開く  (Ctrl+O)\n"
+             "💾 CSV 保存: 現在の経路をCSVファイルに保存  (Ctrl+S)\n"
+             "📤 TP 出力: FANUC TP プログラム(.ls)を生成  (Ctrl+E)\n"
+             "  → コントローラへFTP/USBで転送して実機動作可能")
 
         io_inner = ttk.Frame(io_lf)
         io_inner.pack(padx=6, pady=6)
-        ttk.Button(io_inner, text="📂 CSV 読込",
-                   command=self._load_csv).pack(pady=2, fill=tk.X)
-        ttk.Button(io_inner, text="💾 CSV 保存",
-                   command=self._save_csv).pack(pady=2, fill=tk.X)
-        ttk.Button(io_inner, text="📤 TP 出力",
-                   command=self._export_tp).pack(pady=2, fill=tk.X)
+        btn_csv_load = ttk.Button(io_inner, text="📂 CSV 読込", command=self._load_csv)
+        btn_csv_load.pack(pady=2, fill=tk.X)
+        _tip(btn_csv_load, "保存済みの経路CSVファイルを開きます  (Ctrl+O)")
+        btn_csv_save = ttk.Button(io_inner, text="💾 CSV 保存", command=self._save_csv)
+        btn_csv_save.pack(pady=2, fill=tk.X)
+        _tip(btn_csv_save, "現在の経路をCSVファイルに保存します  (Ctrl+S)")
+        btn_tp = ttk.Button(io_inner, text="📤 TP 出力", command=self._export_tp)
+        btn_tp.pack(pady=2, fill=tk.X)
+        _tip(btn_tp,
+             "FANUC TP プログラム (.ls) を生成します  (Ctrl+E)\n"
+             "IK 計算 → 全経路点の関節角度を自動算出\n"
+             "生成ファイルをコントローラへ転送することで実機動作が可能です")
 
         # ── シミュレーション ─────────────────────────────────────────
-        sim_lf = ttk.LabelFrame(ctrl,
-            text="  シミュレーション — 経路点を順に補間してロボットを動かします")
+        sim_lf = ttk.LabelFrame(ctrl, text="  シミュレーション")
         sim_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        _tip(sim_lf,
+             "設定した経路点を順番にIK計算しながらアニメーション表示します。\n\n"
+             "▶ 実行: 経路の先頭から順にロボットを動かす  (F5)\n"
+             "■ 停止: 途中で停止する\n\n"
+             "速度オーバーライドの値がアニメーション速度に反映されます。\n"
+             "IK 失敗した点はスキップされます（ステータスバーに表示）")
 
         sim_inner = ttk.Frame(sim_lf)
         sim_inner.pack(padx=6, pady=6)
@@ -529,9 +598,16 @@ class MainWindow:
         ).pack()
 
         # ── 逆運動学 (IK) ────────────────────────────────────────────
-        ik_lf = ttk.LabelFrame(ctrl,
-            text="  逆運動学 (IK) — 経路点の位置から関節角度を自動計算")
+        ik_lf = ttk.LabelFrame(ctrl, text="  逆運動学 (IK)")
         ik_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+        _tip(ik_lf,
+             "逆運動学 (IK: Inverse Kinematics)\n"
+             "経路点の位置・姿勢から関節角度を自動計算してロボットを移動させます。\n\n"
+             "使い方:\n"
+             "1. 経路点番号を入力（右のリストと対応）\n"
+             "2. 「IK 計算 → 移動」をクリック\n"
+             "3. 関節スライダーと3Dビューが更新されます\n\n"
+             "IK 失敗: 指定位置がロボットの可動範囲外の場合に発生します")
 
         ik_inner = ttk.Frame(ik_lf)
         ik_inner.pack(padx=6, pady=6)
@@ -546,13 +622,21 @@ class MainWindow:
         tk.Label(wp_row, text="]",
                  bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
-        ttk.Button(ik_inner, text="IK 計算 → 移動",
-                   command=self._compute_ik_for_wp).pack(pady=2, fill=tk.X)
+        ik_btn = ttk.Button(ik_inner, text="IK 計算 → 移動",
+                            command=self._compute_ik_for_wp)
+        ik_btn.pack(pady=2, fill=tk.X)
+        _tip(ik_btn, "指定した経路点にロボットを移動させます\n解析解+数値解フォールバックでIKを解きます")
 
         # ── FK 結果 ──────────────────────────────────────────────────
-        fk_lf = ttk.LabelFrame(ctrl,
-            text="  TCP 位置 / 姿勢 (FK) — 現在の関節角度から計算した先端位置")
+        fk_lf = ttk.LabelFrame(ctrl, text="  TCP 位置 / 姿勢 (FK)")
         fk_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _tip(fk_lf,
+             "順運動学 (FK: Forward Kinematics)\n"
+             "現在の関節角度から計算したTCP（ツール先端）の位置と姿勢です。\n\n"
+             "位置 X/Y/Z: ロボット基準座標でのTCP位置 (mm)\n"
+             "姿勢 Rx/Ry/Rz: ZYX オイラー角による姿勢 (°)\n\n"
+             "スライダーを動かすと即座に更新されます。\n"
+             "3Dビューの赤/緑/青の座標軸がこの位置に対応します。")
 
         self._fk_detail_var = tk.StringVar()
         fk_detail = tk.Label(fk_lf,

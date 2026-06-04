@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 
 # (version, date, time, changes)
 CHANGELOG = [
+    ("0.3.3", "2026-06-04", "22:30", [
+        "関節スライダーを縦向きから横向きに変更（よりコンパクトに）",
+        "ツールチップ追加: マウスカーソルを当てると各機能の説明が表示",
+        "ロボット3D表示を円柱・球体で実際の見た目に近づけた",
+        "ベース・関節・リンクをFANUC黄色で立体的に描画",
+        "ジョグ軸ラベルにJoint/Cartesianの日本語説明を追加",
+    ]),
     ("0.3.2", "2026-06-04", "21:30", [
         "UI デザインを全面刷新: GitHub Dark テーマ、カラーコード統一",
         "各パネルに日本語説明文を追加（ジョグ操作・IK・速度OVR・UTool/UFrame）",
