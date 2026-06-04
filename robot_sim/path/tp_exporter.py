@@ -71,22 +71,38 @@ class TPExporter:
     # Main export
     # ------------------------------------------------------------------
 
-    def export(self, route: Route, file_path: str):
+    def export(self, route: Route, file_path: str,
+               utool: Optional[int] = None,
+               uframe: Optional[int] = None,
+               speed_override: int = 100):
         """
         Export route to .ls file.
 
         Args:
-            route     : Route object to export.
-            file_path : Output .ls file path.
+            route          : Route object to export.
+            file_path      : Output .ls file path.
+            utool          : Override UTool number (uses route.utool if None).
+            uframe         : Override UFrame number (uses route.uframe if None).
+            speed_override : Speed override percentage (1–100).
         """
-        content = self.generate(route)
+        content = self.generate(route, utool=utool, uframe=uframe,
+                                speed_override=speed_override)
         with open(file_path, "w", encoding="ascii", errors="replace") as f:
             f.write(content)
 
-    def generate(self, route: Route) -> str:
+    def generate(self, route: Route,
+                 utool: Optional[int] = None,
+                 uframe: Optional[int] = None,
+                 speed_override: int = 100) -> str:
         """Generate TP program as string."""
         if not route.waypoints:
             raise ValueError("Route has no waypoints to export.")
+
+        # Override frame numbers if provided
+        if utool is not None:
+            route.utool = utool
+        if uframe is not None:
+            route.uframe = uframe
 
         # Solve IK for all waypoints
         joint_angles = self._solve_ik_all(route)
@@ -98,7 +114,8 @@ class TPExporter:
         time_str = now.strftime("%H:%M:%S")
         line_count = len(route.waypoints) + 2  # +2 for UFRAME/UTOOL lines
 
-        mn_lines = self._build_mn_section(route, joint_angles)
+        mn_lines = self._build_mn_section(route, joint_angles,
+                                          speed_override=speed_override)
         pos_section = self._build_pos_section(route, joint_angles)
 
         lines = []
@@ -114,6 +131,8 @@ class TPExporter:
         lines.append(f"LINE_COUNT\t= {line_count};")
         lines.append(f"MEMORY_SIZE\t= {max(1024, line_count * 50)};")
         lines.append(f"PROTECT\t\t= READ_WRITE;")
+        lines.append(f"; SPEED_OVERRIDE = {speed_override}%;")
+        lines.append(f"; UTOOL = {route.utool}, UFRAME = {route.uframe};")
         lines.append("TCD:  STACK_SIZE    = 0,")
         lines.append("      TASK_PRIORITY = 50,")
         lines.append("      TIME_SLICE    = 0,")
@@ -163,7 +182,8 @@ class TPExporter:
     # ------------------------------------------------------------------
 
     def _build_mn_section(
-        self, route: Route, joint_angles: List[Optional[np.ndarray]]
+        self, route: Route, joint_angles: List[Optional[np.ndarray]],
+        speed_override: int = 100,
     ) -> List[str]:
         """Build the /MN motion instruction lines."""
         lines = []
@@ -174,28 +194,34 @@ class TPExporter:
         line_num += 1
         lines.append(f"{line_num:4d}:  UTOOL_NUM={route.utool} ;")
         line_num += 1
+        lines.append(f"{line_num:4d}:  OVERRIDE={speed_override}% ;")
+        line_num += 1
 
         for i, wp in enumerate(route.waypoints):
             p_idx = i + 1  # P[1]-based indexing
-            motion_str = self._motion_instruction(wp, p_idx)
+            motion_str = self._motion_instruction(wp, p_idx,
+                                                   speed_override=speed_override)
             lines.append(f"{line_num:4d}:{motion_str}    ;")
             line_num += 1
 
         return lines
 
-    def _motion_instruction(self, wp: Waypoint, p_idx: int) -> str:
+    def _motion_instruction(self, wp: Waypoint, p_idx: int,
+                             speed_override: int = 100) -> str:
         """Format a single motion instruction."""
+        scale = max(1, min(100, speed_override)) / 100.0
         if wp.motion_type == MotionType.JOINT:
-            speed_str = f"{int(min(100, max(1, wp.speed / 5.0)))}%"
+            pct = int(min(100, max(1, wp.speed / 5.0 * scale)))
+            speed_str = f"{pct}%"
             return f"J P[{p_idx}] {speed_str} FINE"
         elif wp.motion_type == MotionType.LINEAR:
-            speed_str = f"{int(wp.speed)}mm/sec"
+            speed_str = f"{int(wp.speed * scale)}mm/sec"
             return f"L P[{p_idx}] {speed_str} FINE"
         elif wp.motion_type == MotionType.CIRCULAR:
-            speed_str = f"{int(wp.speed)}mm/sec"
+            speed_str = f"{int(wp.speed * scale)}mm/sec"
             return f"C P[{p_idx}]"  # CIRCULAR needs two points; simplified
         else:
-            speed_str = f"{int(wp.speed)}mm/sec"
+            speed_str = f"{int(wp.speed * scale)}mm/sec"
             return f"L P[{p_idx}] {speed_str} FINE"
 
     # ------------------------------------------------------------------

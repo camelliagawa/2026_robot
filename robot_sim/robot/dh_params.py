@@ -22,6 +22,7 @@ class DHJoint:
     theta_offset: float  # joint angle offset (deg)
     joint_min: float  # joint limit min (deg)
     joint_max: float  # joint limit max (deg)
+    joint_max_speed: float = 0.0  # deg/s — maximum joint speed
     name: str = ""
 
     @property
@@ -48,9 +49,12 @@ class DHParams:
     """
 
     # Robot physical constants
-    REACH_MM = 911.0          # Maximum reach
-    PAYLOAD_KG = 14.0         # Payload capacity
-    REPEATABILITY_MM = 0.02   # Positioning repeatability
+    PAYLOAD_KG = 14.0           # Payload capacity (kg)
+    REACH_MM = 911.0            # Maximum reach to wrist center (mm)
+    REPEATABILITY_MM = 0.02     # Positioning repeatability (mm)
+    WEIGHT_KG = 27.0            # Robot weight (kg)
+    CONTROLLER = "R-30iB Plus"  # Controller model
+    IP_RATING = "IP67"          # Protection rating
 
     def __init__(self):
         self.joints: List[DHJoint] = self._build_joints()
@@ -80,12 +84,12 @@ class DHParams:
         7L / 14L:        a2=440, d4=420 → reach 911mm  (same kinematics)
         """
         return [
-            DHJoint(a=0,   alpha=0,   d=330, theta_offset=0, joint_min=-170, joint_max=170,  name="J1"),
-            DHJoint(a=50,  alpha=-90, d=0,   theta_offset=0, joint_min=-85,  joint_max=145,  name="J2"),
-            DHJoint(a=440, alpha=0,   d=0,   theta_offset=0, joint_min=-175, joint_max=255,  name="J3"),
-            DHJoint(a=35,  alpha=-90, d=420, theta_offset=0, joint_min=-190, joint_max=190,  name="J4"),
-            DHJoint(a=0,   alpha=90,  d=0,   theta_offset=0, joint_min=-135, joint_max=135,  name="J5"),
-            DHJoint(a=0,   alpha=-90, d=80,  theta_offset=0, joint_min=-360, joint_max=360,  name="J6"),
+            DHJoint(a=0,   alpha=0,   d=330, theta_offset=0, joint_min=-170, joint_max=170,  joint_max_speed=210, name="J1"),
+            DHJoint(a=50,  alpha=-90, d=0,   theta_offset=0, joint_min=-85,  joint_max=145,  joint_max_speed=210, name="J2"),
+            DHJoint(a=440, alpha=0,   d=0,   theta_offset=0, joint_min=-175, joint_max=255,  joint_max_speed=275, name="J3"),
+            DHJoint(a=35,  alpha=-90, d=420, theta_offset=0, joint_min=-190, joint_max=190,  joint_max_speed=400, name="J4"),
+            DHJoint(a=0,   alpha=90,  d=0,   theta_offset=0, joint_min=-135, joint_max=135,  joint_max_speed=400, name="J5"),
+            DHJoint(a=0,   alpha=-90, d=80,  theta_offset=0, joint_min=-360, joint_max=360,  joint_max_speed=600, name="J6"),
         ]
 
     @property
@@ -113,12 +117,25 @@ class DHParams:
         # J2=-45° (肩を上方45°), J3=+30° (肘を前方へ), J5=-60° (手首やや下向き)
         return np.deg2rad([0, -45, 30, 0, -60, 0])
 
+    def get_joint_max_speeds(self) -> List[float]:
+        """Returns list of max speeds (deg/s) for each joint."""
+        return [j.joint_max_speed for j in self.joints]
+
     def __repr__(self) -> str:
-        lines = ["DHParams for FANUC LR Mate 200iD/14L", "-" * 50,
-                 f"{'Joint':6} {'a(mm)':8} {'alpha':8} {'d(mm)':8} {'offset':8} {'min':8} {'max':8}"]
+        lines = [
+            "DHParams for FANUC LR Mate 200iD/14L", "-" * 70,
+            f"  Payload: {self.PAYLOAD_KG} kg  |  Reach: {self.REACH_MM} mm  |  "
+            f"Repeatability: ±{self.REPEATABILITY_MM} mm",
+            f"  Weight: {self.WEIGHT_KG} kg  |  Controller: {self.CONTROLLER}  |  "
+            f"Protection: {self.IP_RATING}",
+            "-" * 70,
+            f"{'Joint':6} {'a(mm)':8} {'alpha':8} {'d(mm)':8} {'offset':8} "
+            f"{'min':8} {'max':8} {'spd°/s':8}",
+        ]
         for j in self.joints:
             lines.append(
                 f"{j.name:6} {j.a:8.1f} {j.alpha:8.1f} {j.d:8.1f} "
-                f"{j.theta_offset:8.1f} {j.joint_min:8.1f} {j.joint_max:8.1f}"
+                f"{j.theta_offset:8.1f} {j.joint_min:8.1f} {j.joint_max:8.1f} "
+                f"{j.joint_max_speed:8.1f}"
             )
         return "\n".join(lines)

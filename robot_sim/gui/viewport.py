@@ -23,16 +23,21 @@ import tkinter as tk
 if TYPE_CHECKING:
     from ..path.route import Route, Waypoint
     from ..robot.kinematics import Kinematics
+    from ..robot.tool_frame import ToolFrame
+    from ..robot.user_frame import UserFrame
 
 
 # Visual constants
-ROBOT_COLOR = "#F5C400"      # FANUC yellow
+ROBOT_COLOR = "#F5C400"       # FANUC yellow
 ROBOT_JOINT_COLOR = "#333333"
 KNIFE_BLADE_COLOR = "#C0C0C8"
 KNIFE_HANDLE_COLOR = "#3A2010"
 ROUTE_PATH_COLOR = "#2288FF"
 WAYPOINT_COLOR = "#FF4422"
 ACTIVE_WAYPOINT_COLOR = "#00FF88"
+TCP_COLOR = "#00FFCC"         # Tool Center Point
+USER_FRAME_COLOR = "#FF88FF"  # User frame axes
+JOG_TARGET_COLOR = "#44FF44"  # Jog target crosshair
 GRID_ALPHA = 0.25
 
 # Knife geometry (mm)
@@ -57,6 +62,9 @@ class Viewport3D:
         self._route: Optional["Route"] = None
         self._selected_wp_idx: Optional[int] = None
         self._joint_angles = np.zeros(6)
+        self._tool_frame: Optional["ToolFrame"] = None
+        self._user_frame: Optional["UserFrame"] = None
+        self._jog_target: Optional[np.ndarray] = None  # (3,) position to show
 
         # Zoom state (1.0 = default view, smaller = zoomed in)
         self._zoom_scale: float = 1.0
@@ -105,6 +113,21 @@ class Viewport3D:
         self._selected_wp_idx = idx
         self._redraw()
 
+    def set_tool_frame(self, tool_frame: Optional["ToolFrame"]):
+        """Set the tool frame for TCP visualization."""
+        self._tool_frame = tool_frame
+        self._redraw()
+
+    def set_user_frame(self, user_frame: Optional["UserFrame"]):
+        """Set the user frame for axis visualization."""
+        self._user_frame = user_frame
+        self._redraw()
+
+    def set_jog_target(self, position: Optional[np.ndarray]):
+        """Set an IK jog target position to visualize (or None to hide)."""
+        self._jog_target = position
+        self._redraw()
+
     def refresh(self):
         """Force redraw."""
         self._redraw()
@@ -132,8 +155,10 @@ class Viewport3D:
         self._setup_axes()
         self.ax.view_init(elev=self._elev, azim=self._azim)
         self._draw_workspace_sphere()
+        self._draw_user_frame()
         self._draw_robot(self._joint_angles)
         self._draw_route()
+        self._draw_jog_target()
         self.canvas.draw_idle()
 
     def _setup_axes(self):
@@ -234,6 +259,9 @@ class Viewport3D:
                 color=color, lw=2.0, alpha=0.9
             )
 
+        # Draw TCP (Tool Center Point) if tool frame is set
+        self._draw_tcp(q, T_ee)
+
     def _draw_knife(self, q: np.ndarray):
         """Draw simplified knife model at end-effector."""
         T_ee = self.kin.forward(q)
@@ -273,6 +301,92 @@ class Viewport3D:
             edgecolor="#888888", linewidth=0.5
         )
         self.ax.add_collection3d(poly)
+
+    def _draw_tcp(self, q: np.ndarray, T_ee: np.ndarray):
+        """Draw TCP (Tool Center Point) after applying tool frame."""
+        if self._tool_frame is None or self._tool_frame.z == 0.0:
+            return
+        T_tool = self._tool_frame.to_transform()
+        T_tcp = T_ee @ T_tool
+        tcp_pos = T_tcp[:3, 3]
+
+        # Bright dot at TCP
+        self.ax.scatter(
+            [tcp_pos[0]], [tcp_pos[1]], [tcp_pos[2]],
+            c=TCP_COLOR, s=100, zorder=8, depthshade=False,
+            marker="*"
+        )
+        # Line from flange to TCP
+        flange_pos = T_ee[:3, 3]
+        self.ax.plot(
+            [flange_pos[0], tcp_pos[0]],
+            [flange_pos[1], tcp_pos[1]],
+            [flange_pos[2], tcp_pos[2]],
+            color=TCP_COLOR, lw=1.5, alpha=0.7, linestyle="--"
+        )
+        # TCP label
+        self.ax.text(
+            tcp_pos[0] + 10, tcp_pos[1] + 10, tcp_pos[2] + 10,
+            "TCP", color=TCP_COLOR, fontsize=7, alpha=0.9
+        )
+
+    def _draw_user_frame(self):
+        """Draw user frame coordinate axes at its position."""
+        if self._user_frame is None:
+            return
+        T_uf = self._user_frame.to_transform()
+        origin = T_uf[:3, 3]
+        R = T_uf[:3, :3]
+        scale = 120
+
+        axis_colors = [USER_FRAME_COLOR, "#88FF88", "#8888FF"]
+        axis_labels = ["Ux", "Uy", "Uz"]
+        for col, (color, label) in enumerate(zip(axis_colors, axis_labels)):
+            tip = origin + scale * R[:, col]
+            self.ax.plot(
+                [origin[0], tip[0]],
+                [origin[1], tip[1]],
+                [origin[2], tip[2]],
+                color=color, lw=2.0, alpha=0.85
+            )
+            self.ax.text(
+                tip[0], tip[1], tip[2],
+                label, color=color, fontsize=7
+            )
+
+        # Origin marker
+        self.ax.scatter(
+            [origin[0]], [origin[1]], [origin[2]],
+            c=USER_FRAME_COLOR, s=60, zorder=7, depthshade=False,
+            marker="D"
+        )
+        name = getattr(self._user_frame, "name", "UF")
+        self.ax.text(
+            origin[0] + 15, origin[1] + 15, origin[2] + 15,
+            f"[{name}]", color=USER_FRAME_COLOR, fontsize=7, alpha=0.85
+        )
+
+    def _draw_jog_target(self):
+        """Draw jog target crosshair at the IK target position."""
+        if self._jog_target is None:
+            return
+        x, y, z = self._jog_target
+        s = 30  # crosshair half-size mm
+        # Crosshair lines
+        for dx, dy, dz in [(s, 0, 0), (0, s, 0), (0, 0, s)]:
+            self.ax.plot(
+                [x - dx, x + dx], [y - dy, y + dy], [z - dz, z + dz],
+                color=JOG_TARGET_COLOR, lw=1.5, alpha=0.9
+            )
+        self.ax.scatter(
+            [x], [y], [z], c=JOG_TARGET_COLOR, s=80,
+            zorder=9, depthshade=False, marker="+"
+        )
+        self.ax.text(
+            x + 12, y + 12, z + 12,
+            f"({x:.0f},{y:.0f},{z:.0f})",
+            color=JOG_TARGET_COLOR, fontsize=6, alpha=0.85
+        )
 
     def _draw_route(self):
         """Draw waypoints and route path."""
