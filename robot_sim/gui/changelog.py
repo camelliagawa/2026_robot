@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 
+# (version, date, time, changes)
 CHANGELOG = [
-    ("0.3.0", "2026-06-04", [
+    ("0.3.1", "2026-06-04", "20:30", [
+        "更新履歴に更新時刻 (時:分) を追加",
+        "launch.bat 改良: 起動時に自動で最新版を取得 (git pull)",
+        "刃付けルート自動生成ダイアログを追加 (ルートメニュー)",
+        "更新履歴パネルをメイン画面右側に常時表示",
+    ]),
+    ("0.3.0", "2026-06-04", "14:00", [
         "ファナック LR Mate 200iD/14L の正式仕様を全面反映",
         "DH パラメータ修正: a1=50, a2=440, a3=35, d4=420mm (ROS-Industrial URDF 準拠)",
         "関節最大速度を追加: J1-J6 各軸の°/s 制限を管理",
@@ -14,17 +21,17 @@ CHANGELOG = [
         "速度オーバーライド (Speed Override) スライダーを追加",
         "ジョグ操作 (Cartesian / Joint) パネルを追加",
         "3D ビューポート改善: フロアグリッド・ワークスペース可視化・TCP 表示",
-        "チェンジログ画面を追加 (このダイアログ)",
+        "チェンジログ画面を追加 (ヘルプメニュー)",
         "ロボット仕様ダイアログを追加",
     ]),
-    ("0.2.0", "2026-06-04", [
+    ("0.2.0", "2026-06-04", "10:30", [
         "DH パラメータを Z-up 標準座標系に修正 (Y-up → Z-up)",
         "マウスホイールでの 3D ズーム機能を追加",
         "視点ドラッグ後の回転角度を保持するよう修正",
         "レディポジション: J2=-45° J3=+30° J5=-60° に設定",
         "デフォルト刃付けルートの座標系を統一",
     ]),
-    ("0.1.0", "2026-06-04", [
+    ("0.1.0", "2026-06-04", "09:00", [
         "初期実装: FANUC LR Mate 200iD/14L シミュレータ",
         "Modified DH 順・逆運動学 (解析解 + 数値フォールバック)",
         "matplotlib 3D ビューポート",
@@ -39,10 +46,9 @@ def show_changelog(parent):
     """Show changelog dialog."""
     win = tk.Toplevel(parent)
     win.title(f"バージョン情報 / Changelog — v{APP_VERSION}")
-    win.geometry("700x520")
+    win.geometry("720x540")
     win.configure(bg="#1A1A1A")
 
-    # Header
     hdr = tk.Label(
         win,
         text=f"FANUC LR Mate 200iD/14L  刃付けシミュレータ  v{APP_VERSION}",
@@ -57,7 +63,6 @@ def show_changelog(parent):
 
     ttk.Separator(win).pack(fill=tk.X, padx=12, pady=8)
 
-    # Scrollable text area
     frame = tk.Frame(win, bg="#1A1A1A")
     frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
     sb = tk.Scrollbar(frame)
@@ -70,8 +75,8 @@ def show_changelog(parent):
     txt.pack(fill=tk.BOTH, expand=True)
     sb.config(command=txt.yview)
 
-    for ver, date, items in CHANGELOG:
-        txt.insert(tk.END, f"v{ver}  ({date})\n", "ver")
+    for ver, date, time_, items in CHANGELOG:
+        txt.insert(tk.END, f"v{ver}  {date}  {time_}\n", "ver")
         for item in items:
             txt.insert(tk.END, f"  • {item}\n", "item")
         txt.insert(tk.END, "\n")

@@ -358,8 +358,8 @@ class MainWindow:
         )
         txt.pack(fill=tk.X, padx=4, pady=4)
 
-        for ver, date, items in CHANGELOG:
-            txt.insert(tk.END, f"v{ver}  {date}\n", "ver")
+        for ver, date, time_, items in CHANGELOG:
+            txt.insert(tk.END, f"v{ver}  {date}  {time_}\n", "ver")
             for item in items:
                 txt.insert(tk.END, f" • {item}\n", "item")
             txt.insert(tk.END, "\n")
