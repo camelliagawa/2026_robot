@@ -90,10 +90,17 @@ def _sphere(ax, center, radius: float, color: str,
 def _disk(ax, center, normal, radius: float, color: str,
           alpha: float = 1.0, n: int = 16):
     """Draw a filled disk (end cap)."""
-    c = np.asarray(center, float)
-    nv = np.asarray(normal, float); nv /= np.linalg.norm(nv)
+    c  = np.asarray(center, float)
+    nv = np.asarray(normal, float)
+    ln = np.linalg.norm(nv)
+    if ln < 1e-6:
+        return
+    nv /= ln
     ref = [1, 0, 0] if abs(nv[0]) < 0.9 else [0, 1, 0]
-    e1  = np.cross(nv, ref); e1 /= np.linalg.norm(e1)
+    e1  = np.cross(nv, ref)
+    if np.linalg.norm(e1) < 1e-6:
+        return
+    e1 /= np.linalg.norm(e1)
     e2  = np.cross(nv, e1)
     theta = np.linspace(0, 2 * np.pi, n)
     verts = [c + radius * (np.cos(t) * e1 + np.sin(t) * e2) for t in theta]
