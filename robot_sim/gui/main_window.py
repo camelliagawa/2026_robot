@@ -184,6 +184,7 @@ class MainWindow:
             on_select=self._on_waypoint_selected,
         )
         self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self._build_changelog_panel(right_frame)
 
     # ------------------------------------------------------------------
     # Joint sliders + Speed Override + UTool/UFrame
@@ -342,6 +343,34 @@ class MainWindow:
         self._fk_display_var = tk.StringVar()
         ttk.Label(fk_frame, textvariable=self._fk_display_var,
                   font=("Courier", 8), foreground="#88CCFF").pack(anchor="w", padx=4)
+
+    def _build_changelog_panel(self, parent):
+        """Compact changelog panel shown in the right sidebar."""
+        from .changelog import CHANGELOG
+        frame = ttk.LabelFrame(parent, text=f"更新履歴  (Update History)  — v{APP_VERSION}")
+        frame.pack(fill=tk.X, padx=4, pady=(0, 4))
+
+        txt = tk.Text(
+            frame, height=7, bg="#111111", fg="#AAAAAA",
+            font=("Courier", 8), wrap=tk.WORD,
+            borderwidth=0, highlightthickness=0, state="normal",
+            cursor="arrow",
+        )
+        txt.pack(fill=tk.X, padx=4, pady=4)
+
+        for ver, date, items in CHANGELOG:
+            txt.insert(tk.END, f"v{ver}  {date}\n", "ver")
+            for item in items:
+                txt.insert(tk.END, f" • {item}\n", "item")
+            txt.insert(tk.END, "\n")
+
+        txt.tag_config("ver", foreground="#F5C400", font=("Courier", 8, "bold"))
+        txt.tag_config("item", foreground="#CCCCCC")
+        txt.config(state="disabled")
+
+        ttk.Button(frame, text="詳細を見る...",
+                   command=lambda: show_changelog(self.root),
+                   width=14).pack(anchor="e", padx=4, pady=(0, 4))
 
     def _build_status_bar(self):
         self._status_var = tk.StringVar(value=f"Ready  /  準備完了   [v{APP_VERSION}]")
