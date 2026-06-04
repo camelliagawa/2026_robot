@@ -209,38 +209,40 @@ class Route:
         """
         route = cls(name="KNIFE_SHARPEN", comment="Knife sharpening demo route")
 
-        # Home approach
+        # Coordinate convention: X=forward, Y=lateral(left+), Z=height(up)
+        # Whetstone is placed ~400mm forward, ~250mm height from base
+
+        # Home approach (above stone)
         route.add_waypoint(Waypoint(
-            x=300, y=0, z=450, rx=180, ry=0, rz=0,
+            x=400, y=0, z=350, rx=180, ry=0, rz=0,
             speed=30, motion_type=MotionType.JOINT, label="Home"
         ))
 
-        # Approach stone
+        # Approach stone surface
         route.add_waypoint(Waypoint(
-            x=300, y=-100, z=300, rx=180, ry=15, rz=0,
+            x=400, y=-80, z=250, rx=180, ry=15, rz=0,
             speed=50, motion_type=MotionType.LINEAR, label="Approach"
         ))
 
-        # Sharpening strokes (forward)
-        stroke_positions = [
-            (-100, 280), (-50, 280), (0, 280), (50, 280), (100, 280)
-        ]
-        for i, (y, z) in enumerate(stroke_positions):
+        # Sharpening strokes: sweep along Y-axis (side-to-side) at stone height
+        # Each stroke moves blade tip across the stone surface
+        stroke_y = [-80, -40, 0, 40, 80]
+        for i, sy in enumerate(stroke_y):
             route.add_waypoint(Waypoint(
-                x=300, y=y, z=z, rx=180, ry=15, rz=0,
-                speed=30, motion_type=MotionType.LINEAR, label=f"Stroke_fwd_{i}"
+                x=400, y=sy, z=250, rx=180, ry=15, rz=0,
+                speed=30, motion_type=MotionType.LINEAR, label=f"Fwd_{i+1}"
             ))
 
-        # Sharpening strokes (backward)
-        for i, (y, z) in enumerate(reversed(stroke_positions)):
+        # Return strokes (reverse direction)
+        for i, sy in enumerate(reversed(stroke_y)):
             route.add_waypoint(Waypoint(
-                x=300, y=y, z=z, rx=180, ry=15, rz=0,
-                speed=30, motion_type=MotionType.LINEAR, label=f"Stroke_bwd_{i}"
+                x=400, y=sy, z=250, rx=180, ry=15, rz=0,
+                speed=30, motion_type=MotionType.LINEAR, label=f"Bwd_{i+1}"
             ))
 
-        # Retract
+        # Retract above stone
         route.add_waypoint(Waypoint(
-            x=300, y=0, z=450, rx=180, ry=0, rz=0,
+            x=400, y=0, z=350, rx=180, ry=0, rz=0,
             speed=50, motion_type=MotionType.LINEAR, label="Retract"
         ))
 

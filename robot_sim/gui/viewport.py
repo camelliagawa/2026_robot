@@ -58,6 +58,12 @@ class Viewport3D:
         self._selected_wp_idx: Optional[int] = None
         self._joint_angles = np.zeros(6)
 
+        # Zoom state (1.0 = default view, smaller = zoomed in)
+        self._zoom_scale: float = 1.0
+        # View angle state
+        self._elev: float = 20.0
+        self._azim: float = -60.0
+
         # Create figure
         self.fig = plt.figure(figsize=(7, 6), facecolor="#1A1A1A")
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -73,6 +79,9 @@ class Viewport3D:
         toolbar_frame.pack(fill=tk.X)
         toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame)
         toolbar.update()
+
+        # Mouse wheel zoom
+        self.canvas.mpl_connect("scroll_event", self._on_scroll)
 
         # Initial draw
         self.update_robot(self._joint_angles)
@@ -104,10 +113,24 @@ class Viewport3D:
     # Drawing
     # ------------------------------------------------------------------
 
+    def _on_scroll(self, event):
+        """Zoom in/out with mouse wheel."""
+        if event.button == "up":
+            self._zoom_scale *= 0.85
+        elif event.button == "down":
+            self._zoom_scale *= 1.18
+        self._zoom_scale = float(np.clip(self._zoom_scale, 0.05, 5.0))
+        self._redraw()
+
     def _redraw(self):
-        """Clear and redraw everything."""
+        """Clear and redraw everything, preserving current view angle."""
+        # Preserve view angle set by the user via mouse drag
+        self._elev = float(self.ax.elev)
+        self._azim = float(self.ax.azim)
+
         self.ax.cla()
         self._setup_axes()
+        self.ax.view_init(elev=self._elev, azim=self._azim)
         self._draw_workspace_sphere()
         self._draw_robot(self._joint_angles)
         self._draw_route()
@@ -118,10 +141,10 @@ class Viewport3D:
         ax = self.ax
         ax.set_facecolor("#1A1A1A")
 
-        lim = 700
+        lim = 900 * self._zoom_scale
         ax.set_xlim(-lim, lim)
         ax.set_ylim(-lim, lim)
-        ax.set_zlim(0, lim * 1.5)
+        ax.set_zlim(0, lim * 1.6)
 
         ax.set_xlabel("X (mm)", color="white", fontsize=8)
         ax.set_ylabel("Y (mm)", color="white", fontsize=8)
@@ -135,61 +158,80 @@ class Viewport3D:
         ax.zaxis.pane.set_edgecolor("#333333")
         ax.grid(True, alpha=GRID_ALPHA, color="#555555")
 
-        # Base platform
+        # Base platform disc
         theta = np.linspace(0, 2 * np.pi, 30)
-        r = 80
+        r = 120
         ax.plot(
             r * np.cos(theta), r * np.sin(theta), np.zeros(30),
-            color="#555555", lw=1.5, alpha=0.5
+            color="#666666", lw=2.0, alpha=0.6
         )
+        # Ground plane grid lines
+        for gv in np.linspace(-lim, lim, 9):
+            ax.plot([gv, gv], [-lim, lim], [0, 0], color="#2A2A2A", lw=0.5, alpha=0.4)
+            ax.plot([-lim, lim], [gv, gv], [0, 0], color="#2A2A2A", lw=0.5, alpha=0.4)
 
     def _draw_workspace_sphere(self):
-        """Draw a translucent sphere indicating approximate workspace."""
-        # Just draw a circle at reach radius in XY plane
-        reach = 911
-        theta = np.linspace(0, 2 * np.pi, 60)
-        # Horizontal circle at mid-height
+        """Draw dashed circles indicating approximate workspace boundary."""
+        reach = 911  # mm, max reach of LR Mate 200iD/14L
+        theta = np.linspace(0, 2 * np.pi, 72)
+        base_z = 330  # base height
+
+        # Horizontal circle at shoulder height
         self.ax.plot(
             reach * np.cos(theta), reach * np.sin(theta),
-            np.full(60, 330),
-            color="#334455", lw=0.8, alpha=0.3, linestyle="--"
+            np.full(72, base_z),
+            color="#334466", lw=0.8, alpha=0.35, linestyle="--"
+        )
+        # Vertical cross-section circle (XZ plane)
+        self.ax.plot(
+            reach * np.cos(theta), np.zeros(72),
+            base_z + reach * np.sin(theta),
+            color="#334466", lw=0.6, alpha=0.20, linestyle=":"
         )
 
     def _draw_robot(self, q: np.ndarray):
         """Draw robot links and joints."""
         positions = self.kin.get_joint_positions(q)  # (7, 3)
 
-        # Link segments
         xs = positions[:, 0]
         ys = positions[:, 1]
         zs = positions[:, 2]
 
-        # Draw links
+        # Shadow on ground plane (Z=0)
+        self.ax.plot(xs, ys, np.zeros_like(zs),
+                     color="#333333", lw=2, alpha=0.4, linestyle="-")
+
+        # Link segments — draw as thick yellow line (FANUC color)
         self.ax.plot(xs, ys, zs,
-                     color=ROBOT_COLOR, lw=4, solid_capstyle="round",
+                     color=ROBOT_COLOR, lw=5, solid_capstyle="round",
                      zorder=5)
 
-        # Draw joint markers
+        # Joint markers
+        joint_labels = ["Base", "J1", "J2", "J3", "J4", "J5", "J6"]
         for i, (x, y, z) in enumerate(positions):
-            color = ROBOT_JOINT_COLOR if i > 0 else "#888888"
-            size = 60 if i == 0 else 40
+            if i == 0:
+                color, size = "#888888", 80   # base
+            elif i == 6:
+                color, size = "#FF8800", 60   # flange
+            else:
+                color, size = "#222222", 50
             self.ax.scatter([x], [y], [z], c=color, s=size, zorder=6, depthshade=False)
 
         # Draw knife at end-effector
         self._draw_knife(q)
 
-        # Draw EE frame axes
+        # EE coordinate frame (X=red, Y=green, Z=blue)
         T_ee = self.kin.forward(q)
         origin = T_ee[:3, 3]
         R = T_ee[:3, :3]
-        scale = 60
+        scale = 80
         for col, color in enumerate(["red", "green", "blue"]):
             axis = origin + scale * R[:, col]
             self.ax.plot(
                 [origin[0], axis[0]],
                 [origin[1], axis[1]],
                 [origin[2], axis[2]],
-                color=color, lw=1.5, alpha=0.8
+                color=color, lw=2.0, alpha=0.9
             )
 
     def _draw_knife(self, q: np.ndarray):

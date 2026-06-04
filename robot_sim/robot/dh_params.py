@@ -59,21 +59,24 @@ class DHParams:
         """
         Build DH parameter table for all 6 joints.
 
-        Modified DH parameters (a, alpha, d, theta_offset):
-          J1: a=75,   alpha=-90, d=330, offset=0
-          J2: a=450,  alpha=0,   d=0,   offset=-90
-          J3: a=75,   alpha=-90, d=0,   offset=0
-          J4: a=0,    alpha=90,  d=450, offset=0
-          J5: a=0,    alpha=-90, d=0,   offset=0
-          J6: a=0,    alpha=0,   d=80,  offset=0
+        Modified DH parameters — Z-up base frame convention.
+        At home (q=all zeros) the arm extends horizontally in +X.
+        (a_mm, alpha_deg, d_mm, theta_offset_deg)
+
+          J1: a=0,   alpha=0,    d=330, offset=0   base rotation (Z vertical)
+          J2: a=75,  alpha=-90,  d=0,   offset=0   shoulder
+          J3: a=450, alpha=0,    d=0,   offset=0   upper arm (14L long variant)
+          J4: a=75,  alpha=-90,  d=450, offset=0   forearm  (14L long variant)
+          J5: a=0,   alpha=90,   d=0,   offset=0   wrist pitch
+          J6: a=0,   alpha=-90,  d=80,  offset=0   wrist roll + flange
         """
         return [
-            DHJoint(a=75,   alpha=-90, d=330, theta_offset=0,   joint_min=-170, joint_max=170,  name="J1"),
-            DHJoint(a=450,  alpha=0,   d=0,   theta_offset=-90, joint_min=-85,  joint_max=145,  name="J2"),
-            DHJoint(a=75,   alpha=-90, d=0,   theta_offset=0,   joint_min=-175, joint_max=255,  name="J3"),
-            DHJoint(a=0,    alpha=90,  d=450, theta_offset=0,   joint_min=-190, joint_max=190,  name="J4"),
-            DHJoint(a=0,    alpha=-90, d=0,   theta_offset=0,   joint_min=-135, joint_max=135,  name="J5"),
-            DHJoint(a=0,    alpha=0,   d=80,  theta_offset=0,   joint_min=-360, joint_max=360,  name="J6"),
+            DHJoint(a=0,   alpha=0,   d=330, theta_offset=0, joint_min=-170, joint_max=170,  name="J1"),
+            DHJoint(a=75,  alpha=-90, d=0,   theta_offset=0, joint_min=-85,  joint_max=145,  name="J2"),
+            DHJoint(a=450, alpha=0,   d=0,   theta_offset=0, joint_min=-175, joint_max=255,  name="J3"),
+            DHJoint(a=75,  alpha=-90, d=450, theta_offset=0, joint_min=-190, joint_max=190,  name="J4"),
+            DHJoint(a=0,   alpha=90,  d=0,   theta_offset=0, joint_min=-135, joint_max=135,  name="J5"),
+            DHJoint(a=0,   alpha=-90, d=80,  theta_offset=0, joint_min=-360, joint_max=360,  name="J6"),
         ]
 
     @property
@@ -97,8 +100,9 @@ class DHParams:
         return np.zeros(6)
 
     def ready_position(self) -> np.ndarray:
-        """Return a 'ready' pose (upright, arm extended forward)."""
-        return np.deg2rad([0, -45, 45, 0, -90, 0])
+        """Return a 'ready' pose — arm raised diagonally, suitable for sharpening work."""
+        # J2=-45° (肩を上方45°), J3=+30° (肘を前方へ), J5=-60° (手首やや下向き)
+        return np.deg2rad([0, -45, 30, 0, -60, 0])
 
     def __repr__(self) -> str:
         lines = ["DHParams for FANUC LR Mate 200iD/14L", "-" * 50,
