@@ -120,10 +120,12 @@ class MainWindow:
 
         self._build_root()
         self._build_menu()
-        self._build_main_panels()
-        self._build_joint_sliders()
-        self._build_bottom_controls()
+        # Bottom panels must be packed BEFORE expand=True main panel
+        # so they always claim their space regardless of window height
         self._build_status_bar()
+        self._build_bottom_controls()
+        self._build_joint_sliders()
+        self._build_main_panels()
 
         self.viewport.set_route(self.route)
         self.viewport.set_tool_frame(self._active_tool)
@@ -556,7 +558,7 @@ class MainWindow:
 
     def _build_joint_sliders(self):
         outer = ttk.Frame(self.root)
-        outer.pack(fill=tk.X, padx=6, pady=(4, 0))
+        outer.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(4, 0))
 
         # ---- 関節スライダー（横向き・コンパクト） ----
         slider_lf = ttk.LabelFrame(outer, text="  関節角度 (Joint Angles)")
@@ -701,7 +703,7 @@ class MainWindow:
 
     def _build_bottom_controls(self):
         ctrl = ttk.Frame(self.root)
-        ctrl.pack(fill=tk.X, padx=6, pady=6)
+        ctrl.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=6)
 
         # ── ジョグ操作 ──────────────────────────────────────────────
         jog_lf = ttk.LabelFrame(ctrl, text="  ジョグ操作 (Jog)")
