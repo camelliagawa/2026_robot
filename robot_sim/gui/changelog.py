@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.12"
+APP_VERSION = "0.5.13"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.13", "2026-06-06", "01:05 JST", [
+        "コードレビュー: 不要コード削除・バグ修正",
+        "_angles_display_var（未使用変数）を削除",
+        "_clear_overlay・_apply_overlay_pose・_update_overlay_name（未使用メソッド）を削除",
+        "_load_sample_route/_auto_generate_route で route.comment/uframe/utool が未設定だったバグを修正",
+        "viewport.py: STLヘッダー長チェックを is None → len()<80 に修正（到達不能コードの解消）",
+    ]),
     ("0.5.12", "2026-06-06", "00:52 JST", [
         "ジョグボタンを▲▼（上下）から◀▶（左右）に変更（横スライダーに合わせた直感的な操作）",
     ]),

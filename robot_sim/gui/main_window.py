@@ -650,7 +650,6 @@ class MainWindow:
         speeds = self.kin.dh.get_joint_max_speeds()
         self._slider_vars = []
         self._fk_display_var  = tk.StringVar()
-        self._angles_display_var = tk.StringVar()
 
         joint_labels = ["J1\n(旋回)", "J2\n(肩)", "J3\n(肘)", "J4\n(前腕)", "J5\n(手首↑↓)", "J6\n(手首回転)"]
         cart_labels  = ["X\n(前後)", "Y\n(左右)", "Z\n(上下)", "Rx\n(ロール)", "Ry\n(ピッチ)", "Rz\n(ヨー)"]
@@ -1028,24 +1027,6 @@ class MainWindow:
         else:
             self._apply_csv_pose()
 
-    def _clear_overlay(self, kind: str = "all"):
-        if kind in ("stl", "all"):
-            self.viewport.clear_stl()
-            for v in self._stl_pose_vars:
-                v.set("0.0")
-        if kind in ("csv", "all"):
-            self.viewport.clear_csv()
-            for v in self._csv_pose_vars:
-                v.set("0.0")
-        self._set_status("✔  オーバーレイをクリアしました")
-
-    def _update_overlay_name(self, name: str):
-        pass  # 個別パネルにラベルなし（種別は STL/CSV で自明）
-
-    def _apply_overlay_pose(self):
-        self._apply_overlay("stl")
-        self._apply_overlay("csv")
-
     def _on_viewport_drop(self, event):
         raw = event.data.strip()
         # Windows: path may be wrapped in braces for paths with spaces
@@ -1058,14 +1039,12 @@ class MainWindow:
             ok = self.viewport.load_stl(path)
             if ok:
                 self._set_status(f"✔  STL 読込: {os.path.basename(path)}")
-                self._update_overlay_name(os.path.basename(path))
             else:
                 self._set_status("⚠  STL 読込失敗: numpy-stl が必要です (pip install numpy-stl)")
         elif ext == ".csv":
             ok = self.viewport.load_csv_points(path)
             if ok:
                 self._set_status(f"✔  CSV 読込: {os.path.basename(path)}")
-                self._update_overlay_name(os.path.basename(path))
             else:
                 self._set_status("⚠  CSV に有効な X,Y,Z 列がありません")
         else:
@@ -1483,6 +1462,9 @@ class MainWindow:
         sample = Route.default_sharpening_route()
         self.route.waypoints = sample.waypoints
         self.route.name      = sample.name
+        self.route.comment   = sample.comment
+        self.route.uframe    = self._active_uframe.number
+        self.route.utool     = self._active_tool.number
         self.route_editor.set_route(self.route)
         self.viewport.set_route(self.route)
         self.viewport.refresh()
@@ -1590,6 +1572,9 @@ class MainWindow:
                 new_route = generate_sharpening_route(p)
                 self.route.waypoints = new_route.waypoints
                 self.route.name      = new_route.name
+                self.route.comment   = new_route.comment
+                self.route.uframe    = p.uframe
+                self.route.utool     = p.utool
                 self.route_editor.set_route(self.route)
                 self.viewport.set_route(self.route)
                 self.viewport.refresh()

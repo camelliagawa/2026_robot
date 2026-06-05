@@ -18,7 +18,7 @@ def _load_stl_file(path: str) -> Optional[np.ndarray]:
     try:
         with open(path, "rb") as f:
             header = f.read(80)
-            if header is None:
+            if len(header) < 80:
                 return None
             # Try binary STL
             data = f.read(4)
