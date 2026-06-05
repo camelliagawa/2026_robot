@@ -2,10 +2,18 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.5", "2026-06-05", "18:30 JST", [
+        "ルートメニューに「🔪 研磨経路CSVを読み込む (kenma形式)」を追加",
+        "assets/kenma_route.csv を追加（HaL.LS/HaR.LSから変換した研磨経路サンプル）",
+        "FANUC LS エクスポート改善: UF/UT フレーム座標定義を LS 先頭に埋め込み可能に",
+        "UF9使用時: PR[9,1..6] 定義 + UFRAME[9]=PR[9] を自動出力（実機対応）",
+        "エクスポート時に「UF座標定義を埋め込む」確認ダイアログを追加",
+        "ワークフロー: CSV読込→シミュレーション→LSエクスポート→実機再現 が完結",
+    ]),
     ("0.4.4", "2026-06-05", "16:55 JST", [
         "STL 読み込みを numpy-stl 不要の純粋実装に変更（binary/ASCII 両対応）",
         "外部ライブラリなしで STL が確実に表示されるよう改善",

@@ -73,7 +73,9 @@ class TPExporter:
     def export(self, route: Route, file_path: str,
                utool: Optional[int] = None,
                uframe: Optional[int] = None,
-               speed_override: int = 100):
+               speed_override: int = 100,
+               uframe_pos: Optional[Tuple[float, ...]] = None,
+               utool_pos: Optional[Tuple[float, ...]] = None):
         """
         Export route to .ls file.
 
@@ -83,17 +85,28 @@ class TPExporter:
             utool          : Override UTool number (uses route.utool if None).
             uframe         : Override UFrame number (uses route.uframe if None).
             speed_override : Speed override percentage (1–100).
+            uframe_pos     : (x,y,z,w,p,r) to embed UFRAME PR definition.
+            utool_pos      : (x,y,z,w,p,r) to embed UTOOL PR definition.
         """
         content = self.generate(route, utool=utool, uframe=uframe,
-                                speed_override=speed_override)
+                                speed_override=speed_override,
+                                uframe_pos=uframe_pos, utool_pos=utool_pos)
         with open(file_path, "w", encoding="ascii", errors="replace") as f:
             f.write(content)
 
     def generate(self, route: Route,
                  utool: Optional[int] = None,
                  uframe: Optional[int] = None,
-                 speed_override: int = 100) -> str:
-        """Generate TP program as string."""
+                 speed_override: int = 100,
+                 uframe_pos: Optional[Tuple[float, ...]] = None,
+                 utool_pos: Optional[Tuple[float, ...]] = None) -> str:
+        """Generate TP program as string.
+
+        Args:
+            uframe_pos: (x,y,z,w,p,r) for UFRAME PR register setup. If provided,
+                        adds PR[n]=... and UFRAME[n]=PR[n] lines (like HaL.LS).
+            utool_pos:  (x,y,z,w,p,r) for UTOOL PR register setup.
+        """
         if not route.waypoints:
             raise ValueError("Route has no waypoints to export.")
 
@@ -114,7 +127,9 @@ class TPExporter:
         line_count = len(route.waypoints) + 2  # +2 for UFRAME/UTOOL lines
 
         mn_lines = self._build_mn_section(route, joint_angles,
-                                          speed_override=speed_override)
+                                          speed_override=speed_override,
+                                          uframe_pos=uframe_pos,
+                                          utool_pos=utool_pos)
         pos_section = self._build_pos_section(route, joint_angles)
 
         lines = []
@@ -183,16 +198,37 @@ class TPExporter:
     def _build_mn_section(
         self, route: Route, joint_angles: List[Optional[np.ndarray]],
         speed_override: int = 100,
+        uframe_pos: Optional[Tuple[float, ...]] = None,
+        utool_pos: Optional[Tuple[float, ...]] = None,
     ) -> List[str]:
         """Build the /MN motion instruction lines."""
         lines = []
         line_num = 1
+        uf = route.uframe
+        ut = route.utool
 
-        # Standard FANUC program header lines
-        lines.append(f"{line_num:4d}:  UFRAME_NUM={route.uframe} ;")
+        # UFrame PR register setup (like HaL.LS PR[9,1..6] = ...; UFRAME[9]=PR[9])
+        if uframe_pos and len(uframe_pos) >= 6:
+            labels = ["1", "2", "3", "4", "5", "6"]
+            for i, val in enumerate(uframe_pos[:6]):
+                lines.append(f"{line_num:4d}:  PR[{uf},{labels[i]}]={val:.3f} ;")
+                line_num += 1
+            lines.append(f"{line_num:4d}:  UFRAME[{uf}]=PR[{uf}] ;")
+            line_num += 1
+        lines.append(f"{line_num:4d}:  UFRAME_NUM={uf} ;")
         line_num += 1
-        lines.append(f"{line_num:4d}:  UTOOL_NUM={route.utool} ;")
+
+        # UTool PR register setup
+        if utool_pos and len(utool_pos) >= 6:
+            labels = ["1", "2", "3", "4", "5", "6"]
+            for i, val in enumerate(utool_pos[:6]):
+                lines.append(f"{line_num:4d}:  PR[{ut},{labels[i]}]={val:.3f} ;")
+                line_num += 1
+            lines.append(f"{line_num:4d}:  UTOOL[{ut}]=PR[{ut}] ;")
+            line_num += 1
+        lines.append(f"{line_num:4d}:  UTOOL_NUM={ut} ;")
         line_num += 1
+
         lines.append(f"{line_num:4d}:  OVERRIDE={speed_override}% ;")
         line_num += 1
 

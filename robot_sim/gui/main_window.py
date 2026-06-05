@@ -255,13 +255,14 @@ class MainWindow:
 
         # ルート
         r = menu("  ルート (Route)  ")
-        r.add_command(label="  📋  サンプルルートを読み込む", command=self._load_sample_route)
-        r.add_command(label="  ⚙   刃付けルートを自動生成...", command=self._auto_generate_route)
-        r.add_command(label="  🗑   ルートをクリア",           command=self._clear_route)
+        r.add_command(label="  🔪  研磨経路CSVを読み込む (kenma形式)", command=self._load_kenma_route)
+        r.add_command(label="  📋  基本サンプルルートを読み込む",       command=self._load_sample_route)
+        r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
+        r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
-        r.add_command(label="  🪨  Tormek T8 砥石を読み込む", command=self._load_tormek_sample)
+        r.add_command(label="  🪨  Tormek T8 砥石を3D表示",            command=self._load_tormek_sample)
         r.add_separator()
-        r.add_command(label="  ▶   シミュレーション実行      F5", command=self._start_simulation)
+        r.add_command(label="  ▶   シミュレーション実行      F5",       command=self._start_simulation)
 
         # ロボット
         rb = menu("  ロボット (Robot)  ")
@@ -1166,6 +1167,28 @@ class MainWindow:
         if not self.route.waypoints:
             messagebox.showwarning("経路点なし", "経路点が1つもありません。\nまず経路点を追加してください。")
             return
+
+        # UF/UT frame setup dialog for kenma routes
+        uframe_num = self.route.uframe or self._active_uframe.number
+        utool_num  = self.route.utool  or self._active_tool.number
+
+        # If route uses UF9 (kenma), offer to embed frame definitions
+        uframe_pos = None
+        utool_pos  = None
+        if uframe_num == 9:
+            ans = messagebox.askyesno(
+                "FANUC LS エクスポート",
+                f"UFrame={uframe_num} / UTool={utool_num} を使用します。\n\n"
+                "「はい」: UF9/UT9 の座標定義を LS ファイル先頭に追加\n"
+                "　　　　　（実機ロボットで正しく動くように）\n\n"
+                "「いいえ」: UFRAME_NUM/UTOOL_NUM の設定のみ出力",
+                icon="question")
+            if ans:
+                # UF9: X=550,Y=-10,Z=300(table),W=0,P=0,R=90
+                uframe_pos = (550.0, -10.0, 300.0, 0.0, 0.0, 90.0)
+                # UT9: X=0,Y=0,Z=150,W=-90,P=0,R=90
+                utool_pos  = (0.0, 0.0, 150.0, -90.0, 0.0, 90.0)
+
         path = filedialog.asksaveasfilename(
             title="FANUC TP プログラムをエクスポート", defaultextension=".ls",
             filetypes=[("FANUC TP", "*.ls"), ("All files", "*.*")],
@@ -1177,9 +1200,11 @@ class MainWindow:
         try:
             exporter = TPExporter(self.kin)
             exporter.export(self.route, path,
-                            utool=self._active_tool.number,
-                            uframe=self._active_uframe.number,
-                            speed_override=self._speed_override.get())
+                            utool=utool_num,
+                            uframe=uframe_num,
+                            speed_override=self._speed_override.get(),
+                            uframe_pos=uframe_pos,
+                            utool_pos=utool_pos)
             self._set_status(f"✔  TP 出力完了: {os.path.basename(path)}")
             with open(path) as f:
                 content = f.read()
@@ -1375,6 +1400,41 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
     # Route operations
     # ──────────────────────────────────────────────────────────────────
+
+    def _load_kenma_route(self):
+        """研磨経路CSV（kenma形式）を読み込む。"""
+        assets = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+        default = os.path.join(assets, "kenma_route.csv")
+        path = filedialog.askopenfilename(
+            title="研磨経路CSV を開く（kenma形式）",
+            initialdir=assets if os.path.exists(assets) else ".",
+            initialfile="kenma_route.csv",
+            filetypes=[("Kenma route CSV", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            loaded = RouteCSVIO.route_from_csv(path)
+            if not loaded.waypoints:
+                messagebox.showwarning("経路点なし",
+                    "CSVに有効な経路点が見つかりませんでした。\n"
+                    "ヘッダー行: x_mm,y_mm,z_mm,rx_deg,ry_deg,rz_deg,speed_mmps,motion_type,label")
+                return
+            self.route.waypoints = loaded.waypoints
+            self.route.name      = loaded.name or os.path.splitext(os.path.basename(path))[0]
+            self.route.comment   = loaded.comment or "Knife sharpening route"
+            if loaded.uframe:
+                self.route.uframe = loaded.uframe
+            if loaded.utool:
+                self.route.utool = loaded.utool
+            self.route_editor.set_route(self.route)
+            self.viewport.set_route(self.route)
+            self.viewport.refresh()
+            self._set_status(
+                f"✔  研磨経路読込完了: {len(self.route)} 点 "
+                f"(UF{self.route.uframe}/UT{self.route.utool}) ← {os.path.basename(path)}"
+            )
+        except Exception as e:
+            messagebox.showerror("読込エラー", f"研磨経路CSV の読込に失敗しました:\n{e}")
 
     def _load_sample_route(self):
         sample = Route.default_sharpening_route()
