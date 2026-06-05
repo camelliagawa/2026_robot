@@ -13,6 +13,7 @@ CHANGELOG = [
         "Ctrl+ホイール=10mm, Shift+ホイール=0.1mm, 通常=1mm",
         "STL・CSV それぞれに独立したクリアボタンを追加",
         "CSV 点群の表示色をオレンジ (#FF9944) に変更（STL青と区別）",
+        "Tormek T8 読込時に STL をバウンディングボックス中心が原点に来るよう自動センタリング",
     ]),
     ("0.4.0", "2026-06-05", "16:30 JST", [
         "assets/ フォルダを追加: Tormek_T8.stl・grinding_path_sample.csv を同梱",

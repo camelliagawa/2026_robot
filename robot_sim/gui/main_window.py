@@ -1393,7 +1393,13 @@ class MainWindow:
         if os.path.exists(stl_path):
             ok = self.viewport.load_stl(stl_path)
             if ok:
-                self._update_overlay_name("Tormek_T8.stl")
+                # STL をバウンディングボックス中心が原点に来るよう自動センタリング
+                ctr = self.viewport.stl_bbox_center()
+                if ctr:
+                    ix, iy, iz = -ctr[0], -ctr[1], -ctr[2]
+                    self.viewport.set_stl_pose(ix, iy, iz, 0, 0, 0)
+                    for var, val in zip(self._stl_pose_vars[:3], [ix, iy, iz]):
+                        var.set(f"{val:.2f}")
                 msgs.append("STL 読込済")
             else:
                 msgs.append("STL 読込失敗 (numpy-stl が必要)")

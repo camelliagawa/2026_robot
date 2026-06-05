@@ -530,6 +530,13 @@ class Viewport3D:
             return True
         return False
 
+    def stl_bbox_center(self):
+        """Return (cx, cy, cz) of STL bounding box, or None if not loaded."""
+        if self._stl_verts is None:
+            return None
+        v = self._stl_verts.reshape(-1, 3)
+        return (v[:, 0].mean(), v[:, 1].mean(), v[:, 2].mean())
+
     def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
