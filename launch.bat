@@ -3,7 +3,7 @@ title Blade Sharpening Robot Simulator
 cd /d "%~dp0"
 
 echo Checking for latest version...
-git pull origin claude/zen-ptolemy-tUCsq
+git pull origin claude/serene-goldberg-FoQz2
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [WARNING] Failed to fetch updates. You may be offline.
