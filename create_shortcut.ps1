@@ -23,5 +23,5 @@ if ($PythonExe) {
 
 $Lnk.Save()
 
-Write-Host "ショートカットを作成しました:" -ForegroundColor Green
+Write-Host "Shortcut created successfully:" -ForegroundColor Green
 Write-Host "  $Shortcut" -ForegroundColor Cyan
