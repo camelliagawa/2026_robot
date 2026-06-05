@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.2", "2026-06-05", "22:36 JST", [
+        "更新履歴を右パネル下部に常時フル表示（スクロール付き・折りたたみなし）",
+        "ポップアップと同じ書式（バージョン・日付・時刻・詳細）で常時確認可能",
+    ]),
     ("0.5.1", "2026-06-05", "21:10 JST", [
         "PanedWindowを廃止し、全パネルが常時表示される固定レイアウトに変更",
         "ウェイポイントリストを7行固定（スクロール可）でコンパクト化",
