@@ -194,6 +194,9 @@ class Viewport3D:
         self._overlay_name: str = ""
         self._overlay_T: np.ndarray = np.eye(4)
 
+        self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
+        self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
+
         self.fig = plt.figure(facecolor="#161B22")
         self.fig.subplots_adjust(left=-0.08, right=1.08, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -264,6 +267,7 @@ class Viewport3D:
         self._draw_user_frame()
         self._draw_robot(self._joint_angles)
         self._draw_overlay()
+        self._draw_markers()
         self._draw_route()
         self._draw_jog_target()
         self.canvas.draw_idle()
@@ -559,6 +563,36 @@ class Viewport3D:
             ctr = pts.mean(axis=0)
             self.ax.text(ctr[0], ctr[1], ctr[2],
                          self._overlay_name, color="#99BBFF", fontsize=6)
+
+    # ── Markers ────────────────────────────────────────────────────────
+
+    def set_markers(self, tcp_markers: list, target_markers: list):
+        """Replace all TCP/target markers. Each item: {"name": str, "pos": array-like}."""
+        self._tcp_markers = [
+            {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in tcp_markers
+        ]
+        self._target_markers = [
+            {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in target_markers
+        ]
+        self._redraw()
+
+    def _draw_markers(self):
+        for m in self._tcp_markers:
+            x, y, z = m["pos"]
+            self.ax.scatter([x], [y], [z], c="#00FFCC", s=200, zorder=8,
+                            depthshade=False, marker="*")
+            self.ax.text(x + 14, y + 14, z + 14,
+                         f"[TCP] {m['name']}", color="#00FFCC", fontsize=7, fontweight="bold")
+        for m in self._target_markers:
+            x, y, z = m["pos"]
+            self.ax.scatter([x], [y], [z], c="#FF8800", s=280, zorder=8,
+                            depthshade=False, marker="o", alpha=0.25)
+            self.ax.scatter([x], [y], [z], c="#FF8800", s=70, zorder=9,
+                            depthshade=False, marker="+")
+            self.ax.scatter([x], [y], [z], c="#FF8800", s=30, zorder=9,
+                            depthshade=False, marker="o")
+            self.ax.text(x + 14, y + 14, z + 14,
+                         f"[TGT] {m['name']}", color="#FF8800", fontsize=7, fontweight="bold")
 
     # ── Cleanup ────────────────────────────────────────────────────────
 

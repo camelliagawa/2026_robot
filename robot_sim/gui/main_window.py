@@ -300,6 +300,8 @@ class MainWindow:
         right = ttk.Frame(pane)
         pane.add(right, weight=2)
 
+        self._build_markers_panel(right)
+
         route_lf = ttk.LabelFrame(right,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
         route_lf.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
@@ -315,6 +317,162 @@ class MainWindow:
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
             self.viewport.canvas_widget.dnd_bind("<<Drop>>", self._on_viewport_drop)
+
+    # ──────────────────────────────────────────────────────────────────
+    # TCP・ターゲットマーカー管理パネル
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_markers_panel(self, parent):
+        self._mk_list: list = []   # [{"type":"tcp"|"target","name":str,"pos":[x,y,z]}]
+        self._mk_tcp_count = 0
+        self._mk_tgt_count = 0
+
+        lf = ttk.LabelFrame(parent, text="  TCP・ターゲット管理 (Markers)")
+        lf.pack(fill=tk.X, padx=4, pady=(4, 2))
+        _tip(lf,
+             "TCP マーカーとターゲット🎯を自由に追加・削除・位置調整できます。\n"
+             "「+ TCP」: 現在のロボットTCP位置にTCPマーカーを追加\n"
+             "「+ 🎯」: 現在のTCP位置にターゲットを追加\n"
+             "リストから選択 → X/Y/Z を編集 → 「適用」で位置を更新\n"
+             "「現在TCP→」: 現在のロボットTCP座標を入力欄にセット")
+
+        # リストボックス
+        lb_frame = ttk.Frame(lf)
+        lb_frame.pack(fill=tk.X, padx=6, pady=(4, 0))
+        sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._mk_listbox = tk.Listbox(
+            lb_frame, height=4, yscrollcommand=sb.set,
+            bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 8),
+            selectbackground=BTN_PRIMARY, selectforeground="white",
+            borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
+            activestyle="none",
+        )
+        self._mk_listbox.pack(fill=tk.X)
+        sb.config(command=self._mk_listbox.yview)
+        self._mk_listbox.bind("<<ListboxSelect>>", self._on_mk_select)
+
+        # ボタン行（追加・削除）
+        btn_row = ttk.Frame(lf)
+        btn_row.pack(fill=tk.X, padx=6, pady=(3, 0))
+        ttk.Button(btn_row, text="+ TCP",
+                   command=self._mk_add_tcp).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="+ 🎯",
+                   command=self._mk_add_target).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="削除",
+                   command=self._mk_delete).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="現在TCP→", style="Primary.TButton",
+                   command=self._mk_use_current_tcp).pack(side=tk.RIGHT, padx=2)
+
+        # 位置入力行（X/Y/Z）
+        pos_row = ttk.Frame(lf)
+        pos_row.pack(fill=tk.X, padx=6, pady=(3, 5))
+        self._mk_pos_vars = []
+        for lbl in ["X", "Y", "Z"]:
+            tk.Label(pos_row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=2).pack(side=tk.LEFT)
+            v = tk.StringVar(value="0.0")
+            self._mk_pos_vars.append(v)
+            ttk.Entry(pos_row, textvariable=v, width=7).pack(side=tk.LEFT, padx=(0, 3))
+        ttk.Button(pos_row, text="適用", style="Primary.TButton",
+                   command=self._mk_apply_pos).pack(side=tk.LEFT, padx=2)
+
+    def _mk_add_tcp(self):
+        self._mk_tcp_count += 1
+        pos = self._mk_current_tcp_pos()
+        name = f"TCP-{self._mk_tcp_count}"
+        self._mk_list.append({"type": "tcp", "name": name, "pos": list(pos)})
+        self._mk_refresh_listbox(select_last=True)
+        self._mk_sync_viewport()
+        self._set_status(f"✔  TCPマーカー追加: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
+
+    def _mk_add_target(self):
+        self._mk_tgt_count += 1
+        pos = self._mk_current_tcp_pos()
+        name = f"Target-{self._mk_tgt_count}"
+        self._mk_list.append({"type": "target", "name": name, "pos": list(pos)})
+        self._mk_refresh_listbox(select_last=True)
+        self._mk_sync_viewport()
+        self._set_status(f"✔  ターゲット追加: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
+
+    def _mk_delete(self):
+        sel = self._mk_listbox.curselection()
+        if not sel:
+            self._set_status("⚠  削除するマーカーをリストから選択してください")
+            return
+        idx = sel[0]
+        name = self._mk_list[idx]["name"]
+        del self._mk_list[idx]
+        self._mk_refresh_listbox()
+        self._mk_sync_viewport()
+        self._set_status(f"✔  マーカー削除: {name}")
+
+    def _mk_apply_pos(self):
+        sel = self._mk_listbox.curselection()
+        if not sel:
+            self._set_status("⚠  リストからマーカーを選択してください")
+            return
+        try:
+            pos = [float(v.get()) for v in self._mk_pos_vars]
+        except ValueError:
+            self._set_status("⚠  数値を入力してください")
+            return
+        idx = sel[0]
+        self._mk_list[idx]["pos"] = pos
+        self._mk_refresh_listbox(select_idx=idx)
+        self._mk_sync_viewport()
+        name = self._mk_list[idx]["name"]
+        self._set_status(f"✔  マーカー位置更新: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
+
+    def _mk_use_current_tcp(self):
+        pos = self._mk_current_tcp_pos()
+        for i, v in enumerate(self._mk_pos_vars):
+            v.set(f"{pos[i]:.1f}")
+        sel = self._mk_listbox.curselection()
+        if sel:
+            self._mk_apply_pos()
+        else:
+            self._set_status(f"✔  現在TCP位置: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+
+    def _on_mk_select(self, event=None):
+        sel = self._mk_listbox.curselection()
+        if not sel:
+            return
+        pos = self._mk_list[sel[0]]["pos"]
+        for i, v in enumerate(self._mk_pos_vars):
+            v.set(f"{pos[i]:.1f}")
+
+    def _mk_current_tcp_pos(self) -> np.ndarray:
+        T = self.kin.forward(self._joint_angles)
+        if self._active_tool and self._active_tool.z != 0.0:
+            T = T @ self._active_tool.to_transform()
+        return T[:3, 3]
+
+    def _mk_refresh_listbox(self, select_last: bool = False, select_idx: Optional[int] = None):
+        self._mk_listbox.delete(0, tk.END)
+        for m in self._mk_list:
+            p = m["pos"]
+            prefix = "TCP" if m["type"] == "tcp" else "🎯 "
+            entry = f"{prefix}  {m['name']:10s}  ({p[0]:7.1f}, {p[1]:7.1f}, {p[2]:7.1f})"
+            self._mk_listbox.insert(tk.END, entry)
+            color = "#00FFCC" if m["type"] == "tcp" else "#FF8800"
+            self._mk_listbox.itemconfig(tk.END, fg=color)
+        if select_last and self._mk_listbox.size() > 0:
+            self._mk_listbox.selection_set(tk.END)
+            self._mk_listbox.see(tk.END)
+        elif select_idx is not None and 0 <= select_idx < self._mk_listbox.size():
+            self._mk_listbox.selection_set(select_idx)
+
+    def _mk_sync_viewport(self):
+        tcp_markers = [
+            {"name": m["name"], "pos": m["pos"]}
+            for m in self._mk_list if m["type"] == "tcp"
+        ]
+        target_markers = [
+            {"name": m["name"], "pos": m["pos"]}
+            for m in self._mk_list if m["type"] == "target"
+        ]
+        self.viewport.set_markers(tcp_markers, target_markers)
 
     # ──────────────────────────────────────────────────────────────────
     # 更新履歴パネル（右サイドバー下部）
