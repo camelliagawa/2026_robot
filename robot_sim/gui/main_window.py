@@ -518,15 +518,23 @@ class MainWindow:
             text=f"  更新履歴 (Update History) — 最新: v{APP_VERSION}")
         frame.pack(fill=tk.X, padx=4, pady=(0, 4))
 
+        txt_frame = ttk.Frame(frame)
+        txt_frame.pack(fill=tk.X, padx=6, pady=(4, 2))
+
+        sb = tk.Scrollbar(txt_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
         txt = tk.Text(
-            frame, height=7,
+            txt_frame, height=9,
             bg="#0D1117", fg=FG_SUB,
             font=("Consolas", 8),
             wrap=tk.WORD, borderwidth=0,
             highlightthickness=0, state="normal",
             cursor="arrow", selectbackground=BTN_PRIMARY,
+            yscrollcommand=sb.set,
         )
-        txt.pack(fill=tk.X, padx=6, pady=(4, 2))
+        txt.pack(fill=tk.X, side=tk.LEFT, expand=True)
+        sb.config(command=txt.yview)
 
         for ver, date, time_, items in CHANGELOG:
             txt.insert(tk.END, f"▶ v{ver}  {date}  {time_}\n", "ver")
@@ -538,7 +546,7 @@ class MainWindow:
         txt.tag_config("item", foreground="#ADBAC7")
         txt.config(state="disabled")
 
-        ttk.Button(frame, text="詳細を見る (Full Changelog)...",
+        ttk.Button(frame, text="全履歴を表示 (Full Changelog)...",
                    command=lambda: show_changelog(self.root)
                    ).pack(anchor="e", padx=6, pady=(0, 6))
 

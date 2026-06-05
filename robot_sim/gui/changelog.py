@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.7"
+APP_VERSION = "0.4.8"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.8", "2026-06-05", "20:15 JST", [
+        "更新履歴パネルにスクロールバーを追加（全履歴が確認可能に）",
+        "表示行数を9行に拡大し、詳細・時刻が常に見えるよう改善",
+    ]),
     ("0.4.7", "2026-06-05", "20:11 JST", [
         "オーバーレイ位置パネル（🪨 STL/CSV移動ボタン）を右パネルに移動（常時表示）",
         "画面サイズに関わらず砥石・CSVの位置調整が常に見えるように改善",
