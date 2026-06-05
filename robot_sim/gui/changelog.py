@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.5"
+APP_VERSION = "0.5.6"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.6", "2026-06-05", "23:40 JST", [
+        "ファイルI/O・シミュレーション・逆運動学(IK)を下部バーから関節ジョグパネル中間列に移動",
+        "下部コントロールバーを廃止し、3Dビューポートの縦方向スペースを拡大",
+    ]),
     ("0.5.5", "2026-06-05", "23:25 JST", [
         "3Dビューポートの左右余白をさらに削減（subplots_adjust left=-0.18, right=1.18）",
         "ビューポート左側の黒い空白を最小化",

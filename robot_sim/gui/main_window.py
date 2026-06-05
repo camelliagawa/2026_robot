@@ -123,7 +123,6 @@ class MainWindow:
         # Bottom panels must be packed BEFORE expand=True main panel
         # so they always claim their space regardless of window height
         self._build_status_bar()
-        self._build_bottom_controls()
         self._build_joint_jog_panel()
         self._build_main_panels()
 
@@ -679,9 +678,86 @@ class MainWindow:
                 lbl.config(text=jname if mode == "Joint" else cname)
         self._jog_mode.trace_add("write", _update_jog_labels)
 
+        # ---- 中間列：ファイル I/O + シミュレーション + IK ----
+        mid_col = ttk.Frame(outer)
+        mid_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+
+        # ファイル I/O
+        io_lf = ttk.LabelFrame(mid_col, text="  ファイル (File I/O)")
+        io_lf.pack(fill=tk.X, pady=(4, 2))
+        _tip(io_lf,
+             "経路データの保存・読込とFANUCコントローラへの出力\n\n"
+             "📂 CSV 読込: 保存済みの経路ファイルを開く  (Ctrl+O)\n"
+             "💾 CSV 保存: 現在の経路をCSVファイルに保存  (Ctrl+S)\n"
+             "📤 TP 出力: FANUC TP プログラム(.ls)を生成  (Ctrl+E)\n"
+             "  → コントローラへFTP/USBで転送して実機動作可能")
+        io_inner = ttk.Frame(io_lf)
+        io_inner.pack(padx=6, pady=4)
+        btn_csv_load = ttk.Button(io_inner, text="📂 CSV 読込", command=self._load_csv)
+        btn_csv_load.pack(pady=1, fill=tk.X)
+        _tip(btn_csv_load, "保存済みの経路CSVファイルを開きます  (Ctrl+O)")
+        btn_csv_save = ttk.Button(io_inner, text="💾 CSV 保存", command=self._save_csv)
+        btn_csv_save.pack(pady=1, fill=tk.X)
+        _tip(btn_csv_save, "現在の経路をCSVファイルに保存します  (Ctrl+S)")
+        btn_tp = ttk.Button(io_inner, text="📤 TP 出力", command=self._export_tp)
+        btn_tp.pack(pady=1, fill=tk.X)
+        _tip(btn_tp,
+             "FANUC TP プログラム (.ls) を生成します  (Ctrl+E)\n"
+             "IK 計算 → 全経路点の関節角度を自動算出\n"
+             "生成ファイルをコントローラへ転送することで実機動作が可能です")
+
+        # シミュレーション
+        sim_lf = ttk.LabelFrame(mid_col, text="  シミュレーション")
+        sim_lf.pack(fill=tk.X, pady=2)
+        _tip(sim_lf,
+             "設定した経路点を順番にIK計算しながらアニメーション表示します。\n\n"
+             "▶ 実行: 経路の先頭から順にロボットを動かす  (F5)\n"
+             "■ 停止: 途中で停止する\n\n"
+             "速度オーバーライドの値がアニメーション速度に反映されます。\n"
+             "IK 失敗した点はスキップされます（ステータスバーに表示）")
+        sim_inner = ttk.Frame(sim_lf)
+        sim_inner.pack(padx=6, pady=4)
+        self._sim_btn = ttk.Button(sim_inner, text="▶  実行 (F5)",
+                                   style="Primary.TButton",
+                                   command=self._start_simulation)
+        self._sim_btn.pack(pady=1, fill=tk.X)
+        ttk.Button(sim_inner, text="■  停止",
+                   style="Danger.TButton",
+                   command=self._stop_simulation).pack(pady=1, fill=tk.X)
+        self._sim_progress_var = tk.StringVar(value="待機中")
+        tk.Label(sim_inner, textvariable=self._sim_progress_var,
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 7)).pack()
+
+        # 逆運動学 (IK)
+        ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
+        ik_lf.pack(fill=tk.X, pady=(2, 4))
+        _tip(ik_lf,
+             "逆運動学 (IK: Inverse Kinematics)\n"
+             "経路点の位置・姿勢から関節角度を自動計算してロボットを移動させます。\n\n"
+             "使い方:\n"
+             "1. 経路点番号を入力（右のリストと対応）\n"
+             "2. 「IK 計算 → 移動」をクリック\n"
+             "3. 関節スライダーと3Dビューが更新されます\n\n"
+             "IK 失敗: 指定位置がロボットの可動範囲外の場合に発生します")
+        ik_inner = ttk.Frame(ik_lf)
+        ik_inner.pack(padx=6, pady=4)
+        wp_row = ttk.Frame(ik_inner)
+        wp_row.pack(fill=tk.X, pady=2)
+        tk.Label(wp_row, text="経路点 P[",
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
+        self._ik_wp_var = tk.IntVar(value=1)
+        ttk.Spinbox(wp_row, from_=1, to=999,
+                    textvariable=self._ik_wp_var, width=4).pack(side=tk.LEFT)
+        tk.Label(wp_row, text="]",
+                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
+        ik_btn = ttk.Button(ik_inner, text="IK 計算 → 移動",
+                            command=self._compute_ik_for_wp)
+        ik_btn.pack(pady=2, fill=tk.X)
+        _tip(ik_btn, "指定した経路点にロボットを移動させます\n解析解+数値解フォールバックでIKを解きます")
+
         # ---- 右列：速度OVR + UTool + UFrame ----
         right_col = ttk.Frame(outer)
-        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 0))
+        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
 
         # 速度オーバーライド
         spd_lf = ttk.LabelFrame(right_col, text="  速度オーバーライド")
@@ -776,96 +852,6 @@ class MainWindow:
         self._active_uframe = self.USER_FRAMES[idx]
         self.viewport.set_user_frame(self._active_uframe)
         self._set_status(f"✔  UFrame 変更 → {self._active_uframe.name}")
-
-    # ──────────────────────────────────────────────────────────────────
-    # 下部コントロールバー
-    # ──────────────────────────────────────────────────────────────────
-
-    def _build_bottom_controls(self):
-        ctrl = ttk.Frame(self.root)
-        ctrl.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=6)
-
-        # ── ファイル I/O ─────────────────────────────────────────────
-        io_lf = ttk.LabelFrame(ctrl, text="  ファイル (File I/O)")
-        io_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
-        _tip(io_lf,
-             "経路データの保存・読込とFANUCコントローラへの出力\n\n"
-             "📂 CSV 読込: 保存済みの経路ファイルを開く  (Ctrl+O)\n"
-             "💾 CSV 保存: 現在の経路をCSVファイルに保存  (Ctrl+S)\n"
-             "📤 TP 出力: FANUC TP プログラム(.ls)を生成  (Ctrl+E)\n"
-             "  → コントローラへFTP/USBで転送して実機動作可能")
-
-        io_inner = ttk.Frame(io_lf)
-        io_inner.pack(padx=6, pady=6)
-        btn_csv_load = ttk.Button(io_inner, text="📂 CSV 読込", command=self._load_csv)
-        btn_csv_load.pack(pady=2, fill=tk.X)
-        _tip(btn_csv_load, "保存済みの経路CSVファイルを開きます  (Ctrl+O)")
-        btn_csv_save = ttk.Button(io_inner, text="💾 CSV 保存", command=self._save_csv)
-        btn_csv_save.pack(pady=2, fill=tk.X)
-        _tip(btn_csv_save, "現在の経路をCSVファイルに保存します  (Ctrl+S)")
-        btn_tp = ttk.Button(io_inner, text="📤 TP 出力", command=self._export_tp)
-        btn_tp.pack(pady=2, fill=tk.X)
-        _tip(btn_tp,
-             "FANUC TP プログラム (.ls) を生成します  (Ctrl+E)\n"
-             "IK 計算 → 全経路点の関節角度を自動算出\n"
-             "生成ファイルをコントローラへ転送することで実機動作が可能です")
-
-        # ── シミュレーション ─────────────────────────────────────────
-        sim_lf = ttk.LabelFrame(ctrl, text="  シミュレーション")
-        sim_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
-        _tip(sim_lf,
-             "設定した経路点を順番にIK計算しながらアニメーション表示します。\n\n"
-             "▶ 実行: 経路の先頭から順にロボットを動かす  (F5)\n"
-             "■ 停止: 途中で停止する\n\n"
-             "速度オーバーライドの値がアニメーション速度に反映されます。\n"
-             "IK 失敗した点はスキップされます（ステータスバーに表示）")
-
-        sim_inner = ttk.Frame(sim_lf)
-        sim_inner.pack(padx=6, pady=6)
-        self._sim_btn = ttk.Button(sim_inner, text="▶  実行 (F5)",
-                                   style="Primary.TButton",
-                                   command=self._start_simulation)
-        self._sim_btn.pack(pady=2, fill=tk.X)
-        ttk.Button(sim_inner, text="■  停止",
-                   style="Danger.TButton",
-                   command=self._stop_simulation).pack(pady=2, fill=tk.X)
-
-        self._sim_progress_var = tk.StringVar(value="待機中")
-        tk.Label(sim_inner,
-            textvariable=self._sim_progress_var,
-            bg=BG_PANEL, fg=FG_SUB, font=("", 7)
-        ).pack()
-
-        # ── 逆運動学 (IK) ────────────────────────────────────────────
-        ik_lf = ttk.LabelFrame(ctrl, text="  逆運動学 (IK)")
-        ik_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
-        _tip(ik_lf,
-             "逆運動学 (IK: Inverse Kinematics)\n"
-             "経路点の位置・姿勢から関節角度を自動計算してロボットを移動させます。\n\n"
-             "使い方:\n"
-             "1. 経路点番号を入力（右のリストと対応）\n"
-             "2. 「IK 計算 → 移動」をクリック\n"
-             "3. 関節スライダーと3Dビューが更新されます\n\n"
-             "IK 失敗: 指定位置がロボットの可動範囲外の場合に発生します")
-
-        ik_inner = ttk.Frame(ik_lf)
-        ik_inner.pack(padx=6, pady=6)
-
-        wp_row = ttk.Frame(ik_inner)
-        wp_row.pack(fill=tk.X, pady=2)
-        tk.Label(wp_row, text="経路点 P[",
-                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
-        self._ik_wp_var = tk.IntVar(value=1)
-        ttk.Spinbox(wp_row, from_=1, to=999,
-                    textvariable=self._ik_wp_var, width=4).pack(side=tk.LEFT)
-        tk.Label(wp_row, text="]",
-                 bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
-
-        ik_btn = ttk.Button(ik_inner, text="IK 計算 → 移動",
-                            command=self._compute_ik_for_wp)
-        ik_btn.pack(pady=2, fill=tk.X)
-        _tip(ik_btn, "指定した経路点にロボットを移動させます\n解析解+数値解フォールバックでIKを解きます")
-
 
     def _build_overlay_panel(self, parent):
         """STL/CSV overlay position control — independent per layer."""
