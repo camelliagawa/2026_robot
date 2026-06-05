@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.8"
+APP_VERSION = "0.5.9"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.9", "2026-06-06", "00:18 JST", [
+        "更新履歴を右パネル下部に固定・折りたたみ式に変更（▶クリックで展開/折りたたみ）",
+        "折りたたみ時は1行ヘッダーのみ表示、展開時は10行スクロール可能テキスト表示",
+    ]),
     ("0.5.8", "2026-06-06", "00:05 JST", [
         "右パネルをPanedWindowから切り離しrootに直接配置（縦いっぱいに表示）",
         "右下の空白を解消し、更新履歴まで縦長に表示されるよう改善",

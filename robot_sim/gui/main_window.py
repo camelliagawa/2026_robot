@@ -297,7 +297,10 @@ class MainWindow:
         right_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(4, 0))
         right_outer.pack_propagate(False)
 
-        # スクロールバー付きキャンバスで右全体を包む
+        # ── 下部：折りたたみ式更新履歴（先にpackしてBOTTOM確保）──
+        self._build_changelog_panel_collapsible(right_outer)
+
+        # ── 上部：スクロール可能なパネル群 ──
         right_sb = tk.Scrollbar(right_outer, orient=tk.VERTICAL)
         right_sb.pack(side=tk.RIGHT, fill=tk.Y)
         right_canvas = tk.Canvas(right_outer, bg="#21262D",
@@ -316,12 +319,11 @@ class MainWindow:
         right.bind("<Configure>", _on_right_configure)
         right_canvas.bind("<Configure>", _on_canvas_resize)
 
-        # マウスホイールでスクロール
         def _on_mousewheel(event):
             right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         right_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # 左：3D ビューポート（右パネルの残り幅を全部使う）
+        # 左：3D ビューポート
         left = ttk.LabelFrame(self.root, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(4, 0))
         self.viewport = Viewport3D(left, self.kin)
@@ -340,7 +342,6 @@ class MainWindow:
         self.route_editor.pack(fill=tk.X, padx=4, pady=4)
 
         self._build_overlay_panel(right)
-        self._build_changelog_panel(right)
 
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
@@ -537,19 +538,33 @@ class MainWindow:
     # 更新履歴パネル（右サイドバー下部）
     # ──────────────────────────────────────────────────────────────────
 
-    def _build_changelog_panel(self, parent):
-        frame = ttk.LabelFrame(parent,
-            text=f"  更新履歴 (Update History) — 最新: v{APP_VERSION}")
-        frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=(0, 4))
+    def _build_changelog_panel_collapsible(self, parent):
+        """折りたたみ式更新履歴パネル（右パネル下部固定）。"""
+        container = ttk.Frame(parent)
+        container.pack(side=tk.BOTTOM, fill=tk.X, padx=4, pady=(0, 4))
 
-        txt_frame = ttk.Frame(frame)
-        txt_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 2))
+        # ▶/▼ トグルヘッダー
+        self._cl_expanded = tk.BooleanVar(value=False)
+        header = tk.Frame(container, bg=BG_WIDGET, cursor="hand2")
+        header.pack(fill=tk.X)
+        self._cl_toggle_lbl = tk.Label(
+            header,
+            text=f"▶  更新履歴 — 最新: v{APP_VERSION}",
+            bg=BG_WIDGET, fg=ACCENT,
+            font=("", 9, "bold"), anchor="w", padx=6, pady=4,
+        )
+        self._cl_toggle_lbl.pack(fill=tk.X)
 
+        # 本文フレーム（初期非表示）
+        body = tk.Frame(container, bg="#111111")
+        self._cl_body = body
+
+        txt_frame = ttk.Frame(body)
+        txt_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         sb = tk.Scrollbar(txt_frame, orient=tk.VERTICAL)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-
         txt = tk.Text(
-            txt_frame,
+            txt_frame, height=10,
             bg="#111111", fg="#CCCCCC",
             font=("Consolas", 9),
             wrap=tk.WORD, borderwidth=0,
@@ -565,10 +580,22 @@ class MainWindow:
             for item in items:
                 txt.insert(tk.END, f"  • {item}\n", "item")
             txt.insert(tk.END, "\n")
-
         txt.tag_config("ver",  foreground="#F5C400", font=("Consolas", 9, "bold"))
         txt.tag_config("item", foreground="#CCCCCC")
         txt.config(state="disabled")
+
+        def _toggle(event=None):
+            if self._cl_expanded.get():
+                self._cl_body.pack_forget()
+                self._cl_expanded.set(False)
+                self._cl_toggle_lbl.config(text=f"▶  更新履歴 — 最新: v{APP_VERSION}")
+            else:
+                self._cl_body.pack(fill=tk.BOTH, expand=True)
+                self._cl_expanded.set(True)
+                self._cl_toggle_lbl.config(text=f"▼  更新履歴 — 最新: v{APP_VERSION}")
+
+        header.bind("<Button-1>", _toggle)
+        self._cl_toggle_lbl.bind("<Button-1>", _toggle)
 
     # ──────────────────────────────────────────────────────────────────
     # 関節角度スライダー + 速度オーバーライド + UTool / UFrame
