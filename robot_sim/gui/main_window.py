@@ -639,11 +639,11 @@ class MainWindow:
             _tip(jlbl, JOINT_TIPS[i])
             self._jog_axis_labels.append((jlbl, f"J{i+1}", ["X","Y","Z","Rx","Ry","Rz"][i]))
 
-            # 水平スライダー（幅いっぱいに伸縮）
+            # 水平スライダー
             sc = ttk.Scale(row, from_=lower[i], to=upper[i],
-                           variable=var, orient=tk.HORIZONTAL,
+                           variable=var, orient=tk.HORIZONTAL, length=240,
                            command=lambda val, idx=i: self._on_slider_change(idx, float(val)))
-            sc.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            sc.pack(side=tk.LEFT)
             _tip(sc, JOINT_TIPS[i])
 
             # 現在角度表示（StringVar で科学記数法バグを回避）
