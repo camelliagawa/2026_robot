@@ -321,7 +321,17 @@ class MainWindow:
 
         def _on_mousewheel(event):
             right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        right_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # bind_all は使わず、キャンバスと内部フレームにのみバインド
+        right_canvas.bind("<MouseWheel>", _on_mousewheel)
+        right.bind("<MouseWheel>", _on_mousewheel)
+        # 右パネル内の子ウィジェットへ伝播（Textウィジェット以外）
+        def _bind_scroll_to_children(widget):
+            cls = widget.winfo_class()
+            if cls not in ("Text", "Scrollbar"):
+                widget.bind("<MouseWheel>", _on_mousewheel)
+            for child in widget.winfo_children():
+                _bind_scroll_to_children(child)
+        right.bind("<Map>", lambda e: _bind_scroll_to_children(right))
 
         # 左：3D ビューポート
         left = ttk.LabelFrame(self.root, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
