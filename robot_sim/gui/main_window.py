@@ -124,7 +124,7 @@ class MainWindow:
         # so they always claim their space regardless of window height
         self._build_status_bar()
         self._build_bottom_controls()
-        self._build_joint_sliders()
+        self._build_joint_jog_panel()
         self._build_main_panels()
 
         self.viewport.set_route(self.route)
@@ -301,13 +301,20 @@ class MainWindow:
         pane.add(left, weight=5)
         self.viewport = Viewport3D(left, self.kin)
 
-        # 右：ルートエディタ + 更新履歴
+        # 右：ルートエディタ + 更新履歴（PanedWindow で上下分割）
         right = ttk.Frame(pane)
         pane.add(right, weight=2)
 
-        self._build_markers_panel(right)
+        vpane = ttk.PanedWindow(right, orient=tk.VERTICAL)
+        vpane.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        route_lf = ttk.LabelFrame(right,
+        # 上セクション: TCPマーカー + 経路点リスト
+        top_frame = ttk.Frame(vpane)
+        vpane.add(top_frame, weight=3)
+
+        self._build_markers_panel(top_frame)
+
+        route_lf = ttk.LabelFrame(top_frame,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
         route_lf.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
         self.route_editor = RouteEditor(
@@ -317,8 +324,12 @@ class MainWindow:
         )
         self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
-        self._build_overlay_panel(right)
-        self._build_changelog_panel(right)
+        # 下セクション: オーバーレイ + 更新履歴（常に表示）
+        bot_frame = ttk.Frame(vpane)
+        vpane.add(bot_frame, weight=2)
+
+        self._build_overlay_panel(bot_frame)
+        self._build_changelog_panel(bot_frame)
 
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
@@ -556,19 +567,42 @@ class MainWindow:
     # 関節角度スライダー + 速度オーバーライド + UTool / UFrame
     # ──────────────────────────────────────────────────────────────────
 
-    def _build_joint_sliders(self):
+    def _build_joint_jog_panel(self):
+        """関節角度スライダーとジョグ操作を1パネルに統合。"""
         outer = ttk.Frame(self.root)
         outer.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(4, 0))
 
-        # ---- 関節スライダー（横向き・コンパクト） ----
-        slider_lf = ttk.LabelFrame(outer, text="  関節角度 (Joint Angles)")
+        # ---- 関節スライダー + ジョグボタン（統合パネル） ----
+        slider_lf = ttk.LabelFrame(outer, text="  関節角度 / ジョグ操作")
         slider_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # モード選択 + ステップ幅（ヘッダー行）
+        header = ttk.Frame(slider_lf)
+        header.pack(fill=tk.X, padx=6, pady=(3, 1))
+
+        self._jog_mode = tk.StringVar(value="Joint")
+        ttk.Radiobutton(header, text="● Joint（関節）",
+                        variable=self._jog_mode, value="Joint").pack(side=tk.LEFT, padx=4)
+        ttk.Radiobutton(header, text="○ Cartesian（直交）",
+                        variable=self._jog_mode, value="Cartesian").pack(side=tk.LEFT, padx=4)
+
+        ttk.Separator(header, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
+        tk.Label(header, text="ステップ幅:", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
+        self._jog_step = tk.StringVar(value="5")
+        ttk.Combobox(header, textvariable=self._jog_step,
+                     values=["0.5", "1", "5", "10", "45"],
+                     width=5, state="readonly").pack(side=tk.LEFT, padx=2)
+        tk.Label(header, text="° / mm", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
         lower, upper = self.kin.dh.get_joint_limits_deg()
         speeds = self.kin.dh.get_joint_max_speeds()
         self._slider_vars = []
         self._fk_display_var  = tk.StringVar()
         self._angles_display_var = tk.StringVar()
+
+        joint_labels = ["J1\n(旋回)", "J2\n(肩)", "J3\n(肘)", "J4\n(前腕)", "J5\n(手首↑↓)", "J6\n(手首回転)"]
+        cart_labels  = ["X\n(前後)", "Y\n(左右)", "Z\n(上下)", "Rx\n(ロール)", "Ry\n(ピッチ)", "Rz\n(ヨー)"]
+        self._jog_axis_labels = []
 
         JOINT_TIPS = [
             "J1 — 旋回軸\n胴体全体が水平に回転します\n可動範囲: ±170°  最大速度: 210°/s",
@@ -587,12 +621,13 @@ class MainWindow:
             var = tk.DoubleVar(value=init_deg)
             self._slider_vars.append(var)
 
-            # 軸名ラベル
+            # 軸名ラベル（Joint/Cartesianモードで切替）
             jlbl = tk.Label(row, text=f"J{i+1}", width=3,
                             bg=BG_PANEL, fg=ACCENT2,
                             font=("Consolas", 9, "bold"), anchor="center")
             jlbl.pack(side=tk.LEFT, padx=(0, 2))
             _tip(jlbl, JOINT_TIPS[i])
+            self._jog_axis_labels.append((jlbl, f"J{i+1}", ["X","Y","Z","Rx","Ry","Rz"][i]))
 
             # 水平スライダー
             sc = ttk.Scale(row, from_=lower[i], to=upper[i],
@@ -601,18 +636,38 @@ class MainWindow:
             sc.pack(side=tk.LEFT)
             _tip(sc, JOINT_TIPS[i])
 
-            # 現在角度表示
-            tk.Label(row, textvariable=var,
+            # 現在角度表示（StringVar で科学記数法バグを回避）
+            angle_str_var = tk.StringVar(value=f"{init_deg:7.1f}")
+            def _make_trace(dv, sv):
+                def _trace(*_):
+                    sv.set(f"{dv.get():7.1f}")
+                return _trace
+            var.trace_add("write", _make_trace(var, angle_str_var))
+            tk.Label(row, textvariable=angle_str_var,
                      bg=BG_PANEL, fg=FG_PRIMARY,
                      font=("Consolas", 8), width=8, anchor="e").pack(side=tk.LEFT, padx=2)
             tk.Label(row, text="°",
                      bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
+
+            # ▲▼ ジョグボタン
+            ttk.Button(row, text="▲", style="Jog.TButton",
+                       command=lambda ax=i: self._jog(ax, +1)).pack(side=tk.LEFT, padx=(4, 1))
+            ttk.Button(row, text="▼", style="Jog.TButton",
+                       command=lambda ax=i: self._jog(ax, -1)).pack(side=tk.LEFT, padx=(1, 4))
 
             # 可動範囲・速度（薄いメタ情報）
             tk.Label(row,
                 text=f"  {lower[i]:.0f}〜{upper[i]:.0f}°   {speeds[i]:.0f}°/s",
                 bg=BG_PANEL, fg=FG_SUB, font=("", 7), anchor="w"
             ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # モード切替でラベルを更新
+        def _update_jog_labels(*_):
+            mode = self._jog_mode.get()
+            cart = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
+            for idx, (lbl, jname, cname) in enumerate(self._jog_axis_labels):
+                lbl.config(text=jname if mode == "Joint" else cname)
+        self._jog_mode.trace_add("write", _update_jog_labels)
 
         # ---- 右列：速度OVR + UTool + UFrame ----
         right_col = ttk.Frame(outer)
@@ -704,64 +759,6 @@ class MainWindow:
     def _build_bottom_controls(self):
         ctrl = ttk.Frame(self.root)
         ctrl.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=6)
-
-        # ── ジョグ操作 ──────────────────────────────────────────────
-        jog_lf = ttk.LabelFrame(ctrl, text="  ジョグ操作 (Jog)")
-        jog_lf.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
-        _tip(jog_lf,
-             "ジョグ操作: ▲▼ボタンで各軸を1ステップずつ手動で動かします。\n\n"
-             "【Joint モード】各関節を個別に回転\n"
-             "  J1=旋回  J2=肩  J3=肘  J4=前腕  J5=手首↑↓  J6=手首回転\n\n"
-             "【Cartesian モード】TCP位置を直交座標で移動\n"
-             "  X=前後  Y=左右  Z=上下  Rx/Ry/Rz=姿勢回転\n\n"
-             "ステップ幅: 1回の▲▼で動く角度(°)または距離(mm)")
-
-        top = ttk.Frame(jog_lf)
-        top.pack(fill=tk.X, padx=6, pady=(4, 0))
-
-        self._jog_mode = tk.StringVar(value="Joint")
-        ttk.Radiobutton(top, text="Joint（関節）",
-                        variable=self._jog_mode, value="Joint").pack(side=tk.LEFT, padx=4)
-        ttk.Radiobutton(top, text="Cartesian（直交）",
-                        variable=self._jog_mode, value="Cartesian").pack(side=tk.LEFT, padx=4)
-
-        ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
-        tk.Label(top, text="ステップ幅:", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
-        self._jog_step = tk.StringVar(value="5")
-        ttk.Combobox(top, textvariable=self._jog_step,
-                     values=["0.5", "1", "5", "10", "45"],
-                     width=5, state="readonly").pack(side=tk.LEFT, padx=2)
-        tk.Label(top, text="° / mm", bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
-
-        axes_frame = ttk.Frame(jog_lf)
-        axes_frame.pack(padx=6, pady=4)
-
-        # Joint モード用ラベル / Cartesian モード用ラベル
-        joint_labels = ["J1\n(旋回)", "J2\n(肩)", "J3\n(肘)", "J4\n(前腕)", "J5\n(手首↑↓)", "J6\n(手首回転)"]
-        cart_labels  = ["X\n(前後)", "Y\n(左右)", "Z\n(上下)", "Rx\n(ロール)", "Ry\n(ピッチ)", "Rz\n(ヨー)"]
-
-        self._jog_axis_labels = []
-        for col in range(6):
-            f = ttk.Frame(axes_frame)
-            f.grid(row=0, column=col, padx=3)
-
-            lbl = tk.Label(f,
-                text=joint_labels[col],
-                bg=BG_PANEL, fg=ACCENT2,
-                font=("", 7), width=6, justify="center")
-            lbl.pack()
-            self._jog_axis_labels.append((lbl, joint_labels[col], cart_labels[col]))
-
-            ttk.Button(f, text="▲", style="Jog.TButton",
-                       command=lambda ax=col: self._jog(ax, +1)).pack()
-            ttk.Button(f, text="▼", style="Jog.TButton",
-                       command=lambda ax=col: self._jog(ax, -1)).pack()
-
-        def _update_jog_labels(*_):
-            mode = self._jog_mode.get()
-            for lbl, jlbl, clbl in self._jog_axis_labels:
-                lbl.config(text=jlbl if mode == "Joint" else clbl)
-        self._jog_mode.trace_add("write", _update_jog_labels)
 
         # ── ファイル I/O ─────────────────────────────────────────────
         io_lf = ttk.LabelFrame(ctrl, text="  ファイル (File I/O)")
