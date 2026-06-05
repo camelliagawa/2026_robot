@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.7"
+APP_VERSION = "0.5.8"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.8", "2026-06-06", "00:05 JST", [
+        "右パネルをPanedWindowから切り離しrootに直接配置（縦いっぱいに表示）",
+        "右下の空白を解消し、更新履歴まで縦長に表示されるよう改善",
+    ]),
     ("0.5.7", "2026-06-05", "23:52 JST", [
         "関節スライダー列のexpand=Trueを廃止し、中間列（ファイル/シミュレーション/IK）を左寄せ",
     ]),

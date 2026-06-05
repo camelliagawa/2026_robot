@@ -292,17 +292,10 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
 
     def _build_main_panels(self):
-        pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
-
-        # 左：3D ビューポート
-        left = ttk.LabelFrame(pane, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
-        pane.add(left, weight=5)
-        self.viewport = Viewport3D(left, self.kin)
-
-        # 右：スクロール可能なパネル群
-        right_outer = ttk.Frame(pane)
-        pane.add(right_outer, weight=2)
+        # 右パネルを root に直接貼り付け（縦いっぱい）
+        right_outer = ttk.Frame(self.root, width=430)
+        right_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(4, 0))
+        right_outer.pack_propagate(False)
 
         # スクロールバー付きキャンバスで右全体を包む
         right_sb = tk.Scrollbar(right_outer, orient=tk.VERTICAL)
@@ -327,6 +320,11 @@ class MainWindow:
         def _on_mousewheel(event):
             right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         right_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # 左：3D ビューポート（右パネルの残り幅を全部使う）
+        left = ttk.LabelFrame(self.root, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(4, 0))
+        self.viewport = Viewport3D(left, self.kin)
 
         self._build_markers_panel(right)
 
