@@ -259,6 +259,8 @@ class MainWindow:
         r.add_command(label="  ⚙   刃付けルートを自動生成...", command=self._auto_generate_route)
         r.add_command(label="  🗑   ルートをクリア",           command=self._clear_route)
         r.add_separator()
+        r.add_command(label="  🪨  Tormek T8 砥石を読み込む", command=self._load_tormek_sample)
+        r.add_separator()
         r.add_command(label="  ▶   シミュレーション実行      F5", command=self._start_simulation)
 
         # ロボット
@@ -1284,6 +1286,30 @@ class MainWindow:
         self.viewport.set_route(self.route)
         self.viewport.refresh()
         self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
+
+    def _load_tormek_sample(self):
+        assets = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+        stl_path = os.path.join(assets, "Tormek_T8.stl")
+        csv_path = os.path.join(assets, "grinding_path_sample.csv")
+        msgs = []
+        if os.path.exists(stl_path):
+            ok = self.viewport.load_stl(stl_path)
+            if ok:
+                self._update_overlay_name("Tormek_T8.stl")
+                msgs.append("STL 読込済")
+            else:
+                msgs.append("STL 読込失敗 (numpy-stl が必要)")
+        else:
+            msgs.append("STL ファイルが見つかりません")
+        if os.path.exists(csv_path):
+            ok = self.viewport.load_csv_points(csv_path)
+            if ok:
+                msgs.append("研削経路 CSV 読込済")
+            else:
+                msgs.append("CSV 読込失敗")
+        else:
+            msgs.append("CSV ファイルが見つかりません")
+        self._set_status("✔  " + " / ".join(msgs))
 
     def _auto_generate_route(self):
         win = tk.Toplevel(self.root)
