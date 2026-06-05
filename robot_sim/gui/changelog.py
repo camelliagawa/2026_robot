@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.4", "2026-06-05", "22:42 JST", [
+        "関節角度スライダーを幅いっぱいに伸縮表示（固定幅240px → fill=tk.X）",
+        "ジョグ操作パネル右側の空白を解消",
+    ]),
     ("0.5.3", "2026-06-05", "22:50 JST", [
         "右パネル全体をスクロール可能に変更（マウスホイール対応）",
         "TCP管理・経路点リスト・オーバーレイ・更新履歴がすべてスクロールで到達可能に",
