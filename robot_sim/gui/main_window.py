@@ -123,7 +123,6 @@ class MainWindow:
         # Bottom panels must be packed BEFORE expand=True main panel
         # so they always claim their space regardless of window height
         self._build_status_bar()
-        self._build_joint_jog_panel()
         self._build_main_panels()
 
         self.viewport.set_route(self.route)
@@ -333,9 +332,16 @@ class MainWindow:
                 _bind_scroll_to_children(child)
         right.bind("<Map>", lambda e: _bind_scroll_to_children(right))
 
-        # 左：3D ビューポート
-        left = ttk.LabelFrame(self.root, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(4, 0))
+        # 左コンテナ：ビューポート＋ジョグパネルをまとめて右パネルと同幅に
+        left_container = ttk.Frame(self.root)
+        left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(4, 0))
+
+        # ジョグパネルを左コンテナ下部に（先にpackしてスペース確保）
+        self._build_joint_jog_panel(left_container)
+
+        # 3D ビューポートは残りの全スペースを使う
+        left = ttk.LabelFrame(left_container, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
+        left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = Viewport3D(left, self.kin)
 
         self._build_markers_panel(right)
@@ -611,9 +617,11 @@ class MainWindow:
     # 関節角度スライダー + 速度オーバーライド + UTool / UFrame
     # ──────────────────────────────────────────────────────────────────
 
-    def _build_joint_jog_panel(self):
+    def _build_joint_jog_panel(self, parent=None):
         """関節角度スライダーとジョグ操作を1パネルに統合。"""
-        outer = ttk.Frame(self.root)
+        if parent is None:
+            parent = self.root
+        outer = ttk.Frame(parent)
         outer.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(4, 0))
 
         # ---- 関節スライダー + ジョグボタン（統合パネル） ----
