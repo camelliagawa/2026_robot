@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.2"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.2", "2026-06-05", "16:44 JST", [
+        "STL 描画をワイヤーフレーム＋頂点 scatter に変更（確実に表示）",
+        "Tormek T8 自動配置の Y/Z 設定バグを修正（直接インデックス代入）",
+    ]),
     ("0.4.1", "2026-06-05", "16:30 JST", [
         "STL と CSV のオーバーレイを独立したトランスフォームで管理",
         "オーバーレイ位置パネルを「🔵 STL」「🟠 CSV」2セクションに分割",
@@ -14,7 +18,6 @@ CHANGELOG = [
         "STL・CSV それぞれに独立したクリアボタンを追加",
         "CSV 点群の表示色をオレンジ (#FF9944) に変更（STL青と区別）",
         "Tormek T8 読込時に STL を底面Z=0・水平中心に自動配置",
-        "STL 描画をエッジ線付き半透明メッシュに変更（視認性向上）",
     ]),
     ("0.4.0", "2026-06-05", "16:30 JST", [
         "assets/ フォルダを追加: Tormek_T8.stl・grinding_path_sample.csv を同梱",
