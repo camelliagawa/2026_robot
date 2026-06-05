@@ -6,9 +6,16 @@ route waypoints, user frame axes, TCP marker, and workspace boundary.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional, List, TYPE_CHECKING
 
 import numpy as np
+
+try:
+    from stl import mesh as _stl_mesh
+    _HAS_STL = True
+except ImportError:
+    _HAS_STL = False
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -182,6 +189,11 @@ class Viewport3D:
         self._elev: float = 25.0
         self._azim: float = -45.0
 
+        self._overlay_verts: Optional[np.ndarray] = None  # (N,3,3) STL triangles
+        self._overlay_points: Optional[np.ndarray] = None  # (N,3) CSV points
+        self._overlay_name: str = ""
+        self._overlay_T: np.ndarray = np.eye(4)
+
         self.fig = plt.figure(facecolor="#161B22")
         self.fig.subplots_adjust(left=-0.08, right=1.08, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -196,6 +208,9 @@ class Viewport3D:
             self.canvas.mpl_disconnect(cid)
         if hasattr(self.ax, '_cids'):
             self.ax._cids.clear()
+
+        for ev in ("button_press_event", "button_release_event", "motion_notify_event"):
+            self.canvas.mpl_connect(ev, lambda e: None)
 
         self.canvas.mpl_connect("scroll_event", self._on_scroll)
         self.update_robot(self._joint_angles)
@@ -248,6 +263,7 @@ class Viewport3D:
         self._draw_workspace()
         self._draw_user_frame()
         self._draw_robot(self._joint_angles)
+        self._draw_overlay()
         self._draw_route()
         self._draw_jog_target()
         self.canvas.draw_idle()
@@ -478,6 +494,71 @@ class Viewport3D:
             fg = "white" if selected else "#AAAAAA"
             self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
                          label_text, color=fg, fontsize=6, alpha=0.85)
+
+    # ── Overlay ────────────────────────────────────────────────────────
+
+    def load_stl(self, path: str):
+        if not _HAS_STL:
+            return False
+        m = _stl_mesh.Mesh.from_file(path)
+        self._overlay_verts = m.vectors.copy()  # (N,3,3)
+        self._overlay_points = None
+        self._overlay_name = os.path.basename(path)
+        self._redraw()
+        return True
+
+    def load_csv_points(self, path: str):
+        import csv
+        pts = []
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) >= 3:
+                    try:
+                        pts.append([float(row[0]), float(row[1]), float(row[2])])
+                    except ValueError:
+                        pass
+        if pts:
+            self._overlay_points = np.array(pts)
+            self._overlay_verts = None
+            self._overlay_name = os.path.basename(path)
+            self._redraw()
+            return True
+        return False
+
+    def set_overlay_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._overlay_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._redraw()
+
+    def clear_overlay(self):
+        self._overlay_verts = None
+        self._overlay_points = None
+        self._overlay_name = ""
+        self._overlay_T = np.eye(4)
+        self._redraw()
+
+    def _draw_overlay(self):
+        R = self._overlay_T[:3, :3]
+        t = self._overlay_T[:3, 3]
+        if self._overlay_verts is not None:
+            verts = self._overlay_verts.reshape(-1, 3)
+            tverts = (R @ verts.T).T + t
+            tverts = tverts.reshape(-1, 3, 3)
+            poly = Poly3DCollection(tverts, alpha=0.35,
+                                    facecolor="#6699FF", edgecolor="none",
+                                    linewidth=0)
+            self.ax.add_collection3d(poly)
+            ctr = tverts.mean(axis=(0, 1))
+            self.ax.text(ctr[0], ctr[1], ctr[2],
+                         self._overlay_name, color="#99BBFF", fontsize=6)
+        elif self._overlay_points is not None:
+            pts = (R @ self._overlay_points.T).T + t
+            self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
+                            c="#6699FF", s=8, alpha=0.6, depthshade=False)
+            ctr = pts.mean(axis=0)
+            self.ax.text(ctr[0], ctr[1], ctr[2],
+                         self._overlay_name, color="#99BBFF", fontsize=6)
 
     # ── Cleanup ────────────────────────────────────────────────────────
 

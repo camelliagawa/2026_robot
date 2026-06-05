@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 
 # (version, date, time, changes)
 CHANGELOG = [
+    ("0.3.8", "2026-06-05", "01:00", [
+        "右ドラッグズームを無効化（すべてのボタン操作イベントをブロック）",
+        "ビューポートラベルを更新: ホイール拡大縮小・STL/CSVドロップ説明を追加",
+        "STL/CSV ドラッグアンドドロップ対応: numpy-stl でSTL読込、CSV点群表示",
+        "オーバーレイ位置姿勢コントロールパネルを追加 (X/Y/Z/Rx/Ry/Rz 入力・適用・クリア)",
+        "requirements.txt 更新: numpy-stl・tkinterdnd2 追加、pybullet・open3d 削除",
+    ]),
     ("0.3.7", "2026-06-05", "00:35", [
         "ロボット外観を v0.3.5 の形状に戻した（円柱ベース・黒胴体）",
     ]),

@@ -40,6 +40,12 @@ from .viewport import Viewport3D
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION, CHANGELOG
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD as _TkDnD
+    _HAS_DND = True
+except ImportError:
+    _HAS_DND = False
+
 # ── カラーパレット ──────────────────────────────────────────────────────
 BG_DARK    = "#161B22"   # 最暗背景（GitHub dark風）
 BG_PANEL   = "#21262D"   # パネル背景
@@ -130,7 +136,10 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
 
     def _build_root(self):
-        self.root = tk.Tk()
+        if _HAS_DND:
+            self.root = _TkDnD.Tk()
+        else:
+            self.root = tk.Tk()
         self.root.title(self.APP_TITLE)
         self.root.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
         self.root.configure(bg=BG_DARK)
@@ -283,7 +292,7 @@ class MainWindow:
         pane.pack(fill=tk.BOTH, expand=True, padx=6, pady=(4, 0))
 
         # 左：3D ビューポート
-        left = ttk.LabelFrame(pane, text="  3D ビューポート — ホイールで拡大縮小")
+        left = ttk.LabelFrame(pane, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
         pane.add(left, weight=5)
         self.viewport = Viewport3D(left, self.kin)
 
@@ -302,6 +311,10 @@ class MainWindow:
         self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         self._build_changelog_panel(right)
+
+        if _HAS_DND:
+            self.viewport.canvas_widget.drop_target_register(DND_FILES)
+            self.viewport.canvas_widget.dnd_bind("<<Drop>>", self._on_viewport_drop)
 
     # ──────────────────────────────────────────────────────────────────
     # 更新履歴パネル（右サイドバー下部）
@@ -645,6 +658,85 @@ class MainWindow:
             bg=BG_PANEL, fg=ACCENT2,
             font=("Consolas", 9), anchor="w", justify="left")
         fk_detail.pack(padx=10, pady=8, anchor="w")
+
+        self._build_overlay_panel(ctrl)
+
+    def _build_overlay_panel(self, parent):
+        """STL/CSV overlay position control."""
+        lf = ttk.LabelFrame(parent, text="  オーバーレイ位置 (Overlay Pose)")
+        lf.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 0))
+        _tip(lf,
+             "ドロップしたSTL/CSVオーバーレイの位置・姿勢を設定します。\n"
+             "X/Y/Z: 位置 (mm)  Rx/Ry/Rz: 姿勢 (°)\n"
+             "適用ボタンで3Dビューに反映されます。")
+
+        inner = ttk.Frame(lf)
+        inner.pack(padx=6, pady=4)
+
+        self._overlay_name_var = tk.StringVar(value="(なし)")
+        tk.Label(inner, textvariable=self._overlay_name_var,
+                 bg=BG_PANEL, fg=ACCENT2, font=("Consolas", 7),
+                 width=18, anchor="w").grid(row=0, column=0, columnspan=4, pady=(0,4))
+
+        labels = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
+        self._overlay_vars = []
+        for i, lbl in enumerate(labels):
+            r, c = divmod(i, 3)
+            tk.Label(inner, text=lbl, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=3).grid(row=r+1, column=c*2, padx=2)
+            v = tk.StringVar(value="0.0")
+            self._overlay_vars.append(v)
+            ttk.Entry(inner, textvariable=v, width=6).grid(row=r+1, column=c*2+1, padx=2)
+
+        btn_row = ttk.Frame(lf)
+        btn_row.pack(padx=6, pady=(0,4))
+        ttk.Button(btn_row, text="適用", style="Primary.TButton",
+                   command=self._apply_overlay_pose).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="クリア",
+                   command=self._clear_overlay).pack(side=tk.LEFT, padx=2)
+
+    def _update_overlay_name(self, name: str):
+        if hasattr(self, "_overlay_name_var"):
+            self._overlay_name_var.set(name)
+
+    def _apply_overlay_pose(self):
+        try:
+            vals = [float(v.get()) for v in self._overlay_vars]
+        except ValueError:
+            self._set_status("⚠  数値を入力してください")
+            return
+        self.viewport.set_overlay_pose(*vals)
+        self._set_status(f"✔  オーバーレイ位置更新: X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
+
+    def _clear_overlay(self):
+        self.viewport.clear_overlay()
+        self._update_overlay_name("(なし)")
+        self._set_status("✔  オーバーレイをクリアしました")
+
+    def _on_viewport_drop(self, event):
+        raw = event.data.strip()
+        # Windows: path may be wrapped in braces for paths with spaces
+        paths = self.root.tk.splitlist(raw)
+        if not paths:
+            return
+        path = paths[0].strip("{}")
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".stl":
+            ok = self.viewport.load_stl(path)
+            if ok:
+                self._set_status(f"✔  STL 読込: {os.path.basename(path)}")
+                self._update_overlay_name(os.path.basename(path))
+            else:
+                self._set_status("⚠  STL 読込失敗: numpy-stl が必要です (pip install numpy-stl)")
+        elif ext == ".csv":
+            ok = self.viewport.load_csv_points(path)
+            if ok:
+                self._set_status(f"✔  CSV 読込: {os.path.basename(path)}")
+                self._update_overlay_name(os.path.basename(path))
+            else:
+                self._set_status("⚠  CSV に有効な X,Y,Z 列がありません")
+        else:
+            self._set_status(f"⚠  対応形式: .stl または .csv のみ ({ext})")
 
     # ──────────────────────────────────────────────────────────────────
     # ステータスバー
