@@ -2,10 +2,13 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.11"
+APP_VERSION = "0.5.12"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.12", "2026-06-06", "00:52 JST", [
+        "ジョグボタンを▲▼（上下）から◀▶（左右）に変更（横スライダーに合わせた直感的な操作）",
+    ]),
     ("0.5.11", "2026-06-06", "00:42 JST", [
         "ジョグパネルを左コンテナ（ビューポートと同幅）に移動",
         "右パネル（TCP管理・経路点・オーバーレイ・更新履歴）が画面縦いっぱいに表示",

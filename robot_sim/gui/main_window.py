@@ -701,11 +701,11 @@ class MainWindow:
             tk.Label(row, text="°",
                      bg=BG_PANEL, fg=FG_SUB, font=("", 8)).pack(side=tk.LEFT)
 
-            # ▲▼ ジョグボタン
-            ttk.Button(row, text="▲", style="Jog.TButton",
-                       command=lambda ax=i: self._jog(ax, +1)).pack(side=tk.LEFT, padx=(4, 1))
-            ttk.Button(row, text="▼", style="Jog.TButton",
-                       command=lambda ax=i: self._jog(ax, -1)).pack(side=tk.LEFT, padx=(1, 4))
+            # ◀▶ ジョグボタン
+            ttk.Button(row, text="◀", style="Jog.TButton",
+                       command=lambda ax=i: self._jog(ax, -1)).pack(side=tk.LEFT, padx=(4, 1))
+            ttk.Button(row, text="▶", style="Jog.TButton",
+                       command=lambda ax=i: self._jog(ax, +1)).pack(side=tk.LEFT, padx=(1, 4))
 
             # 可動範囲・速度（薄いメタ情報）
             tk.Label(row,
