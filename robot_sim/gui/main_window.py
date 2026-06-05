@@ -742,6 +742,21 @@ class MainWindow:
         self._uframe_combo.pack(padx=6, pady=4)
         self._uframe_combo.bind("<<ComboboxSelected>>", self._on_uframe_change)
 
+        # FK 結果（右列下部）
+        fk_lf = ttk.LabelFrame(right_col, text="  TCP 位置 / 姿勢 (FK)")
+        fk_lf.pack(fill=tk.X, pady=(2, 4))
+        _tip(fk_lf,
+             "順運動学 (FK: Forward Kinematics)\n"
+             "現在の関節角度から計算したTCP（ツール先端）の位置と姿勢です。\n\n"
+             "位置 X/Y/Z: ロボット基準座標でのTCP位置 (mm)\n"
+             "姿勢 Rx/Ry/Rz: ZYX オイラー角による姿勢 (°)\n\n"
+             "スライダーを動かすと即座に更新されます。")
+        self._fk_detail_var = tk.StringVar()
+        tk.Label(fk_lf, textvariable=self._fk_detail_var,
+                 bg=BG_PANEL, fg=ACCENT2,
+                 font=("Consolas", 8), anchor="w", justify="left"
+                 ).pack(padx=6, pady=4, anchor="w")
+
         self._update_fk_display()
 
     def _on_slider_change(self, joint_idx: int, value_deg: float):
@@ -851,23 +866,6 @@ class MainWindow:
         ik_btn.pack(pady=2, fill=tk.X)
         _tip(ik_btn, "指定した経路点にロボットを移動させます\n解析解+数値解フォールバックでIKを解きます")
 
-        # ── FK 結果 ──────────────────────────────────────────────────
-        fk_lf = ttk.LabelFrame(ctrl, text="  TCP 位置 / 姿勢 (FK)")
-        fk_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        _tip(fk_lf,
-             "順運動学 (FK: Forward Kinematics)\n"
-             "現在の関節角度から計算したTCP（ツール先端）の位置と姿勢です。\n\n"
-             "位置 X/Y/Z: ロボット基準座標でのTCP位置 (mm)\n"
-             "姿勢 Rx/Ry/Rz: ZYX オイラー角による姿勢 (°)\n\n"
-             "スライダーを動かすと即座に更新されます。\n"
-             "3Dビューの赤/緑/青の座標軸がこの位置に対応します。")
-
-        self._fk_detail_var = tk.StringVar()
-        fk_detail = tk.Label(fk_lf,
-            textvariable=self._fk_detail_var,
-            bg=BG_PANEL, fg=ACCENT2,
-            font=("Consolas", 9), anchor="w", justify="left")
-        fk_detail.pack(padx=10, pady=8, anchor="w")
 
     def _build_overlay_panel(self, parent):
         """STL/CSV overlay position control — independent per layer."""

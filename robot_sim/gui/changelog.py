@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.3"
+APP_VERSION = "0.5.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.4", "2026-06-05", "23:10 JST", [
+        "FK（TCP位置/姿勢）表示を下部バーから関節ジョグパネル右列下部に移動",
+        "下部バーの空白を解消し、ジョグパネル右側を有効活用",
+    ]),
     ("0.5.3", "2026-06-05", "22:50 JST", [
         "右パネル全体をスクロール可能に変更（マウスホイール対応）",
         "TCP管理・経路点リスト・オーバーレイ・更新履歴がすべてスクロールで到達可能に",
