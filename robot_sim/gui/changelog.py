@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.6", "2026-06-05", "19:00 JST", [
+        "3DビューポートにX/Y/Z軸ラベルとmm目盛りを表示（カルテシアン座標表示）",
+        "ズームレベルに応じて目盛り間隔を自動調整",
+    ]),
     ("0.4.5", "2026-06-05", "18:30 JST", [
         "ルートメニューに「🔪 研磨経路CSVを読み込む (kenma形式)」を追加",
         "assets/kenma_route.csv を追加（HaL.LS/HaR.LSから変換した研磨経路サンプル）",

@@ -318,10 +318,18 @@ class Viewport3D:
         ax.set_ylim(-lim, lim)
         ax.set_zlim(0, lim * 1.6)
 
-        ax.set_xlabel(""); ax.set_ylabel(""); ax.set_zlabel("")
-        ax.set_xticklabels([]); ax.set_yticklabels([]); ax.set_zticklabels([])
-        ax.tick_params(left=False, bottom=False, labelbottom=False, labelleft=False,
-                       colors="#444C56", labelsize=0, length=0)
+        ax.set_xlabel("X [mm]", color="#8B949E", fontsize=7, labelpad=2)
+        ax.set_ylabel("Y [mm]", color="#8B949E", fontsize=7, labelpad=2)
+        ax.set_zlabel("Z [mm]", color="#8B949E", fontsize=7, labelpad=2)
+
+        step = int(lim / 3 / 100) * 100 or 100
+        ticks = list(range(int(-lim), int(lim) + 1, step))
+        zticks = list(range(0, int(lim * 1.6) + 1, step))
+        ax.set_xticks(ticks); ax.set_yticks(ticks); ax.set_zticks(zticks)
+        ax.tick_params(colors="#555E6A", labelsize=6, length=2, pad=1)
+        ax.xaxis.set_tick_params(labelcolor="#555E6A")
+        ax.yaxis.set_tick_params(labelcolor="#555E6A")
+        ax.zaxis.set_tick_params(labelcolor="#555E6A")
 
         for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:
             pane.fill = False
