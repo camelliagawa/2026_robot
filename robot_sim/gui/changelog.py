@@ -2,10 +2,13 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.2"
+APP_VERSION = "0.4.3"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.3", "2026-06-05", "16:53 JST", [
+        "STL インポートを動的ロードに変更（起動時インポート失敗の回避）",
+    ]),
     ("0.4.2", "2026-06-05", "16:44 JST", [
         "STL 描画をワイヤーフレーム＋頂点 scatter に変更（確実に表示）",
         "Tormek T8 自動配置の Y/Z 設定バグを修正（直接インデックス代入）",

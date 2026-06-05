@@ -11,11 +11,13 @@ from typing import Optional, List, TYPE_CHECKING
 
 import numpy as np
 
+_stl_mesh = None
+_HAS_STL = False
 try:
     from stl import mesh as _stl_mesh
     _HAS_STL = True
-except ImportError:
-    _HAS_STL = False
+except Exception:
+    pass
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -504,9 +506,11 @@ class Viewport3D:
     # ── Overlay ────────────────────────────────────────────────────────
 
     def load_stl(self, path: str):
-        if not _HAS_STL:
+        try:
+            from stl import mesh as _m
+        except Exception:
             return False
-        m = _stl_mesh.Mesh.from_file(path)
+        m = _m.Mesh.from_file(path)
         self._stl_verts = m.vectors.copy()  # (N,3,3)
         self._stl_name = os.path.basename(path)
         self._redraw()
