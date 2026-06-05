@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.4"
+APP_VERSION = "0.5.5"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.5", "2026-06-05", "23:25 JST", [
+        "3Dビューポートの左右余白をさらに削減（subplots_adjust left=-0.18, right=1.18）",
+        "ビューポート左側の黒い空白を最小化",
+    ]),
     ("0.5.4", "2026-06-05", "23:10 JST", [
         "FK（TCP位置/姿勢）表示を下部バーから関節ジョグパネル右列下部に移動",
         "下部バーの空白を解消し、ジョグパネル右側を有効活用",

@@ -235,7 +235,7 @@ class Viewport3D:
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
 
         self.fig = plt.figure(facecolor="#161B22")
-        self.fig.subplots_adjust(left=-0.08, right=1.08, bottom=-0.08, top=1.08)
+        self.fig.subplots_adjust(left=-0.18, right=1.18, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
         self._setup_axes()
 
