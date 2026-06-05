@@ -301,9 +301,33 @@ class MainWindow:
         pane.add(left, weight=5)
         self.viewport = Viewport3D(left, self.kin)
 
-        # 右：全パネルを固定高さで積み上げ（スクロールなしで全部見える）
-        right = ttk.Frame(pane)
-        pane.add(right, weight=2)
+        # 右：スクロール可能なパネル群
+        right_outer = ttk.Frame(pane)
+        pane.add(right_outer, weight=2)
+
+        # スクロールバー付きキャンバスで右全体を包む
+        right_sb = tk.Scrollbar(right_outer, orient=tk.VERTICAL)
+        right_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        right_canvas = tk.Canvas(right_outer, bg="#21262D",
+                                  yscrollcommand=right_sb.set,
+                                  highlightthickness=0)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_sb.config(command=right_canvas.yview)
+
+        right = ttk.Frame(right_canvas)
+        right_canvas_id = right_canvas.create_window((0, 0), window=right, anchor="nw")
+
+        def _on_right_configure(event):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        def _on_canvas_resize(event):
+            right_canvas.itemconfig(right_canvas_id, width=event.width)
+        right.bind("<Configure>", _on_right_configure)
+        right_canvas.bind("<Configure>", _on_canvas_resize)
+
+        # マウスホイールでスクロール
+        def _on_mousewheel(event):
+            right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        right_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         self._build_markers_panel(right)
 
