@@ -1,19 +1,20 @@
 @echo off
+title Blade Sharpening Robot Simulator
 cd /d "%~dp0"
 
-echo 最新版を確認中...
+echo Checking for latest version...
 git pull origin claude/zen-ptolemy-tUCsq
 if %ERRORLEVEL% neq 0 (
     echo.
-    echo [警告] 更新の取得に失敗しました。オフラインの可能性があります。
-    echo 現在インストール済みのバージョンで起動します。
+    echo [WARNING] Failed to fetch updates. You may be offline.
+    echo Starting with the currently installed version.
     echo.
 )
 
 python -m robot_sim.main
 if %ERRORLEVEL% neq 0 (
     echo.
-    echo エラーが発生しました。ライブラリが未インストールの場合は以下を実行してください:
+    echo [ERROR] An error occurred. If libraries are missing, run:
     echo   pip install -r requirements.txt
     pause
 )
