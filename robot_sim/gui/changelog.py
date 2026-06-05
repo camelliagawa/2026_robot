@@ -2,10 +2,13 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.6"
+APP_VERSION = "0.5.7"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.7", "2026-06-05", "23:52 JST", [
+        "関節スライダー列のexpand=Trueを廃止し、中間列（ファイル/シミュレーション/IK）を左寄せ",
+    ]),
     ("0.5.6", "2026-06-05", "23:40 JST", [
         "ファイルI/O・シミュレーション・逆運動学(IK)を下部バーから関節ジョグパネル中間列に移動",
         "下部コントロールバーを廃止し、3Dビューポートの縦方向スペースを拡大",

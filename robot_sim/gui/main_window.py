@@ -583,7 +583,7 @@ class MainWindow:
 
         # ---- 関節スライダー + ジョグボタン（統合パネル） ----
         slider_lf = ttk.LabelFrame(outer, text="  関節角度 / ジョグ操作")
-        slider_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        slider_lf.pack(side=tk.LEFT, fill=tk.Y)
 
         # モード選択 + ステップ幅（ヘッダー行）
         header = ttk.Frame(slider_lf)
