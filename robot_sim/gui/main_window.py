@@ -301,35 +301,25 @@ class MainWindow:
         pane.add(left, weight=5)
         self.viewport = Viewport3D(left, self.kin)
 
-        # 右：ルートエディタ + 更新履歴（PanedWindow で上下分割）
+        # 右：全パネルを固定高さで積み上げ（スクロールなしで全部見える）
         right = ttk.Frame(pane)
         pane.add(right, weight=2)
 
-        vpane = ttk.PanedWindow(right, orient=tk.VERTICAL)
-        vpane.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self._build_markers_panel(right)
 
-        # 上セクション: TCPマーカー + 経路点リスト
-        top_frame = ttk.Frame(vpane)
-        vpane.add(top_frame, weight=3)
-
-        self._build_markers_panel(top_frame)
-
-        route_lf = ttk.LabelFrame(top_frame,
+        route_lf = ttk.LabelFrame(right,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
-        route_lf.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
+        route_lf.pack(fill=tk.X, padx=4, pady=(4, 2))
         self.route_editor = RouteEditor(
             route_lf, self.route,
             on_change=self._on_route_changed,
             on_select=self._on_waypoint_selected,
+            listbox_height=7,
         )
-        self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.route_editor.pack(fill=tk.X, padx=4, pady=4)
 
-        # 下セクション: オーバーレイ + 更新履歴（常に表示）
-        bot_frame = ttk.Frame(vpane)
-        vpane.add(bot_frame, weight=2)
-
-        self._build_overlay_panel(bot_frame)
-        self._build_changelog_panel(bot_frame)
+        self._build_overlay_panel(right)
+        self._build_changelog_panel(right)
 
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
@@ -875,7 +865,7 @@ class MainWindow:
         sf_stl = ttk.LabelFrame(lf, text="  🔵 STL")
         sf_stl.pack(fill=tk.X, padx=4, pady=3)
         inner_stl = ttk.Frame(sf_stl)
-        inner_stl.pack(padx=4, pady=2)
+        inner_stl.pack(fill=tk.X, padx=4, pady=2)
         for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
             r, c = divmod(i, 3)
             tk.Label(inner_stl, text=axis, bg=BG_PANEL, fg=FG_SUB,
@@ -901,7 +891,7 @@ class MainWindow:
         sf_csv = ttk.LabelFrame(lf, text="  🟠 CSV")
         sf_csv.pack(fill=tk.X, padx=4, pady=3)
         inner_csv = ttk.Frame(sf_csv)
-        inner_csv.pack(padx=4, pady=2)
+        inner_csv.pack(fill=tk.X, padx=4, pady=2)
         for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
             r, c = divmod(i, 3)
             tk.Label(inner_csv, text=axis, bg=BG_PANEL, fg=FG_SUB,

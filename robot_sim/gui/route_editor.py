@@ -115,6 +115,7 @@ class RouteEditor(ttk.Frame):
         route: Route,
         on_change: Optional[Callable] = None,
         on_select: Optional[Callable[[int], None]] = None,
+        listbox_height: int = 20,
         **kwargs,
     ):
         """
@@ -128,6 +129,7 @@ class RouteEditor(ttk.Frame):
         self.route = route
         self.on_change = on_change
         self.on_select = on_select
+        self._listbox_height = listbox_height
 
         self._build_ui()
         self._refresh_list()
@@ -150,7 +152,7 @@ class RouteEditor(ttk.Frame):
 
         # Listbox with scrollbar
         list_frame = ttk.Frame(self)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        list_frame.pack(fill=tk.X, padx=4, pady=4)
 
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -165,7 +167,7 @@ class RouteEditor(ttk.Frame):
             selectbackground="#2255AA",
             selectforeground="white",
             activestyle="none",
-            height=20,
+            height=self._listbox_height,
         )
         self._listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self._listbox.yview)
