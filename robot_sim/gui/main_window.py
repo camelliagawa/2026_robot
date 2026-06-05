@@ -1401,8 +1401,10 @@ class MainWindow:
                     iy = -((ymin + ymax) / 2)
                     iz = -zmin  # 底面を Z=0 へ
                     self.viewport.set_stl_pose(ix, iy, iz, 0, 0, 0)
-                    for var, val in zip(self._stl_pose_vars[:3], [ix, iy, iz]):
-                        var.set(f"{val:.2f}")
+                    if len(self._stl_pose_vars) >= 3:
+                        self._stl_pose_vars[0].set(f"{ix:.2f}")
+                        self._stl_pose_vars[1].set(f"{iy:.2f}")
+                        self._stl_pose_vars[2].set(f"{iz:.2f}")
                 msgs.append("STL 読込済")
             else:
                 msgs.append("STL 読込失敗 (numpy-stl が必要)")

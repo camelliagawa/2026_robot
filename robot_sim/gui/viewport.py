@@ -577,13 +577,15 @@ class Viewport3D:
             R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
             verts = self._stl_verts.reshape(-1, 3)
             tverts = ((R @ verts.T).T + t).reshape(-1, 3, 3)
-            poly = Poly3DCollection(tverts, alpha=0.25,
-                                    facecolor="#4477CC", edgecolor="#6699FF",
-                                    linewidth=0.2)
-            self.ax.add_collection3d(poly)
+            # ワイヤーフレーム: 各三角形の辺を線で描画（確実に表示）
+            for tri in tverts[::3]:  # 間引いて高速化
+                xs = [tri[0,0], tri[1,0], tri[2,0], tri[0,0]]
+                ys = [tri[0,1], tri[1,1], tri[2,1], tri[0,1]]
+                zs = [tri[0,2], tri[1,2], tri[2,2], tri[0,2]]
+                self.ax.plot(xs, ys, zs, color="#6699FF", linewidth=0.4, alpha=0.6)
             ctr = tverts.mean(axis=(0, 1))
             self.ax.text(ctr[0], ctr[1], ctr[2],
-                         self._stl_name, color="#99BBFF", fontsize=6)
+                         self._stl_name, color="#99BBFF", fontsize=7)
         if self._csv_points is not None:
             R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
             pts = (R @ self._csv_points.T).T + t
