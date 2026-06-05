@@ -189,10 +189,12 @@ class Viewport3D:
         self._elev: float = 25.0
         self._azim: float = -45.0
 
-        self._overlay_verts: Optional[np.ndarray] = None  # (N,3,3) STL triangles
-        self._overlay_points: Optional[np.ndarray] = None  # (N,3) CSV points
-        self._overlay_name: str = ""
-        self._overlay_T: np.ndarray = np.eye(4)
+        self._stl_verts: Optional[np.ndarray] = None   # (N,3,3) STL triangles
+        self._stl_name: str = ""
+        self._stl_T: np.ndarray = np.eye(4)
+        self._csv_points: Optional[np.ndarray] = None  # (N,3) CSV points
+        self._csv_name: str = ""
+        self._csv_T: np.ndarray = np.eye(4)
 
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
@@ -505,9 +507,8 @@ class Viewport3D:
         if not _HAS_STL:
             return False
         m = _stl_mesh.Mesh.from_file(path)
-        self._overlay_verts = m.vectors.copy()  # (N,3,3)
-        self._overlay_points = None
-        self._overlay_name = os.path.basename(path)
+        self._stl_verts = m.vectors.copy()  # (N,3,3)
+        self._stl_name = os.path.basename(path)
         self._redraw()
         return True
 
@@ -523,46 +524,65 @@ class Viewport3D:
                     except ValueError:
                         pass
         if pts:
-            self._overlay_points = np.array(pts)
-            self._overlay_verts = None
-            self._overlay_name = os.path.basename(path)
+            self._csv_points = np.array(pts)
+            self._csv_name = os.path.basename(path)
             self._redraw()
             return True
         return False
 
-    def set_overlay_pose(self, x, y, z, rx, ry, rz):
+    def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
-        self._overlay_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._redraw()
+
+    def set_csv_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._redraw()
+
+    def set_overlay_pose(self, x, y, z, rx, ry, rz):
+        """Legacy: applies to whichever overlay is loaded (STL priority)."""
+        if self._stl_verts is not None:
+            self.set_stl_pose(x, y, z, rx, ry, rz)
+        else:
+            self.set_csv_pose(x, y, z, rx, ry, rz)
+
+    def clear_stl(self):
+        self._stl_verts = None
+        self._stl_name = ""
+        self._stl_T = np.eye(4)
+        self._redraw()
+
+    def clear_csv(self):
+        self._csv_points = None
+        self._csv_name = ""
+        self._csv_T = np.eye(4)
         self._redraw()
 
     def clear_overlay(self):
-        self._overlay_verts = None
-        self._overlay_points = None
-        self._overlay_name = ""
-        self._overlay_T = np.eye(4)
-        self._redraw()
+        self.clear_stl()
+        self.clear_csv()
 
     def _draw_overlay(self):
-        R = self._overlay_T[:3, :3]
-        t = self._overlay_T[:3, 3]
-        if self._overlay_verts is not None:
-            verts = self._overlay_verts.reshape(-1, 3)
-            tverts = (R @ verts.T).T + t
-            tverts = tverts.reshape(-1, 3, 3)
+        if self._stl_verts is not None:
+            R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
+            verts = self._stl_verts.reshape(-1, 3)
+            tverts = ((R @ verts.T).T + t).reshape(-1, 3, 3)
             poly = Poly3DCollection(tverts, alpha=0.35,
                                     facecolor="#6699FF", edgecolor="none",
                                     linewidth=0)
             self.ax.add_collection3d(poly)
             ctr = tverts.mean(axis=(0, 1))
             self.ax.text(ctr[0], ctr[1], ctr[2],
-                         self._overlay_name, color="#99BBFF", fontsize=6)
-        elif self._overlay_points is not None:
-            pts = (R @ self._overlay_points.T).T + t
+                         self._stl_name, color="#99BBFF", fontsize=6)
+        if self._csv_points is not None:
+            R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
+            pts = (R @ self._csv_points.T).T + t
             self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
-                            c="#6699FF", s=8, alpha=0.6, depthshade=False)
+                            c="#FF9944", s=8, alpha=0.6, depthshade=False)
             ctr = pts.mean(axis=0)
             self.ax.text(ctr[0], ctr[1], ctr[2],
-                         self._overlay_name, color="#99BBFF", fontsize=6)
+                         self._csv_name, color="#FFBB66", fontsize=6)
 
     # ── Markers ────────────────────────────────────────────────────────
 

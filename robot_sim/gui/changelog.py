@@ -2,10 +2,18 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.1", "2026-06-05", "17:00 JST", [
+        "STL と CSV のオーバーレイを独立したトランスフォームで管理",
+        "オーバーレイ位置パネルを「🔵 STL」「🟠 CSV」2セクションに分割",
+        "各軸入力欄でマウスホイールによるリアルタイム位置調整に対応",
+        "Ctrl+ホイール=10mm, Shift+ホイール=0.1mm, 通常=1mm",
+        "STL・CSV それぞれに独立したクリアボタンを追加",
+        "CSV 点群の表示色をオレンジ (#FF9944) に変更（STL青と区別）",
+    ]),
     ("0.4.0", "2026-06-05", "16:30 JST", [
         "assets/ フォルダを追加: Tormek_T8.stl・grinding_path_sample.csv を同梱",
         "ルートメニューに「🪨 Tormek T8 砥石を読み込む」を追加",
