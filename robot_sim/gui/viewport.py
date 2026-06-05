@@ -284,94 +284,70 @@ class Viewport3D:
                      f"{int(reach)}mm", color="#1E5A8F", fontsize=6, alpha=0.6)
 
     def _draw_robot(self, q: np.ndarray):
-        """
-        Draw FANUC LR Mate 200iD/14L with realistic geometry.
+        """Draw FANUC LR Mate 200iD/14L — v0.3.6 geometry."""
+        pos = self.kin.get_joint_positions(q)
+        tfs = self.kin.forward_all(q)
 
-        Key visual features of the actual robot:
-          - Wide lateral shoulder housing (most distinctive feature)
-          - Similar elbow housing at J3
-          - Yellow throughout; dark accents only at joint interfaces
-          - Slender cylindrical forearm and wrist
-        """
-        pos = self.kin.get_joint_positions(q)  # (7,3) base + J1…J6
-        tfs = self.kin.forward_all(q)           # list of 4x4 transforms
-
-        p0 = pos[0]   # base origin
-        p1 = pos[1]   # J2 shoulder axis
-        p2 = pos[2]   # J3 elbow axis
-        p3 = pos[3]   # J4 wrist-roll axis
-        p4 = pos[4]   # J5 wrist-pitch axis
-        p5 = pos[5]   # J6 wrist-spin axis
-        p6 = pos[6]   # flange face
-
-        # Joint frame rotations — used to orient housings correctly
-        R1 = tfs[1][:3, :3]   # J1 rotating frame
-        R2 = tfs[2][:3, :3]   # J2/upper-arm frame (for elbow housing)
+        p0 = pos[0]; p1 = pos[1]; p2 = pos[2]
+        p3 = pos[3]; p4 = pos[4]; p5 = pos[5]; p6 = pos[6]
+        R1 = tfs[1][:3, :3]
 
         ax = self.ax
 
-        # ─── ① ベース台座（固定・黄色ボックス） ─────────────────────────
-        # 実機: 幅広い矩形台座。全体が黄色。
+        # ① ベース台座（黄色ボックス）
         _rotated_box(ax, p0 + [0, 0, 44], np.eye(3),
                      lx=200, ly=160, lz=88, color=FANUC_YELLOW)
-        # 底面リップ（ダーク）
         _rotated_box(ax, p0 + [0, 0, 5], np.eye(3),
                      lx=232, ly=192, lz=10, color=FANUC_DARK_GRAY)
 
-        # ─── ② J1 回転胴体（ベース上〜肩下まで） ────────────────────────
-        # 実機: 台座から立ち上がる黄色の太いドラム形ボディ。J1と共に回転。
-        # 中心: J1フレーム内でZ方向185mm上 → [0,0,185] in J1 frame
+        # ② J1 回転胴体（黄色コラム）
         body_ctr = p0 + R1 @ np.array([0.0, 0.0, 185.0])
         _rotated_box(ax, body_ctr, R1, lx=120, ly=105, lz=190, color=FANUC_YELLOW)
 
-        # ─── ③ 肩ハウジング（最も特徴的・横長ボックス） ────────────────
-        # 実機: J2軸を中心に左右230mm張り出す幅広ハウジング。
-        # FANUCロボットの最も目立つ外観特徴。
-        _rotated_box(ax, p1, R1, lx=80, ly=230, lz=105, color=FANUC_YELLOW)
-        # 両側の丸みキャップ（側面ディスク）
-        _disk(ax, p1 + 115 * R1[:, 1],  R1[:, 1], 53, FANUC_YELLOW_D)
-        _disk(ax, p1 - 115 * R1[:, 1], -R1[:, 1], 53, FANUC_YELLOW_D)
+        # ③ 肩ハウジング
+        shoulder_ctr = (p0 + R1 @ np.array([0.0, 0.0, 200.0]) + p1) / 2
+        _rotated_box(ax, shoulder_ctr, R1,
+                     lx=80, ly=150,
+                     lz=float(np.linalg.norm(p1 - (p0 + R1 @ np.array([0.0, 0.0, 200.0])))) + 20,
+                     color=FANUC_YELLOW)
+        _disk(ax, p1,  R1[:, 1], 55, FANUC_YELLOW_D)
+        _disk(ax, p1, -R1[:, 1], 55, FANUC_YELLOW_D)
 
-        # ─── ④ 上腕リンク（J2→J3・矩形断面） ───────────────────────────
-        # 実機: 肩から肘まで長い矩形断面アーム（ボックス形状）
-        _box_link(ax, p1, p2, w=80, h=65, color=FANUC_YELLOW)
+        # ④ 上腕リンク（矩形断面）
+        _box_link(ax, p1, p2, w=85, h=65, color=FANUC_YELLOW)
 
-        # ─── ⑤ 肘ハウジング（J3・肩と同形の横長ボックス） ───────────────
-        # 実機: 肘部にも肩と同様の横長ハウジングがある（やや小型）
-        _rotated_box(ax, p2, R2, lx=60, ly=160, lz=72, color=FANUC_YELLOW)
-        _disk(ax, p2 + 80 * R2[:, 1],  R2[:, 1], 44, FANUC_YELLOW_D)
-        _disk(ax, p2 - 80 * R2[:, 1], -R2[:, 1], 44, FANUC_YELLOW_D)
+        # ⑤ 肘ジョイント
+        _sphere(ax, p2, 48, FANUC_BLACK, alpha=0.92, n=10)
 
-        # ─── ⑥ 前腕（J3→J4・円柱形） ───────────────────────────────────
-        # 実機: 肘から手首に向かって細くなる円筒形
-        _cylinder(ax, p2, p3, 34, FANUC_YELLOW, n=14)
-        _disk(ax, p2, -(p3 - p2), 34, FANUC_YELLOW_D)
-        _disk(ax, p3,   p3 - p2,  34, FANUC_YELLOW_D)
+        # ⑥ 前腕（矩形断面）
+        _box_link(ax, p2, p3, w=70, h=55, color=FANUC_YELLOW)
 
-        # ─── ⑦ 手首 J4（球体） + J4→J5 ─────────────────────────────────
-        _sphere(ax, p3, 34, FANUC_BLACK, n=10)
-        _cylinder(ax, p3, p4, 26, FANUC_YELLOW, n=12)
-        _disk(ax, p4, p4 - p3, 26, FANUC_YELLOW_D)
+        # ⑦ 手首 J4
+        _sphere(ax, p3, 40, FANUC_BLACK, alpha=0.92, n=10)
+        _cylinder(ax, p3, p4, 32, FANUC_YELLOW, n=12)
+        _disk(ax, p3, -(p4 - p3), 32, FANUC_YELLOW_D)
+        _disk(ax, p4,   p4 - p3,  32, FANUC_YELLOW_D)
 
-        # ─── ⑧ 手首 J5（球体） + J5→J6 ─────────────────────────────────
-        _sphere(ax, p4, 26, FANUC_BLACK, n=10)
-        _cylinder(ax, p4, p5, 21, FANUC_YELLOW, n=12)
-        _disk(ax, p5, p5 - p4, 21, FANUC_YELLOW_D)
+        # ⑧ 手首 J5
+        _sphere(ax, p4, 32, FANUC_BLACK, alpha=0.92, n=10)
+        _cylinder(ax, p4, p5, 26, FANUC_YELLOW, n=12)
+        _disk(ax, p4, -(p5 - p4), 26, FANUC_YELLOW_D)
+        _disk(ax, p5,   p5 - p4,  26, FANUC_YELLOW_D)
 
-        # ─── ⑨ 手首 J6（球体） + フランジ ───────────────────────────────
-        _sphere(ax, p5, 21, FANUC_BLACK, n=8)
-        _cylinder(ax, p5, p6, 18, FANUC_YELLOW, n=12)
+        # ⑨ 手首 J6 + フランジ
+        _sphere(ax, p5, 26, FANUC_BLACK, alpha=0.92, n=8)
+        _cylinder(ax, p5, p6, 20, FANUC_YELLOW, n=12)
         ee_dir = p6 - p5
         if np.linalg.norm(ee_dir) > 1e-3:
             nd = ee_dir / np.linalg.norm(ee_dir)
-            _disk(ax, p6,  nd, 28, FANUC_BLACK, alpha=0.95)
-            _cylinder(ax, p6, p6 + nd * 12, 28, FANUC_DARK_GRAY, n=12)
+            _disk(ax, p6,  nd, 30, FANUC_BLACK, alpha=0.95)
+            _cylinder(ax, p6, p6 + nd * 12, 30, FANUC_DARK_GRAY, n=12)
 
-        # ─── 地面への影 ──────────────────────────────────────────────────
+        # 影
         ax.plot(pos[:, 0], pos[:, 1], np.zeros(len(pos)),
                 color="#444444", lw=2.5, alpha=0.2)
 
-        # ─── EE 座標フレーム ──────────────────────────────────────────────
+        # EE 座標フレーム
         T_ee = self.kin.forward(q)
         origin = T_ee[:3, 3]
         R = T_ee[:3, :3]
@@ -384,7 +360,6 @@ class Viewport3D:
             ax.text(tip[0], tip[1], tip[2], name,
                     color=color, fontsize=6, alpha=0.85)
 
-        # ─── 包丁・TCP ───────────────────────────────────────────────────
         self._draw_knife(q, T_ee)
         self._draw_tcp(q, T_ee)
 
