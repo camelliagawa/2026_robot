@@ -11,13 +11,46 @@ from typing import Optional, List, TYPE_CHECKING
 
 import numpy as np
 
-_stl_mesh = None
-_HAS_STL = False
-try:
-    from stl import mesh as _stl_mesh
-    _HAS_STL = True
-except Exception:
-    pass
+def _load_stl_file(path: str) -> Optional[np.ndarray]:
+    """Load STL (binary or ASCII) without external libraries.
+    Returns (N,3,3) array of triangle vertices, or None on failure."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            header = f.read(80)
+            if header is None:
+                return None
+            # Try binary STL
+            data = f.read(4)
+            if len(data) < 4:
+                return None
+            n_tri = struct.unpack("<I", data)[0]
+            expected = n_tri * 50
+            raw = f.read(expected)
+            if len(raw) == expected:
+                tris = []
+                offset = 0
+                for _ in range(n_tri):
+                    offset += 12  # skip normal
+                    v1 = struct.unpack_from("<3f", raw, offset); offset += 12
+                    v2 = struct.unpack_from("<3f", raw, offset); offset += 12
+                    v3 = struct.unpack_from("<3f", raw, offset); offset += 12
+                    offset += 2   # skip attribute
+                    tris.append([v1, v2, v3])
+                return np.array(tris, dtype=np.float32)
+        # Fallback: ASCII STL
+        verts = []
+        with open(path, "r", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("vertex"):
+                    parts = line.split()
+                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        if len(verts) >= 3 and len(verts) % 3 == 0:
+            return np.array(verts, dtype=np.float32).reshape(-1, 3, 3)
+    except Exception:
+        pass
+    return None
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
@@ -506,12 +539,10 @@ class Viewport3D:
     # ── Overlay ────────────────────────────────────────────────────────
 
     def load_stl(self, path: str):
-        try:
-            from stl import mesh as _m
-        except Exception:
+        verts = _load_stl_file(path)
+        if verts is None:
             return False
-        m = _m.Mesh.from_file(path)
-        self._stl_verts = m.vectors.copy()  # (N,3,3)
+        self._stl_verts = verts
         self._stl_name = os.path.basename(path)
         self._redraw()
         return True

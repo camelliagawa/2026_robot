@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.4.3"
+APP_VERSION = "0.4.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.4", "2026-06-05", "16:55 JST", [
+        "STL 読み込みを numpy-stl 不要の純粋実装に変更（binary/ASCII 両対応）",
+        "外部ライブラリなしで STL が確実に表示されるよう改善",
+    ]),
     ("0.4.3", "2026-06-05", "16:53 JST", [
         "STL インポートを動的ロードに変更（起動時インポート失敗の回避）",
     ]),
