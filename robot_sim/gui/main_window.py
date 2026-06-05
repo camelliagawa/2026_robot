@@ -1393,10 +1393,13 @@ class MainWindow:
         if os.path.exists(stl_path):
             ok = self.viewport.load_stl(stl_path)
             if ok:
-                # STL をバウンディングボックス中心が原点に来るよう自動センタリング
-                ctr = self.viewport.stl_bbox_center()
-                if ctr:
-                    ix, iy, iz = -ctr[0], -ctr[1], -ctr[2]
+                # X/Y は中心を原点に、Z は底面が Z=0 になるよう配置
+                bb = self.viewport.stl_bbox()
+                if bb:
+                    xmin, xmax, ymin, ymax, zmin, zmax = bb
+                    ix = -((xmin + xmax) / 2)
+                    iy = -((ymin + ymax) / 2)
+                    iz = -zmin  # 底面を Z=0 へ
                     self.viewport.set_stl_pose(ix, iy, iz, 0, 0, 0)
                     for var, val in zip(self._stl_pose_vars[:3], [ix, iy, iz]):
                         var.set(f"{val:.2f}")

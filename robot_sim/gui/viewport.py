@@ -530,12 +530,14 @@ class Viewport3D:
             return True
         return False
 
-    def stl_bbox_center(self):
-        """Return (cx, cy, cz) of STL bounding box, or None if not loaded."""
+    def stl_bbox(self):
+        """Return (xmin,xmax, ymin,ymax, zmin,zmax) of STL, or None."""
         if self._stl_verts is None:
             return None
         v = self._stl_verts.reshape(-1, 3)
-        return (v[:, 0].mean(), v[:, 1].mean(), v[:, 2].mean())
+        return (v[:,0].min(), v[:,0].max(),
+                v[:,1].min(), v[:,1].max(),
+                v[:,2].min(), v[:,2].max())
 
     def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
@@ -575,9 +577,9 @@ class Viewport3D:
             R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
             verts = self._stl_verts.reshape(-1, 3)
             tverts = ((R @ verts.T).T + t).reshape(-1, 3, 3)
-            poly = Poly3DCollection(tverts, alpha=0.35,
-                                    facecolor="#6699FF", edgecolor="none",
-                                    linewidth=0)
+            poly = Poly3DCollection(tverts, alpha=0.25,
+                                    facecolor="#4477CC", edgecolor="#6699FF",
+                                    linewidth=0.2)
             self.ax.add_collection3d(poly)
             ctr = tverts.mean(axis=(0, 1))
             self.ax.text(ctr[0], ctr[1], ctr[2],
