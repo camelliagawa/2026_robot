@@ -2,10 +2,16 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.4.0"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.4.0", "2026-06-05", "16:30 JST", [
+        "assets/ フォルダを追加: Tormek_T8.stl・grinding_path_sample.csv を同梱",
+        "ルートメニューに「🪨 Tormek T8 砥石を読み込む」を追加",
+        "メニュー1クリックで砥石STLと研削経路CSVを同時読込可能",
+        "デスクトップショートカット作成スクリプト (create_shortcut.ps1 / .vbs) を追加",
+    ]),
     ("0.3.9", "2026-06-05", "11:20 JST", [
         "TCP・ターゲット管理パネルを追加（右パネル上部）",
         "「+ TCP」ボタン: 現在のロボットTCP位置にTCPマーカー（シアン★）を追加",
