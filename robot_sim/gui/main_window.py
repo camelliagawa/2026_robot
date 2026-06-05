@@ -861,70 +861,128 @@ class MainWindow:
                  "入力欄でマウスホイール → リアルタイム反映\n"
                  "Ctrl+ホイール=10mm, Shift+ホイール=0.1mm, 通常=1mm")
 
-        self._stl_pose_vars = []
-        self._csv_pose_vars = []
+        self._stl_pose_vars: list = []
+        self._csv_pose_vars: list = []
 
-        for kind, label, vars_list, apply_fn, clear_fn in [
-            ("STL", "🔵 STL", self._stl_pose_vars,
-             lambda: self._apply_overlay("stl"), lambda: self._clear_overlay("stl")),
-            ("CSV", "🟠 CSV", self._csv_pose_vars,
-             lambda: self._apply_overlay("csv"), lambda: self._clear_overlay("csv")),
-        ]:
-            sf = ttk.LabelFrame(lf, text=f"  {label}")
-            sf.pack(fill=tk.X, padx=4, pady=3)
-            inner = ttk.Frame(sf)
-            inner.pack(padx=4, pady=2)
-            for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
-                r, c = divmod(i, 3)
-                tk.Label(inner, text=axis, bg=BG_PANEL, fg=FG_SUB,
-                         font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
-                v = tk.StringVar(value="0.0")
-                vars_list.append(v)
-                ent = ttk.Entry(inner, textvariable=v, width=6)
-                ent.grid(row=r, column=c*2+1, padx=1, pady=1)
-                ent.bind("<MouseWheel>",
-                         lambda e, vl=vars_list, idx=i, af=apply_fn: self._overlay_scroll(e, vl, idx, af))
-                ent.bind("<Button-4>",
-                         lambda e, vl=vars_list, idx=i, af=apply_fn: self._overlay_scroll(e, vl, idx, af))
-                ent.bind("<Button-5>",
-                         lambda e, vl=vars_list, idx=i, af=apply_fn: self._overlay_scroll(e, vl, idx, af))
-            btn_row = ttk.Frame(sf)
-            btn_row.pack(padx=4, pady=(0, 3))
-            ttk.Button(btn_row, text="適用", style="Primary.TButton",
-                       command=apply_fn).pack(side=tk.LEFT, padx=2)
-            ttk.Button(btn_row, text="クリア",
-                       command=clear_fn).pack(side=tk.LEFT, padx=2)
+        # ── STL セクション ──────────────────────────────────────
+        sf_stl = ttk.LabelFrame(lf, text="  🔵 STL")
+        sf_stl.pack(fill=tk.X, padx=4, pady=3)
+        inner_stl = ttk.Frame(sf_stl)
+        inner_stl.pack(padx=4, pady=2)
+        for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+            r, c = divmod(i, 3)
+            tk.Label(inner_stl, text=axis, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
+            v = tk.StringVar(value="0.0")
+            self._stl_pose_vars.append(v)
+            ent = ttk.Entry(inner_stl, textvariable=v, width=6)
+            ent.grid(row=r, column=c*2+1, padx=1, pady=1)
+            ent.bind("<MouseWheel>",
+                     lambda e, idx=i: self._stl_scroll(e, idx))
+            ent.bind("<Button-4>",
+                     lambda e, idx=i: self._stl_scroll(e, idx))
+            ent.bind("<Button-5>",
+                     lambda e, idx=i: self._stl_scroll(e, idx))
+        btn_stl = ttk.Frame(sf_stl)
+        btn_stl.pack(padx=4, pady=(0, 3))
+        ttk.Button(btn_stl, text="適用", style="Primary.TButton",
+                   command=self._apply_stl_pose).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_stl, text="クリア",
+                   command=self._clear_stl).pack(side=tk.LEFT, padx=2)
 
-    def _overlay_scroll(self, event, vars_list, idx, apply_fn):
+        # ── CSV セクション ──────────────────────────────────────
+        sf_csv = ttk.LabelFrame(lf, text="  🟠 CSV")
+        sf_csv.pack(fill=tk.X, padx=4, pady=3)
+        inner_csv = ttk.Frame(sf_csv)
+        inner_csv.pack(padx=4, pady=2)
+        for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+            r, c = divmod(i, 3)
+            tk.Label(inner_csv, text=axis, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
+            v = tk.StringVar(value="0.0")
+            self._csv_pose_vars.append(v)
+            ent = ttk.Entry(inner_csv, textvariable=v, width=6)
+            ent.grid(row=r, column=c*2+1, padx=1, pady=1)
+            ent.bind("<MouseWheel>",
+                     lambda e, idx=i: self._csv_scroll(e, idx))
+            ent.bind("<Button-4>",
+                     lambda e, idx=i: self._csv_scroll(e, idx))
+            ent.bind("<Button-5>",
+                     lambda e, idx=i: self._csv_scroll(e, idx))
+        btn_csv = ttk.Frame(sf_csv)
+        btn_csv.pack(padx=4, pady=(0, 3))
+        ttk.Button(btn_csv, text="適用", style="Primary.TButton",
+                   command=self._apply_csv_pose).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_csv, text="クリア",
+                   command=self._clear_csv).pack(side=tk.LEFT, padx=2)
+
+    def _overlay_step(self, event) -> float:
         ctrl  = bool(event.state & 0x4)
         shift = bool(event.state & 0x1)
-        step  = 10.0 if ctrl else (0.1 if shift else 1.0)
+        return 10.0 if ctrl else (0.1 if shift else 1.0)
+
+    def _overlay_dir(self, event) -> int:
         if hasattr(event, "delta") and event.delta != 0:
-            direction = 1 if event.delta > 0 else -1
-        else:
-            direction = 1 if event.num == 4 else -1
+            return 1 if event.delta > 0 else -1
+        return 1 if event.num == 4 else -1
+
+    def _stl_scroll(self, event, idx: int):
         try:
-            current = float(vars_list[idx].get())
+            current = float(self._stl_pose_vars[idx].get())
         except ValueError:
             current = 0.0
-        vars_list[idx].set(f"{current + direction * step:.2f}")
-        apply_fn()
+        self._stl_pose_vars[idx].set(
+            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
+        self._apply_stl_pose()
         return "break"
 
-    def _apply_overlay(self, kind: str):
-        vars_list = self._stl_pose_vars if kind == "stl" else self._csv_pose_vars
+    def _csv_scroll(self, event, idx: int):
         try:
-            vals = [float(v.get()) for v in vars_list]
+            current = float(self._csv_pose_vars[idx].get())
+        except ValueError:
+            current = 0.0
+        self._csv_pose_vars[idx].set(
+            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
+        self._apply_csv_pose()
+        return "break"
+
+    def _apply_stl_pose(self):
+        try:
+            vals = [float(v.get()) for v in self._stl_pose_vars]
         except ValueError:
             self._set_status("⚠  数値を入力してください")
             return
-        if kind == "stl":
-            self.viewport.set_stl_pose(*vals)
-        else:
-            self.viewport.set_csv_pose(*vals)
+        self.viewport.set_stl_pose(*vals)
         self._set_status(
-            f"✔  {'STL' if kind == 'stl' else 'CSV'} 位置更新: "
-            f"X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
+            f"✔  STL 位置更新: X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
+
+    def _apply_csv_pose(self):
+        try:
+            vals = [float(v.get()) for v in self._csv_pose_vars]
+        except ValueError:
+            self._set_status("⚠  数値を入力してください")
+            return
+        self.viewport.set_csv_pose(*vals)
+        self._set_status(
+            f"✔  CSV 位置更新: X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
+
+    def _clear_stl(self):
+        self.viewport.clear_stl()
+        for v in self._stl_pose_vars:
+            v.set("0.0")
+        self._set_status("✔  STL オーバーレイをクリアしました")
+
+    def _clear_csv(self):
+        self.viewport.clear_csv()
+        for v in self._csv_pose_vars:
+            v.set("0.0")
+        self._set_status("✔  CSV オーバーレイをクリアしました")
+
+    def _apply_overlay(self, kind: str):
+        if kind == "stl":
+            self._apply_stl_pose()
+        else:
+            self._apply_csv_pose()
 
     def _clear_overlay(self, kind: str = "all"):
         if kind in ("stl", "all"):
