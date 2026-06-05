@@ -364,16 +364,23 @@ class MainWindow:
         ttk.Button(btn_row, text="現在TCP→", style="Primary.TButton",
                    command=self._mk_use_current_tcp).pack(side=tk.RIGHT, padx=2)
 
-        # 位置入力行（X/Y/Z）
+        # 位置入力行（X/Y/Z）― ホイールで ±1mm（Ctrl: ±10, Shift: ±0.1）
         pos_row = ttk.Frame(lf)
         pos_row.pack(fill=tk.X, padx=6, pady=(3, 5))
         self._mk_pos_vars = []
-        for lbl in ["X", "Y", "Z"]:
+        for axis_i, lbl in enumerate(["X", "Y", "Z"]):
             tk.Label(pos_row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
                      font=("", 8), width=2).pack(side=tk.LEFT)
             v = tk.StringVar(value="0.0")
             self._mk_pos_vars.append(v)
-            ttk.Entry(pos_row, textvariable=v, width=7).pack(side=tk.LEFT, padx=(0, 3))
+            ent = ttk.Entry(pos_row, textvariable=v, width=7)
+            ent.pack(side=tk.LEFT, padx=(0, 3))
+            ent.bind("<MouseWheel>",
+                     lambda e, i=axis_i: self._mk_scroll(e, i))
+            ent.bind("<Button-4>",
+                     lambda e, i=axis_i: self._mk_scroll(e, i))
+            ent.bind("<Button-5>",
+                     lambda e, i=axis_i: self._mk_scroll(e, i))
         ttk.Button(pos_row, text="適用", style="Primary.TButton",
                    command=self._mk_apply_pos).pack(side=tk.LEFT, padx=2)
 
@@ -433,6 +440,30 @@ class MainWindow:
             self._mk_apply_pos()
         else:
             self._set_status(f"✔  現在TCP位置: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+
+    def _mk_scroll(self, event, axis_idx: int):
+        """マウスホイールで X/Y/Z 値を増減し、即座にビューポートへ反映する。"""
+        # ステップ幅: Ctrl=10mm, Shift=0.1mm, 通常=1mm
+        ctrl  = bool(event.state & 0x4)
+        shift = bool(event.state & 0x1)
+        step  = 10.0 if ctrl else (0.1 if shift else 1.0)
+
+        # 上スクロール判定（Windows: delta>0, Linux: Button-4）
+        if hasattr(event, "delta") and event.delta != 0:
+            direction = 1 if event.delta > 0 else -1
+        else:
+            direction = 1 if event.num == 4 else -1
+
+        try:
+            current = float(self._mk_pos_vars[axis_idx].get())
+        except ValueError:
+            current = 0.0
+        self._mk_pos_vars[axis_idx].set(f"{current + direction * step:.2f}")
+
+        # 選択中のマーカーがあればリアルタイム更新
+        if self._mk_listbox.curselection():
+            self._mk_apply_pos()
+        return "break"
 
     def _on_mk_select(self, event=None):
         sel = self._mk_listbox.curselection()
