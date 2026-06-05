@@ -315,6 +315,7 @@ class MainWindow:
         )
         self.route_editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
+        self._build_overlay_panel(right)
         self._build_changelog_panel(right)
 
         if _HAS_DND:
@@ -851,12 +852,10 @@ class MainWindow:
             font=("Consolas", 9), anchor="w", justify="left")
         fk_detail.pack(padx=10, pady=8, anchor="w")
 
-        self._build_overlay_panel(ctrl)
-
     def _build_overlay_panel(self, parent):
         """STL/CSV overlay position control — independent per layer."""
-        lf = ttk.LabelFrame(parent, text="  オーバーレイ位置 (Overlay Pose)")
-        lf.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 0))
+        lf = ttk.LabelFrame(parent, text="  🪨 オーバーレイ位置 (STL / CSV Pose)")
+        lf.pack(fill=tk.X, padx=4, pady=(2, 2))
         _tip(lf, "STL・CSV それぞれの位置・姿勢を独立して調整できます。\n"
                  "X/Y/Z: 位置 (mm)  Rx/Ry/Rz: 姿勢 (°)\n"
                  "入力欄でマウスホイール → リアルタイム反映\n"
