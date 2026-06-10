@@ -387,7 +387,7 @@ class MainWindow:
         sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._mk_listbox = tk.Listbox(
-            lb_frame, height=4, yscrollcommand=sb.set,
+            lb_frame, height=2, yscrollcommand=sb.set,
             bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 8),
             selectbackground=BTN_PRIMARY, selectforeground="white",
             borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
@@ -705,12 +705,6 @@ class MainWindow:
                        command=lambda ax=i: self._jog(ax, -1)).pack(side=tk.LEFT, padx=(4, 1))
             ttk.Button(row, text="▶", style="Jog.TButton",
                        command=lambda ax=i: self._jog(ax, +1)).pack(side=tk.LEFT, padx=(1, 4))
-
-            # 可動範囲・速度（薄いメタ情報）
-            tk.Label(row,
-                text=f"  {lower[i]:.0f}〜{upper[i]:.0f}°   {speeds[i]:.0f}°/s",
-                bg=BG_PANEL, fg=FG_SUB, font=("", 7), anchor="w"
-            ).pack(side=tk.LEFT, padx=(4, 0))
 
         # モード切替でラベルを更新
         def _update_jog_labels(*_):

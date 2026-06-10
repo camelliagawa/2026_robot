@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.13"
+APP_VERSION = "0.5.14"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.5.14", "2026-06-10", "00:00 JST", [
+        "スライダー行の可動範囲・速度テキストを削除 → ツールチップ専用に（各軸ラベル・スライダーにカーソルを当てると表示）",
+        "TCP管理リストボックスを height=4 → height=2 に縮小（空の状態での無駄なスペースを削減）",
+    ]),
     ("0.5.13", "2026-06-06", "01:05 JST", [
         "コードレビュー: 不要コード削除・バグ修正",
         "_angles_display_var（未使用変数）を削除",
