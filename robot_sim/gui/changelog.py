@@ -2,10 +2,31 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.5.13"
+APP_VERSION = "0.6.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.6.4", "2026-06-11", "00:00 JST", [
+        "ワークフローバー追加: 「📂 CSV読込 →→ ▶ シミュ →→ 🔧 調整 →→ 📤 LS出力」",
+        "経路調整ダイアログ: 全経路点の位置オフセット・速度スケール・逆順化を一括適用",
+        "FANUC LSファイル読込 (ls_to_route): kenma.LS → HaL+HaR 自動インライン展開",
+        "複数 /PROG セクション対応: 結合適用 or ツリー追加を選択",
+    ]),
+    ("0.6.3", "2026-06-11", "00:00 JST", [
+        "RoboDK風ツリーパネル右クリックメニュー: UFrame/UTool編集・経路点IK移動・LS読込",
+        "ツリーダブルクリックで経路点IKジャンプ対応",
+        "Programs ノード: 読み込み済み LS プログラムをツリー管理",
+    ]),
+    ("0.6.2", "2026-06-11", "00:00 JST", [
+        "UF9 STONE 自動設定: STL bbox から grinder_top_z を算出して Z 座標に反映",
+        "デフォルト UF9: x=550 / y=-10 / z=332 / rz=90°",
+        "砥石 STL 未読込時は z=332mm をデフォルト値として使用",
+    ]),
+    ("0.6.1", "2026-06-11", "00:00 JST", [
+        "RoboDK風左ツリーパネルを追加: Station / Robot / Frames / Tools / Targets / Programs",
+        "経路変更時にツリーの Targets ノードを自動更新",
+        "最小ウィンドウ幅を 1340 → 1560 に拡大",
+    ]),
     ("0.5.13", "2026-06-06", "01:05 JST", [
         "コードレビュー: 不要コード削除・バグ修正",
         "_angles_display_var（未使用変数）を削除",

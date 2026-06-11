@@ -103,7 +103,7 @@ class MainWindow:
     """Top-level application window."""
 
     APP_TITLE = "FANUC LR Mate 200iD/14L  ｜  刃付けロボットシミュレータ"
-    MIN_WIDTH  = 1340
+    MIN_WIDTH  = 1560
     MIN_HEIGHT = 860
 
     TOOL_FRAMES  = [ToolFrame.flange(), ToolFrame.default_knife()]
@@ -117,6 +117,7 @@ class MainWindow:
         self._sim_running   = False
         self._active_tool   = self.TOOL_FRAMES[1]
         self._active_uframe = self.USER_FRAMES[0]
+        self._tree_programs: list = []   # [(prog_name, Route)]
 
         self._build_root()
         self._build_menu()
@@ -296,6 +297,12 @@ class MainWindow:
         right_outer.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(4, 0))
         right_outer.pack_propagate(False)
 
+        # ── ツリーパネル（RoboDK風・左サイド） ──────────────────────────
+        tree_outer = ttk.Frame(self.root, width=210)
+        tree_outer.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0), pady=(4, 0))
+        tree_outer.pack_propagate(False)
+        self._build_tree_panel(tree_outer)
+
         # ── 下部：折りたたみ式更新履歴（先にpackしてBOTTOM確保）──
         self._build_changelog_panel_collapsible(right_outer)
 
@@ -338,6 +345,9 @@ class MainWindow:
 
         # ジョグパネルを左コンテナ下部に（先にpackしてスペース確保）
         self._build_joint_jog_panel(left_container)
+
+        # ワークフローバー（ジョグの上・ビューポートの下）
+        self._build_workflow_bar(left_container)
 
         # 3D ビューポートは残りの全スペースを使う
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — ホイール: 拡大縮小  /  STL・CSV をドロップで読込")
@@ -1027,6 +1037,408 @@ class MainWindow:
         else:
             self._apply_csv_pose()
 
+    # ──────────────────────────────────────────────────────────────────
+    # RoboDK風 ツリーパネル
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_tree_panel(self, parent):
+        """Station ツリーパネルを構築する。"""
+        lf = ttk.LabelFrame(parent, text="  ステーション")
+        lf.pack(fill=tk.BOTH, expand=True, padx=2, pady=(2, 2))
+
+        tree_frame = ttk.Frame(lf)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        sb = tk.Scrollbar(tree_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._tree = ttk.Treeview(tree_frame, show="tree", selectmode="browse",
+                                   yscrollcommand=sb.set)
+        self._tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        sb.config(command=self._tree.yview)
+
+        self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self._tree.bind("<Double-Button-1>",  self._on_tree_double_click)
+        self._tree.bind("<Button-3>",          self._on_tree_right_click)
+
+        self._tree_refresh()
+
+    def _tree_refresh(self):
+        """ツリーを現在の状態で再描画する。"""
+        tree = self._tree
+        for item in tree.get_children():
+            tree.delete(item)
+
+        station = tree.insert("", "end", iid="station",
+                               text="📁 Station: 2026_robot", open=True)
+        robot   = tree.insert(station, "end", iid="robot",
+                               text="🤖 FANUC LR Mate 200iD/14L", open=True)
+
+        # Frames
+        frames = tree.insert(robot, "end", iid="frames",
+                              text="🔧 Frames", open=True)
+        for uf in self.USER_FRAMES:
+            tree.insert(frames, "end", iid=f"uf_{uf.number}",
+                         text=f"📐 UF{uf.number}: {uf.name}"
+                              f"  ({uf.x:.0f},{uf.y:.0f},{uf.z:.0f})")
+        # UF9 STONE – 固定参照エントリ（USER_FRAMES に含まれていない場合）
+        if not any(uf.number == 9 for uf in self.USER_FRAMES):
+            tree.insert(frames, "end", iid="uf_9",
+                         text="📐 UF9: STONE  (550,-10,332)  ← 未設定")
+
+        # Tools
+        tools_node = tree.insert(robot, "end", iid="tools",
+                                  text="🔨 Tools", open=True)
+        for tf in self.TOOL_FRAMES:
+            tree.insert(tools_node, "end", iid=f"ut_{tf.number}",
+                         text=f"🔑 UT{tf.number}: {tf.name}  (z={tf.z:.0f}mm)")
+
+        # Targets (経路点)
+        n = len(self.route.waypoints)
+        targets = tree.insert(robot, "end", iid="targets",
+                               text=f"🎯 Targets  ({n}点)",
+                               open=(n <= 30))
+        for i, wp in enumerate(self.route.waypoints):
+            lbl = wp.label or f"P[{i+1}]"
+            tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
+
+        # Programs (読み込み済み LS)
+        progs = tree.insert(robot, "end", iid="programs",
+                             text=f"📋 Programs  ({len(self._tree_programs)})",
+                             open=True)
+        for i, (name, _) in enumerate(self._tree_programs):
+            tree.insert(progs, "end", iid=f"prog_{i}", text=f"📄 {name}")
+
+    def _on_tree_select(self, event=None):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("wp_"):
+            idx = int(iid[3:])
+            if 0 <= idx < len(self.route.waypoints):
+                self.viewport.set_selected_waypoint(idx)
+                self._ik_wp_var.set(idx + 1)
+
+    def _on_tree_double_click(self, event=None):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("wp_"):
+            idx = int(iid[3:])
+            if 0 <= idx < len(self.route.waypoints):
+                self._ik_wp_var.set(idx + 1)
+                self._compute_ik_for_wp()
+
+    def _on_tree_right_click(self, event=None):
+        item = self._tree.identify_row(event.y)
+        if not item:
+            return
+        self._tree.selection_set(item)
+
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=BG_PANEL, fg=FG_PRIMARY,
+                       activebackground=BTN_PRIMARY, activeforeground="white",
+                       borderwidth=1, relief="solid")
+
+        if item.startswith("uf_"):
+            num = int(item[3:])
+            if num == 9:
+                menu.add_command(
+                    label="🏗  UF9 STONE を自動設定 (x550,y-10,STL Z)",
+                    command=self._setup_stone_uframe)
+                menu.add_separator()
+            menu.add_command(label="📐  UFrame 編集...",
+                             command=self._edit_user_frame)
+        elif item.startswith("ut_"):
+            menu.add_command(label="🔑  UTool 編集...",
+                             command=self._edit_tool_frame)
+        elif item.startswith("wp_"):
+            idx = int(item[3:])
+            menu.add_command(label=f"🎯  P[{idx+1}] へ IK 移動",
+                             command=lambda i=idx: self._tree_goto_wp(i))
+            menu.add_command(label="🗑  この経路点を削除",
+                             command=lambda i=idx: self._tree_delete_wp(i))
+        elif item == "targets":
+            menu.add_command(label="📂  CSV から読込...", command=self._load_csv)
+            menu.add_command(label="📋  LS ファイル読込...", command=self._load_ls_file)
+            menu.add_separator()
+            menu.add_command(label="🗑  経路をクリア", command=self._clear_route)
+        elif item == "programs":
+            menu.add_command(label="📂  FANUC LS ファイルを読込...",
+                             command=self._load_ls_file)
+        elif item.startswith("prog_"):
+            i = int(item[5:])
+            if 0 <= i < len(self._tree_programs):
+                name, route = self._tree_programs[i]
+                menu.add_command(label=f"▶  {name} を経路に適用",
+                                 command=lambda r=route: self._apply_prog_route(r))
+                menu.add_command(label="🗑  リストから削除",
+                                 command=lambda idx=i: self._remove_prog(idx))
+
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _tree_goto_wp(self, idx: int):
+        if 0 <= idx < len(self.route.waypoints):
+            self._ik_wp_var.set(idx + 1)
+            self._compute_ik_for_wp()
+
+    def _tree_delete_wp(self, idx: int):
+        if 0 <= idx < len(self.route.waypoints):
+            del self.route.waypoints[idx]
+            self.route_editor.set_route(self.route)
+            self._on_route_changed()
+
+    # ──────────────────────────────────────────────────────────────────
+    # ワークフローバー
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_workflow_bar(self, parent):
+        """「CSV読込 →→ シミュ →→ 調整 →→ LS出力」水平ワークフローバー。"""
+        bar = tk.Frame(parent, bg=BG_DARK, height=38)
+        bar.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+        bar.pack_propagate(False)
+
+        inner = tk.Frame(bar, bg=BG_DARK)
+        inner.pack(side=tk.LEFT, padx=8, pady=5)
+
+        steps = [
+            ("📂 CSV読込",  self._load_csv,            "研磨経路 CSV を読み込む (Ctrl+O)"),
+            ("▶ シミュ",    self._start_simulation,    "シミュレーション実行 (F5)"),
+            ("🔧 調整",     self._route_adjust_dialog, "経路点の位置・速度を一括調整"),
+            ("📤 LS出力",   self._export_tp,           "FANUC LS ファイルを出力 (Ctrl+E)"),
+        ]
+
+        for i, (label, cmd, tip) in enumerate(steps):
+            if i > 0:
+                tk.Label(inner, text=" → ", bg=BG_DARK, fg=ACCENT,
+                         font=("Consolas", 9, "bold")).pack(side=tk.LEFT)
+            style = "Primary.TButton" if i == 0 else "TButton"
+            btn = ttk.Button(inner, text=label, command=cmd, style=style)
+            btn.pack(side=tk.LEFT)
+            _tip(btn, tip)
+
+        # 右端: LS読込ボタン
+        ls_btn = ttk.Button(bar, text="📥 LS読込", command=self._load_ls_file)
+        ls_btn.pack(side=tk.RIGHT, padx=8, pady=5)
+        _tip(ls_btn, "FANUC .ls ファイルを読み込んでツリーに追加\n複数 /PROG（HaL/HaR 等）も対応")
+
+    # ──────────────────────────────────────────────────────────────────
+    # FANUC LS ファイル読込
+    # ──────────────────────────────────────────────────────────────────
+
+    def _load_ls_file(self):
+        """FANUC .ls ファイルを読み込む（ls_to_route 経由）。"""
+        from ..path.ls_parser import ls_to_route as _ls_to_route
+
+        path = filedialog.askopenfilename(
+            title="FANUC LS ファイルを開く",
+            filetypes=[("FANUC TP", "*.ls *.LS"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            routes = _ls_to_route(path, self.kin)
+        except Exception as e:
+            messagebox.showerror("LS 読込エラー", f"読込に失敗しました:\n{e}")
+            return
+
+        if not routes:
+            messagebox.showwarning("LS 読込", "有効な経路点が見つかりませんでした。")
+            return
+
+        base = os.path.basename(path)
+
+        if len(routes) == 1:
+            r = routes[0]
+            ans = messagebox.askyesno(
+                "LS 読込",
+                f"プログラム: {r.name}\n経路点数: {len(r.waypoints)} 点\n\n"
+                "現在の経路と置き換えますか？\n"
+                "「いいえ」→ ツリーに追加のみ",
+                icon="question")
+            if ans:
+                self._apply_prog_route(r)
+            else:
+                self._tree_programs.append((r.name, r))
+                self._tree_refresh()
+                self._set_status(
+                    f"✔  LS 読込 (ツリー追加): {r.name}  {len(r.waypoints)} 点")
+        else:
+            total = sum(len(r.waypoints) for r in routes)
+            names = " / ".join(r.name for r in routes)
+            ans = messagebox.askyesnocancel(
+                "LS 読込 — 複数プログラム",
+                f"検出プログラム数: {len(routes)}\n"
+                f"  {names}\n\n"
+                f"「はい」: 全プログラムを結合して経路に適用 ({total} 点)\n"
+                "「いいえ」: ツリーに追加のみ\n"
+                "「キャンセル」: 何もしない",
+                icon="question")
+            if ans is True:
+                merged = routes[0]
+                for r in routes[1:]:
+                    merged.waypoints.extend(r.waypoints)
+                merged.name = os.path.splitext(base)[0]
+                self._apply_prog_route(merged)
+            elif ans is False:
+                for r in routes:
+                    self._tree_programs.append((r.name, r))
+                self._tree_refresh()
+                self._set_status(
+                    f"✔  LS 読込 (ツリー追加): {len(routes)} プログラム  計 {total} 点")
+
+    def _apply_prog_route(self, route):
+        """読み込んだ Route を現在の経路として適用する。"""
+        self.route.waypoints = list(route.waypoints)
+        self.route.name      = route.name
+        self.route.comment   = route.comment
+        if route.uframe:
+            self.route.uframe = route.uframe
+        if route.utool:
+            self.route.utool  = route.utool
+        self.route_editor.set_route(self.route)
+        self.viewport.set_route(self.route)
+        self.viewport.refresh()
+        self._tree_refresh()
+        self._set_status(
+            f"✔  経路適用: {route.name}  {len(self.route)} 点")
+
+    def _remove_prog(self, idx: int):
+        if 0 <= idx < len(self._tree_programs):
+            del self._tree_programs[idx]
+            self._tree_refresh()
+
+    # ──────────────────────────────────────────────────────────────────
+    # UF9 STONE 自動設定
+    # ──────────────────────────────────────────────────────────────────
+
+    def _setup_stone_uframe(self):
+        """STL bbox の Z 最大値を grinder_top_z として UF9 STONE を自動設定する。"""
+        bb = self.viewport.stl_bbox()
+        if bb and self.viewport._stl_verts is not None:
+            R = self.viewport._stl_T[:3, :3]
+            t = self.viewport._stl_T[:3, 3]
+            all_v = self.viewport._stl_verts.reshape(-1, 3)
+            tv = ((R @ all_v.T).T + t)
+            grinder_top_z = float(tv[:, 2].max())
+        else:
+            grinder_top_z = 332.0
+
+        from ..robot.user_frame import UserFrame as _UF
+        uf9 = _UF(number=9, name="STONE",
+                  x=550.0, y=-10.0, z=grinder_top_z,
+                  rx=0.0,  ry=0.0,  rz=90.0,
+                  comment="Grinder top surface")
+
+        nums = [uf.number for uf in self.USER_FRAMES]
+        if 9 in nums:
+            self.USER_FRAMES[nums.index(9)] = uf9
+        else:
+            self.USER_FRAMES.append(uf9)
+
+        # コンボボックスを更新
+        uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
+        self._uframe_combo.config(values=uf_names)
+        idx9 = next(i for i, uf in enumerate(self.USER_FRAMES) if uf.number == 9)
+        self._uframe_combo.current(idx9)
+        self._active_uframe = self.USER_FRAMES[idx9]
+        self.viewport.set_user_frame(self._active_uframe)
+
+        self._tree_refresh()
+        self._set_status(
+            f"✔  UF9 STONE 設定: x=550, y=-10, z={grinder_top_z:.0f}mm, rz=90°")
+
+    # ──────────────────────────────────────────────────────────────────
+    # 経路調整ダイアログ
+    # ──────────────────────────────────────────────────────────────────
+
+    def _route_adjust_dialog(self):
+        """経路点を一括調整するダイアログを開く。"""
+        if not self.route.waypoints:
+            messagebox.showwarning("経路点なし", "経路点がありません。\nまず経路を読み込んでください。")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("経路調整")
+        win.geometry("420x390")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+
+        tk.Label(win, text="🔧  経路点一括調整",
+                 bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 11, "bold")).pack(pady=(12, 2), padx=12, anchor="w")
+        tk.Label(win,
+                 text=f"対象: {len(self.route.waypoints)} 点  [{self.route.name}]",
+                 bg=BG_DARK, fg=FG_SUB,
+                 font=("", 8)).pack(padx=12, anchor="w")
+
+        ttk.Separator(win).pack(fill=tk.X, padx=12, pady=8)
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16)
+
+        def section(text):
+            tk.Label(frame, text=text, bg=BG_PANEL, fg=ACCENT2,
+                     font=("Yu Gothic UI", 8, "bold")).pack(anchor="w", pady=(8, 2))
+
+        def row(label, default, hint=""):
+            f = ttk.Frame(frame)
+            f.pack(fill=tk.X, pady=2)
+            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
+                     font=("", 8), width=22, anchor="w").pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
+            if hint:
+                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
+                         font=("", 7)).pack(side=tk.LEFT, padx=4)
+            return var
+
+        section("▸ 位置オフセット (mm) — 全点に加算")
+        v_dx = row("ΔX:", "0", "前後方向シフト")
+        v_dy = row("ΔY:", "0", "左右方向シフト")
+        v_dz = row("ΔZ:", "0", "上下方向シフト")
+
+        section("▸ 速度調整")
+        v_spd = row("速度スケール (%):", "100", "100=変更なし  50=半速")
+
+        section("▸ 経路オプション")
+        v_rev = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="経路を逆順にする",
+                        variable=v_rev).pack(anchor="w", pady=2)
+
+        def _apply():
+            try:
+                dx  = float(v_dx.get())
+                dy  = float(v_dy.get())
+                dz  = float(v_dz.get())
+                spd = float(v_spd.get()) / 100.0
+            except ValueError:
+                messagebox.showerror("入力エラー", "数値を入力してください", parent=win)
+                return
+            for wp in self.route.waypoints:
+                wp.x += dx
+                wp.y += dy
+                wp.z += dz
+                wp.speed = max(1.0, wp.speed * spd)
+            if v_rev.get():
+                self.route.waypoints.reverse()
+            self.route_editor.set_route(self.route)
+            self._on_route_changed()
+            self._set_status(
+                f"✔  経路調整: ΔX={dx:.1f} ΔY={dy:.1f} ΔZ={dz:.1f}"
+                f"  速度×{spd:.2f}"
+                f"{'  逆順' if v_rev.get() else ''}")
+            win.destroy()
+
+        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=4)
+        ttk.Button(btn_row, text="✔  適用",
+                   style="Primary.TButton",
+                   command=_apply).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="キャンセル",
+                   command=win.destroy).pack(side=tk.LEFT, padx=6)
+
     def _on_viewport_drop(self, event):
         raw = event.data.strip()
         # Windows: path may be wrapped in braces for paths with spaces
@@ -1146,6 +1558,8 @@ class MainWindow:
         self.viewport.refresh()
         n   = len(self.route)
         self._set_status(f"✔  経路更新 — {n} 点")
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
 
     def _on_waypoint_selected(self, idx: int):
         self.viewport.set_selected_waypoint(idx)
