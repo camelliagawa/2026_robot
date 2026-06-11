@@ -36,6 +36,7 @@ from ..path.route import Route, Waypoint, MotionType
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
 from ..path.route_generator import SharpeningParams, generate_sharpening_route
+from ..path.curve_follow import generate_curve_follow
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION, CHANGELOG
@@ -59,6 +60,25 @@ OK_GREEN   = "#3FB950"   # 成功色
 ERR_RED    = "#F85149"   # エラー色
 BTN_PRIMARY = "#1F6FEB"  # プライマリボタン
 BTN_HOVER   = "#388BFD"
+
+
+# ── パスユーティリティ ──────────────────────────────────────────────────
+
+def _asset_path(name: str = "") -> str:
+    """assets ディレクトリ（または配下のファイル）の絶対パスを返す。"""
+    assets = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+    return os.path.join(assets, name) if name else assets
+
+
+def _validate_path(path: str, ext: str, label: str):
+    """realpath + isfile + 拡張子チェック。(正規化パス, エラーメッセージ or None) を返す。"""
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):
+        return path, "ファイルが見つかりません"
+    if not path.lower().endswith(ext):
+        return path, f"{label} ({ext}) を選択してください"
+    return path, None
 
 
 # ── ツールチップ ────────────────────────────────────────────────────────
@@ -326,6 +346,7 @@ class MainWindow:
         r.add_command(label="  🔪  研磨経路CSVを読み込む (kenma形式)", command=self._load_kenma_route)
         r.add_command(label="  📋  基本サンプルルートを読み込む",       command=self._load_sample_route)
         r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
+        r.add_command(label="  📐  曲線を辿る（刃付け生成）...",          command=self._curve_follow_dialog)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
         r.add_command(label="  🪨  Tormek T8 砥石を3D表示（STLのみ）",    command=self._load_tormek_stl)
@@ -1571,12 +1592,9 @@ class MainWindow:
             filetypes=[("FANUC TP", "*.ls *.LS"), ("All files", "*.*")])
         if not path:
             return
-        path = os.path.realpath(path)
-        if not os.path.isfile(path):
-            messagebox.showerror("LS 読込エラー", "ファイルが見つかりません")
-            return
-        if not path.lower().endswith(".ls"):
-            messagebox.showerror("LS 読込エラー", "LS ファイル (.ls) を選択してください")
+        path, err = _validate_path(path, ".ls", "LS ファイル")
+        if err:
+            messagebox.showerror("LS 読込エラー", err)
             return
         try:
             routes = _ls_to_route(path, self.kin)
@@ -1919,12 +1937,9 @@ class MainWindow:
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path:
             return
-        path = os.path.realpath(path)
-        if not os.path.isfile(path):
-            messagebox.showerror("読込エラー", "ファイルが見つかりません")
-            return
-        if not path.lower().endswith(".csv"):
-            messagebox.showerror("読込エラー", "CSV ファイル (.csv) を選択してください")
+        path, err = _validate_path(path, ".csv", "CSV ファイル")
+        if err:
+            messagebox.showerror("読込エラー", err)
             return
         try:
             loaded = RouteCSVIO.route_from_csv(path)
@@ -2191,7 +2206,7 @@ class MainWindow:
 
     def _load_kenma_route(self):
         """研磨経路CSV（kenma形式）を読み込む。"""
-        assets = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+        assets = _asset_path()
         default = os.path.join(assets, "kenma_route.csv")
         path = filedialog.askopenfilename(
             title="研磨経路CSV を開く（kenma形式）",
@@ -2250,9 +2265,7 @@ class MainWindow:
 
     def _load_tormek_stl(self):
         """Tormek T8 STL のみ読み込む（研削経路CSVは読み込まない）。"""
-        assets = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
-        stl_path = os.path.realpath(os.path.join(assets, "Tormek_T8.stl"))
+        stl_path = os.path.realpath(_asset_path("Tormek_T8.stl"))
         if not os.path.isfile(stl_path):
             self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
             return
@@ -2279,9 +2292,7 @@ class MainWindow:
 
     def _load_tormek_csv(self):
         """Tormek 研削経路 CSV のみ読み込む（STLは触らない）。"""
-        assets = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
-        csv_path = os.path.join(assets, "grinding_path_sample.csv")
+        csv_path = _asset_path("grinding_path_sample.csv")
         if not os.path.exists(csv_path):
             self._set_status("⚠  研削経路 CSV が見つかりません: " + csv_path)
             return
@@ -2290,11 +2301,6 @@ class MainWindow:
             self._set_status("✔  Tormek 研削経路 CSV 読込済")
         else:
             self._set_status("⚠  CSV 読込失敗")
-
-    def _load_tormek_sample(self):
-        """後方互換: STL + CSV を両方読み込む（起動時の自動ロード用）。"""
-        self._load_tormek_stl()
-        self._load_tormek_csv()
 
     def _auto_generate_route(self):
         win = tk.Toplevel(self.root)
@@ -2381,6 +2387,106 @@ class MainWindow:
         btn_row = ttk.Frame(win)
         btn_row.pack(pady=4)
         ttk.Button(btn_row, text="⚙  ルートを生成する",
+                   style="Primary.TButton",
+                   command=on_generate).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="キャンセル",
+                   command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+    def _curve_follow_dialog(self):
+        """RoboDK「曲線を辿るプロジェクト」相当: 刃先CSVの各点を砥石接触点へ接触させる刃付けルートを生成。"""
+        if not self.viewport.has_blade():
+            self._set_status("⚠  刃先CSV が読み込まれていません — 先に刃先CSVを読み込んでください")
+            return
+        frames = self.viewport.get_ref_frames()
+        if not frames:
+            self._set_status("⚠  参照フレームがありません — 砥石STLを読み込むか参照フレームを追加してください")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("曲線を辿る（刃付けルート生成）")
+        win.geometry("460x400")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+
+        tk.Label(win, text="📐  曲線を辿る（刃付けルート生成）",
+                 bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(14, 2), padx=16, anchor="w")
+        tk.Label(win,
+            text="刃先CSVの各点を順番に砥石の接触点（参照フレーム原点）へ\n"
+                 "接触させる刃付けルートを生成し、既存ウェイポイントに追加します。",
+            bg=BG_DARK, fg=FG_SUB,
+            font=("Yu Gothic UI", 8), justify="left").pack(padx=16, anchor="w")
+
+        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16)
+
+        def row(label, default, hint=""):
+            f = ttk.Frame(frame)
+            f.pack(fill=tk.X, pady=2)
+            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
+                     font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
+            if hint:
+                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
+                         font=("", 7)).pack(side=tk.LEFT, padx=4)
+            return var
+
+        names = [f["name"] for f in frames]
+        fr = ttk.Frame(frame)
+        fr.pack(fill=tk.X, pady=2)
+        tk.Label(fr, text="参照フレーム（接触点）:", bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
+        v_frame = tk.StringVar(
+            value="UF9: STONE" if "UF9: STONE" in names else names[0])
+        ttk.Combobox(fr, textvariable=v_frame, values=names,
+                     state="readonly", width=16).pack(side=tk.LEFT)
+
+        v_ang  = row("刃付け角度 °:",        15.0, "一般的: 10〜20°")
+        v_step = row("間引きステップ:",       5,    "N点ごとに1点を使用")
+        v_spd  = row("送り速度 mm/s:",       30.0)
+        v_app  = row("アプローチ距離 mm:",    30.0)
+
+        def on_generate():
+            try:
+                sel = v_frame.get()
+                T_contact = next(
+                    f["T"] for f in self.viewport.get_ref_frames()
+                    if f["name"] == sel)
+                vals = [float(v.get()) for v in self._blade_pose_vars]
+                T_blade = Kinematics.pose_to_transform(*vals)
+                wps, n_bad = generate_curve_follow(
+                    self.viewport._blade_pts,
+                    self.viewport._blade_normals,
+                    T_blade, T_contact, self.kin,
+                    edge_angle_deg=float(v_ang.get()),
+                    step=int(v_step.get()),
+                    speed=float(v_spd.get()),
+                    approach_mm=float(v_app.get()))
+                if not wps:
+                    messagebox.showwarning(
+                        "生成結果",
+                        "到達可能なウェイポイントが生成できませんでした。\n"
+                        "刃先CSVの取付姿勢や参照フレーム位置を確認してください。",
+                        parent=win)
+                    return
+                self.route.waypoints.extend(wps)
+                self.route_editor.set_route(self.route)
+                self.viewport.set_route(self.route)
+                self.viewport.refresh()
+                self._set_status(
+                    f"✔  曲線追従ルートを生成: {len(wps)}点 "
+                    f"(到達不能 {n_bad}点スキップ)")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("生成エラー", str(e), parent=win)
+
+        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=4)
+        ttk.Button(btn_row, text="📐  ルートを生成する",
                    style="Primary.TButton",
                    command=on_generate).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_row, text="キャンセル",

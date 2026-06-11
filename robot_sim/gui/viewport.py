@@ -602,22 +602,29 @@ class Viewport3D:
         self.ax.text(tcp_pos[0] + 12, tcp_pos[1] + 12, tcp_pos[2] + 12,
                      "TCP", color=TCP_COLOR, fontsize=7, alpha=0.9)
 
+    def _draw_frame_triad(self, T: np.ndarray, scale: float,
+                          axis_colors, axis_labels=None,
+                          lw: float = 2.0, alpha: float = 0.85):
+        """座標フレームの XYZ 軸トライアドを描画する共通ヘルパー。"""
+        origin = T[:3, 3]
+        R      = T[:3, :3]
+        for col in range(3):
+            tip = origin + scale * R[:, col]
+            self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
+                         [origin[2], tip[2]],
+                         color=axis_colors[col], lw=lw, alpha=alpha)
+            if axis_labels:
+                self.ax.text(tip[0], tip[1], tip[2],
+                             axis_labels[col], color=axis_colors[col], fontsize=7)
+        return origin
+
     def _draw_user_frame(self):
         """Draw user frame coordinate axes."""
         if self._user_frame is None:
             return
-        T_uf   = self._user_frame.to_transform()
-        origin = T_uf[:3, 3]
-        R      = T_uf[:3, :3]
-        scale  = 120
-
-        for col, (color, lbl) in enumerate(
-                zip([UFRAME_COLOR, "#88FF88", "#8888FF"], ["Ux", "Uy", "Uz"])):
-            tip = origin + scale * R[:, col]
-            self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
-                         [origin[2], tip[2]], color=color, lw=2.0, alpha=0.85)
-            self.ax.text(tip[0], tip[1], tip[2],
-                         lbl, color=color, fontsize=7)
+        origin = self._draw_frame_triad(
+            self._user_frame.to_transform(), 120,
+            [UFRAME_COLOR, "#88FF88", "#8888FF"], ["Ux", "Uy", "Uz"])
 
         self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
                         c=UFRAME_COLOR, s=60, zorder=7,
@@ -900,16 +907,11 @@ class Viewport3D:
 
     def _draw_ref_frames(self):
         """Draw all named reference frames as XYZ axis triads with labels."""
-        scale = 80
         for rf in self._ref_frames:
-            T = rf["T"]
-            origin = T[:3, 3]
-            R = T[:3, :3]
             base_color = rf.get("color", "#FF88FF")
-            for col, clr in enumerate(["#FF4444", "#44FF44", "#4444FF"]):
-                tip = origin + scale * R[:, col]
-                self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
-                             [origin[2], tip[2]], color=clr, lw=2.5, alpha=0.9)
+            origin = self._draw_frame_triad(
+                rf["T"], 80, ["#FF4444", "#44FF44", "#4444FF"],
+                lw=2.5, alpha=0.9)
             self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
                             c=base_color, s=80, zorder=8, depthshade=False, marker="D")
             self.ax.text(origin[0]+12, origin[1]+12, origin[2]+12,
