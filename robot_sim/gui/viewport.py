@@ -225,6 +225,7 @@ class Viewport3D:
         self._azim: float = -45.0
         self._pan_cx: float = 0.0
         self._pan_cy: float = 0.0
+        self._pan_cz: float = 400.0   # Z中心（地面0固定だとズーム時に上下にドリフトするため）
         self._rotate_start = None  # (x, y, elev0, azim0)
         self._pan_start    = None  # (x, y, cx0, cy0)
 
@@ -349,9 +350,10 @@ class Viewport3D:
         ax.set_facecolor("#0D1117")
 
         lim = 700 * self._zoom_scale
+        zhalf = lim * 0.8   # 高さレンジは従来同様 1.6*lim、ただし中心固定でズーム
         ax.set_xlim(self._pan_cx - lim, self._pan_cx + lim)
         ax.set_ylim(self._pan_cy - lim, self._pan_cy + lim)
-        ax.set_zlim(0, lim * 1.6)
+        ax.set_zlim(self._pan_cz - zhalf, self._pan_cz + zhalf)
 
         ax.set_xlabel("X [mm]", color="#8B949E", fontsize=7, labelpad=2)
         ax.set_ylabel("Y [mm]", color="#8B949E", fontsize=7, labelpad=2)
@@ -360,7 +362,8 @@ class Viewport3D:
         step = int(lim / 3 / 100) * 100 or 100
         ticks = list(range(int(self._pan_cx - lim), int(self._pan_cx + lim) + 1, step))
         yticks = list(range(int(self._pan_cy - lim), int(self._pan_cy + lim) + 1, step))
-        zticks = list(range(0, int(lim * 1.6) + 1, step))
+        z0 = int((self._pan_cz - zhalf) // step) * step
+        zticks = list(range(z0, int(self._pan_cz + zhalf) + 1, step))
         ax.set_xticks(ticks); ax.set_yticks(yticks); ax.set_zticks(zticks)
         ax.tick_params(colors="#555E6A", labelsize=6, length=2, pad=1)
         ax.xaxis.set_tick_params(labelcolor="#555E6A")
