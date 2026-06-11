@@ -308,7 +308,7 @@ class Viewport3D:
     def _on_mpress(self, event):
         if event.button == 1:
             self._rotate_start = (event.x, event.y, self._elev, self._azim)
-        elif event.button == 3:
+        elif event.button in (2, 3):   # 右ボタン or ホイール（中）ボタン = パン
             self._pan_start = (event.x, event.y, self._pan_cx, self._pan_cy)
 
     def _on_mrelease(self, event):
@@ -322,7 +322,7 @@ class Viewport3D:
             self._azim = self._rotate_start[3] - dx * 0.5
             self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
             self._redraw()
-        elif self._pan_start is not None and event.button == 3:
+        elif self._pan_start is not None and event.button in (2, 3):
             lim = 700.0 * self._zoom_scale
             fig_w = self.fig.get_figwidth() * self.fig.dpi
             scale = (2.0 * lim) / max(fig_w, 1.0)

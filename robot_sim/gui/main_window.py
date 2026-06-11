@@ -351,7 +351,7 @@ class MainWindow:
         self._build_workflow_bar(left_container)
 
         # 3D ビューポートは残りの全スペースを使う
-        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右ドラッグ: パン  /  ホイール: ズーム  /  STL・CSV をドロップで読込")
+        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: ズーム  /  STL・CSV をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = Viewport3D(left, self.kin)
 
