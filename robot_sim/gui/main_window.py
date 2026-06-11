@@ -120,6 +120,10 @@ class MainWindow:
         self._tree_programs: list = []   # [(prog_name, Route)]
         self._blade_csv_path: Optional[str] = None
 
+        # 文字サイズ（小/中/大）— 既定は「中」
+        self._orig_fonts: dict = {}
+        self._font_scale: float = 1.3
+
         self._build_root()
         self._build_menu()
         # Bottom panels must be packed BEFORE expand=True main panel
@@ -132,6 +136,15 @@ class MainWindow:
         self.viewport.set_user_frame(self._active_uframe)
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
+
+        # 研磨機（Tormek T8 STL）を起動時から表示
+        try:
+            self._load_tormek_sample()
+        except Exception:
+            pass
+
+        # 既定の文字サイズ（中）を全体に適用
+        self._set_font_scale(self._font_scale)
 
     # ──────────────────────────────────────────────────────────────────
     # Root window & style
@@ -231,6 +244,59 @@ class MainWindow:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ──────────────────────────────────────────────────────────────────
+    # 文字サイズ（小/中/大）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _set_font_scale(self, scale: float):
+        """UI全体の文字サイズを倍率 scale で再設定する（小=1.1/中=1.3/大=1.6）。"""
+        import tkinter.font as tkfont
+        self._font_scale = scale
+
+        def fnt(size, *flags, fam="Yu Gothic UI"):
+            return (fam, max(6, int(round(size * scale))), *flags)
+
+        # ── ttk スタイルのフォントを再設定 ──────────────────────────
+        s = ttk.Style()
+        s.configure(".",                  font=fnt(9))
+        s.configure("TButton",            font=fnt(9))
+        s.configure("Primary.TButton",    font=fnt(9, "bold"))
+        s.configure("Danger.TButton",     font=fnt(9))
+        s.configure("Jog.TButton",        font=fnt(10, "bold", fam=""))
+        s.configure("TLabelframe.Label",  font=fnt(9, "bold"))
+        s.configure("TEntry",             font=fnt(9))
+        s.configure("TCombobox",          font=fnt(9))
+        s.configure("Treeview",           font=fnt(9),
+                    rowheight=max(16, int(round(20 * scale))))
+        s.configure("Treeview.Heading",   font=fnt(8, "bold"))
+
+        # ── tk ウィジェット（Label/Button/Entry/Text/Listbox）を再設定 ──
+        def walk(w):
+            try:
+                cur = w.cget("font")
+            except Exception:
+                cur = ""
+            if cur:
+                key = str(w)
+                if key not in self._orig_fonts:
+                    self._orig_fonts[key] = cur
+                try:
+                    fo = tkfont.Font(font=self._orig_fonts[key])
+                    fam    = fo.actual("family")
+                    size   = abs(fo.actual("size"))
+                    flags  = []
+                    if fo.actual("weight") == "bold":
+                        flags.append("bold")
+                    if fo.actual("slant") == "italic":
+                        flags.append("italic")
+                    w.configure(font=(fam, max(6, int(round(size * scale))), *flags))
+                except Exception:
+                    pass
+            for c in w.winfo_children():
+                walk(c)
+
+        walk(self.root)
+
+    # ──────────────────────────────────────────────────────────────────
     # Menu bar
     # ──────────────────────────────────────────────────────────────────
 
@@ -276,6 +342,15 @@ class MainWindow:
         rb.add_separator()
         rb.add_command(label="  📊  DH パラメータを表示",     command=self._show_dh_params)
         rb.add_command(label="  📋  ロボット仕様を表示",       command=self._show_robot_specs)
+
+        # 表示
+        v = menu("  表示 (View)  ")
+        self._font_size_var = tk.StringVar(value="中")
+        for lbl, sc in [("小", 1.1), ("中", 1.3), ("大", 1.6)]:
+            v.add_radiobutton(
+                label=f"  🔠  文字サイズ: {lbl}",
+                variable=self._font_size_var, value=lbl,
+                command=lambda s=sc: self._set_font_scale(s))
 
         # ヘルプ
         h = menu("  ヘルプ (Help)  ")
@@ -437,6 +512,7 @@ class MainWindow:
                      lambda e, i=axis_i: self._mk_scroll(e, i))
             ent.bind("<Button-5>",
                      lambda e, i=axis_i: self._mk_scroll(e, i))
+            ent.bind("<Return>", lambda e: self._mk_apply_pos())
         ttk.Button(pos_row, text="適用", style="Primary.TButton",
                    command=self._mk_apply_pos).pack(side=tk.LEFT, padx=2)
 
@@ -937,6 +1013,7 @@ class MainWindow:
                      lambda e, idx=i: self._stl_scroll(e, idx))
             ent.bind("<Button-5>",
                      lambda e, idx=i: self._stl_scroll(e, idx))
+            ent.bind("<Return>", lambda e: self._apply_stl_pose())
         btn_stl = ttk.Frame(sf_stl)
         btn_stl.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_stl, text="適用", style="Primary.TButton",
@@ -963,6 +1040,7 @@ class MainWindow:
                      lambda e, idx=i: self._csv_scroll(e, idx))
             ent.bind("<Button-5>",
                      lambda e, idx=i: self._csv_scroll(e, idx))
+            ent.bind("<Return>", lambda e: self._apply_csv_pose())
         btn_csv = ttk.Frame(sf_csv)
         btn_csv.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_csv, text="適用", style="Primary.TButton",
@@ -996,6 +1074,7 @@ class MainWindow:
                      lambda e, idx=i: self._blade_scroll(e, idx))
             ent.bind("<Button-5>",
                      lambda e, idx=i: self._blade_scroll(e, idx))
+            ent.bind("<Return>", lambda e: self._apply_blade_pose())
         btn_blade = ttk.Frame(sf_blade)
         btn_blade.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_blade, text="適用", style="Primary.TButton",

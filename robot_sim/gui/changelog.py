@@ -2,10 +2,15 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.6.8"
+APP_VERSION = "0.6.9"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.6.9", "2026-06-11", "13:04 JST", [
+        "オーバーレイ/刃先/マーカーの数値入力欄: Enterキーで3Dビューに即反映",
+        "研磨機（Tormek T8 STL）を起動時から自動表示",
+        "文字サイズを拡大し、メニュー「表示(View)」から 小/中/大 を選択可能に（既定=中）",
+    ]),
     ("0.6.8", "2026-06-11", "12:55 JST", [
         "マウス操作をRoboDK相当に刷新: ホイールはカーソル位置を固定したまま3Dズーム",
         "パンを画面平面ドラッグ化（上下ドラッグでZ方向にも移動）— 掴んだ点がカーソルに追従",
