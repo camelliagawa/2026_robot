@@ -319,6 +319,10 @@ class Kinematics:
             if result.fun < best_cost:
                 best_cost = result.fun
                 best_q = result.x
+            if best_cost < 1e-9:
+                # Practically exact (pos err ~3e-5 mm) — stop early.
+                # Keeps the solution in the branch of the provided seed.
+                break
 
         if best_q is None:
             return None, False

@@ -36,6 +36,10 @@ class Waypoint:
         motion_type : MotionType enum
         label       : Optional name/comment
         id          : Unique identifier
+        cnt         : FANUC termination type — None = FINE, int n = CNTn
+        joint_speed_pct : Explicit % speed for JOINT motions (overrides speed)
+        call        : If set, this entry is a "CALL <prog>" instruction
+                      instead of a motion (no /POS entry is generated)
     """
     x: float = 0.0
     y: float = 0.0
@@ -47,6 +51,9 @@ class Waypoint:
     motion_type: MotionType = MotionType.LINEAR
     label: str = ""
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    cnt: Optional[int] = None
+    joint_speed_pct: Optional[int] = None
+    call: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Conversions
@@ -76,6 +83,9 @@ class Waypoint:
             "motion_type": self.motion_type.value,
             "label": self.label,
             "id": self.id,
+            "cnt": self.cnt,
+            "joint_speed_pct": self.joint_speed_pct,
+            "call": self.call,
         }
 
     @classmethod
@@ -92,6 +102,10 @@ class Waypoint:
             motion_type=mt,
             label=str(d.get("label", "")),
             id=str(d.get("id", str(uuid.uuid4())[:8])),
+            cnt=(int(d["cnt"]) if d.get("cnt") is not None else None),
+            joint_speed_pct=(int(d["joint_speed_pct"])
+                             if d.get("joint_speed_pct") is not None else None),
+            call=(str(d["call"]) if d.get("call") else None),
         )
 
     def __str__(self) -> str:
@@ -204,8 +218,7 @@ class Route:
         """
         Create a sample knife sharpening route.
 
-        The route simulates passing the knife blade across a whetstone
-        at an angle, with forward/backward strokes.
+        Minimal sample: Home → Approach → Retract (no stroke waypoints).
         """
         route = cls(name="KNIFE_SHARPEN", comment="Knife sharpening demo route")
 
@@ -223,22 +236,6 @@ class Route:
             x=400, y=-80, z=250, rx=180, ry=15, rz=0,
             speed=50, motion_type=MotionType.LINEAR, label="Approach"
         ))
-
-        # Sharpening strokes: sweep along Y-axis (side-to-side) at stone height
-        # Each stroke moves blade tip across the stone surface
-        stroke_y = [-80, -40, 0, 40, 80]
-        for i, sy in enumerate(stroke_y):
-            route.add_waypoint(Waypoint(
-                x=400, y=sy, z=250, rx=180, ry=15, rz=0,
-                speed=30, motion_type=MotionType.LINEAR, label=f"Fwd_{i+1}"
-            ))
-
-        # Return strokes (reverse direction)
-        for i, sy in enumerate(reversed(stroke_y)):
-            route.add_waypoint(Waypoint(
-                x=400, y=sy, z=250, rx=180, ry=15, rz=0,
-                speed=30, motion_type=MotionType.LINEAR, label=f"Bwd_{i+1}"
-            ))
 
         # Retract above stone
         route.add_waypoint(Waypoint(

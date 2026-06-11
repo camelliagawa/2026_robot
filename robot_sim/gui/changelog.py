@@ -2,10 +2,21 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.9.0"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.9.0", "2026-06-11", "18:10 JST", [
+        "kenma形式LS出力（3ファイル1組）を追加: kenma.LS / HaL.LS / HaR.LS を一括生成（ルートメニュー）",
+        "刃先CSVをストロークグループ（連続重複行で汎用検出: 38グループ＝左右19×接触6点）として解析",
+        "グループごとに ホバー(+10mm)→接触開始(1000mm/s)→ストローク5点(50mm/s)→リトラクト の揺動動作を生成",
+        "TPExporter拡張: デカルト/POS（X/Y/Z/W/P/R + CONFIG, UF9座標系）・CNT1終端・CALL命令・関節/デカルト混在に対応",
+        "kenmaメインは J ホーム → CALL HaL → J ホーム → J 安全姿勢 → CALL HaR の理想LS構造を再現（プログラム名の大文字小文字を保持）",
+        "IK改善: 数値IKの早期終了と品質ゲート付きグローバル探索（姿勢誤差も検証・レディ姿勢に近いブランチを優先）",
+        "「kenma形式ルートを経路点リストへ展開」を追加 — CALL展開済み全シーケンスをシミュレーション再生可能",
+        "基本サンプルルートから Fwd_1〜5 / Bwd_1〜5 を削除（Home/Approach/Retract の3点に簡素化）",
+        "左ツリーパネル「ステーション」ラベルが上端で見切れる問題を修正",
+    ]),
     ("0.8.0", "2026-06-11", "15:40 JST", [
         "曲線を辿るプロジェクト機能を追加（RoboDK の Curve Follow Project 相当）",
         "刃先CSVの各点を順番に砥石接触点（参照フレーム原点）へ接触させる刃付けルートを自動生成",

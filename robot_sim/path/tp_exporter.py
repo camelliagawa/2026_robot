@@ -45,7 +45,7 @@ Output format example:
 from __future__ import annotations
 
 import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -75,7 +75,12 @@ class TPExporter:
                uframe: Optional[int] = None,
                speed_override: int = 100,
                uframe_pos: Optional[Tuple[float, ...]] = None,
-               utool_pos: Optional[Tuple[float, ...]] = None):
+               utool_pos: Optional[Tuple[float, ...]] = None,
+               cart_pos: bool = False,
+               ideal_attr: bool = False,
+               preserve_name_case: bool = False,
+               mn_comments: Optional[List[str]] = None,
+               joint_solutions: Optional[Dict[int, np.ndarray]] = None):
         """
         Export route to .ls file.
 
@@ -87,10 +92,22 @@ class TPExporter:
             speed_override : Speed override percentage (1–100).
             uframe_pos     : (x,y,z,w,p,r) to embed UFRAME PR definition.
             utool_pos      : (x,y,z,w,p,r) to embed UTOOL PR definition.
+            cart_pos       : Emit Cartesian /POS entries (X/Y/Z/W/P/R in the
+                             user frame) for LINEAR waypoints, like RoboDK.
+            ideal_attr     : Mimic the RoboDK-generated /ATTR block
+                             (PROG_SIZE=0, MEMORY_SIZE=0, no OVERRIDE line).
+            preserve_name_case : Keep program name case as given (e.g. "HaL").
+            mn_comments    : Optional "!" comment lines placed before motions.
+            joint_solutions: {waypoint_index: q_rad} precomputed IK solutions
+                             to use instead of solving.
         """
         content = self.generate(route, utool=utool, uframe=uframe,
                                 speed_override=speed_override,
-                                uframe_pos=uframe_pos, utool_pos=utool_pos)
+                                uframe_pos=uframe_pos, utool_pos=utool_pos,
+                                cart_pos=cart_pos, ideal_attr=ideal_attr,
+                                preserve_name_case=preserve_name_case,
+                                mn_comments=mn_comments,
+                                joint_solutions=joint_solutions)
         with open(file_path, "w", encoding="ascii", errors="replace") as f:
             f.write(content)
 
@@ -99,13 +116,24 @@ class TPExporter:
                  uframe: Optional[int] = None,
                  speed_override: int = 100,
                  uframe_pos: Optional[Tuple[float, ...]] = None,
-                 utool_pos: Optional[Tuple[float, ...]] = None) -> str:
+                 utool_pos: Optional[Tuple[float, ...]] = None,
+                 cart_pos: bool = False,
+                 ideal_attr: bool = False,
+                 preserve_name_case: bool = False,
+                 mn_comments: Optional[List[str]] = None,
+                 joint_solutions: Optional[Dict[int, np.ndarray]] = None) -> str:
         """Generate TP program as string.
 
         Args:
             uframe_pos: (x,y,z,w,p,r) for UFRAME PR register setup. If provided,
                         adds PR[n]=... and UFRAME[n]=PR[n] lines (like HaL.LS).
             utool_pos:  (x,y,z,w,p,r) for UTOOL PR register setup.
+            cart_pos:   Emit Cartesian /POS entries for LINEAR waypoints,
+                        expressed in the user frame:
+                        P = inv(T_uframe) @ T_flange @ T_utool.
+            ideal_attr: Mimic the RoboDK-generated /ATTR block.
+            preserve_name_case: Keep the program name case as given.
+            mn_comments: Optional "!" comment lines placed before motions.
         """
         if not route.waypoints:
             raise ValueError("Route has no waypoints to export.")
@@ -116,44 +144,62 @@ class TPExporter:
         if uframe is not None:
             route.uframe = uframe
 
-        # Solve IK for all waypoints
-        joint_angles = self._solve_ik_all(route)
+        # Solve IK (only where joint values are needed in cart_pos mode)
+        joint_angles = self._solve_ik_all(route, cart_pos=cart_pos,
+                                          joint_solutions=joint_solutions)
 
         # Build sections
-        prog_name = self._sanitize_name(route.name)
+        prog_name = self._sanitize_name(route.name,
+                                        preserve_case=preserve_name_case)
         now = datetime.datetime.now()
         date_str = now.strftime("%y-%m-%d")
         time_str = now.strftime("%H:%M:%S")
-        line_count = len(route.waypoints) + 2  # +2 for UFRAME/UTOOL lines
 
         mn_lines = self._build_mn_section(route, joint_angles,
                                           speed_override=speed_override,
                                           uframe_pos=uframe_pos,
-                                          utool_pos=utool_pos)
-        pos_section = self._build_pos_section(route, joint_angles)
+                                          utool_pos=utool_pos,
+                                          emit_override=not ideal_attr,
+                                          mn_comments=mn_comments)
+        pos_section = self._build_pos_section(route, joint_angles,
+                                              cart_pos=cart_pos,
+                                              uframe_pos=uframe_pos,
+                                              utool_pos=utool_pos,
+                                              pos_comments=not ideal_attr)
+        line_count = len(mn_lines)
 
         lines = []
         lines.append(f"/PROG  {prog_name}")
         lines.append("/ATTR")
         lines.append(f"OWNER\t\t= MNEDITOR;")
         lines.append(f'COMMENT\t\t= "{route.comment[:24]}";')
-        lines.append(f"PROG_SIZE\t= {max(512, line_count * 20)};")
+        if ideal_attr:
+            lines.append("PROG_SIZE\t= 0;")
+        else:
+            lines.append(f"PROG_SIZE\t= {max(512, line_count * 20)};")
         lines.append(f"CREATE\t\t= DATE {date_str}  TIME {time_str};")
         lines.append(f"MODIFIED\t= DATE {date_str}  TIME {time_str};")
         lines.append(f"FILE_NAME\t= {prog_name};")
         lines.append(f"VERSION\t\t= 0;")
         lines.append(f"LINE_COUNT\t= {line_count};")
-        lines.append(f"MEMORY_SIZE\t= {max(1024, line_count * 50)};")
+        if ideal_attr:
+            lines.append("MEMORY_SIZE\t= 0;")
+        else:
+            lines.append(f"MEMORY_SIZE\t= {max(1024, line_count * 50)};")
         lines.append(f"PROTECT\t\t= READ_WRITE;")
-        lines.append(f"; SPEED_OVERRIDE = {speed_override}%;")
-        lines.append(f"; UTOOL = {route.utool}, UFRAME = {route.uframe};")
-        lines.append("TCD:  STACK_SIZE    = 0,")
-        lines.append("      TASK_PRIORITY = 50,")
-        lines.append("      TIME_SLICE    = 0,")
-        lines.append("      BUSY_LAMP_OFF = 0,")
-        lines.append("      ABORT_REQUEST = 0,")
-        lines.append("      PAUSE_REQUEST = 0;")
-        lines.append("DEFAULT_GROUP\t= 1, *,  *,  *,  *;")
+        if not ideal_attr:
+            lines.append(f"; SPEED_OVERRIDE = {speed_override}%;")
+            lines.append(f"; UTOOL = {route.utool}, UFRAME = {route.uframe};")
+        lines.append("TCD:  STACK_SIZE\t= 0,")
+        lines.append("      TASK_PRIORITY\t= 50,")
+        lines.append("      TIME_SLICE\t= 0,")
+        lines.append("      BUSY_LAMP_OFF\t= 0,")
+        lines.append("      ABORT_REQUEST\t= 0,")
+        lines.append("      PAUSE_REQUEST\t= 0;")
+        if ideal_attr:
+            lines.append("DEFAULT_GROUP\t= 1,*,*,*,*;")
+        else:
+            lines.append("DEFAULT_GROUP\t= 1, *,  *,  *,  *;")
         lines.append("CONTROL_CODE\t= 00000000 00000000;")
         lines.append("/MN")
         lines.extend(mn_lines)
@@ -168,16 +214,35 @@ class TPExporter:
     # IK solving
     # ------------------------------------------------------------------
 
-    def _solve_ik_all(self, route: Route) -> List[Optional[np.ndarray]]:
+    def _solve_ik_all(self, route: Route,
+                      cart_pos: bool = False,
+                      joint_solutions: Optional[Dict[int, np.ndarray]] = None,
+                      ) -> List[Optional[np.ndarray]]:
         """
         Solve IK for each waypoint.
 
-        Returns list of joint angle arrays (radians), or None for failures.
+        In cart_pos mode IK is only solved for JOINT-type waypoints (the
+        Cartesian /POS entries do not need joint values). CALL entries are
+        skipped (None). Precomputed solutions in joint_solutions
+        ({waypoint_index: q_rad}) are used as-is.
+
+        Returns list of joint angle arrays (radians), or None where not needed.
         """
         results = []
         q_prev = self.kin.dh.ready_position()  # start from ready pose
 
         for i, wp in enumerate(route.waypoints):
+            if wp.call is not None:
+                results.append(None)
+                continue
+            if joint_solutions is not None and i in joint_solutions:
+                q_given = np.asarray(joint_solutions[i], dtype=float)
+                results.append(q_given)
+                q_prev = q_given
+                continue
+            if cart_pos and wp.motion_type != MotionType.JOINT:
+                results.append(None)
+                continue
             T = wp.to_transform()
             q, ok = self.kin.inverse(T, q_init=q_prev)
             if ok:
@@ -200,6 +265,8 @@ class TPExporter:
         speed_override: int = 100,
         uframe_pos: Optional[Tuple[float, ...]] = None,
         utool_pos: Optional[Tuple[float, ...]] = None,
+        emit_override: bool = True,
+        mn_comments: Optional[List[str]] = None,
     ) -> List[str]:
         """Build the /MN motion instruction lines."""
         lines = []
@@ -229,55 +296,111 @@ class TPExporter:
         lines.append(f"{line_num:4d}:  UTOOL_NUM={ut} ;")
         line_num += 1
 
-        lines.append(f"{line_num:4d}:  OVERRIDE={speed_override}% ;")
-        line_num += 1
+        if emit_override:
+            lines.append(f"{line_num:4d}:  OVERRIDE={speed_override}% ;")
+            line_num += 1
 
-        for i, wp in enumerate(route.waypoints):
-            p_idx = i + 1  # P[1]-based indexing
+        # Optional "!" comment lines (like RoboDK header comments)
+        for c in (mn_comments or []):
+            lines.append(f"{line_num:4d}:  ! {c[:24]} ;")
+            line_num += 1
+
+        p_idx = 0  # P[1]-based indexing (CALL entries consume no P index)
+        for wp in route.waypoints:
+            if wp.call is not None:
+                lines.append(f"{line_num:4d}:  CALL {wp.call} ;")
+                line_num += 1
+                continue
+            p_idx += 1
             motion_str = self._motion_instruction(wp, p_idx,
                                                    speed_override=speed_override)
-            lines.append(f"{line_num:4d}:{motion_str}    ;")
+            lines.append(f"{line_num:4d}:{motion_str}  ;")
             line_num += 1
 
         return lines
+
+    @staticmethod
+    def _term_str(wp: Waypoint) -> str:
+        """Termination type string: CNTn if wp.cnt is set, else FINE."""
+        return f"CNT{int(wp.cnt)}" if wp.cnt is not None else "FINE"
 
     def _motion_instruction(self, wp: Waypoint, p_idx: int,
                              speed_override: int = 100) -> str:
         """Format a single motion instruction."""
         scale = max(1, min(100, speed_override)) / 100.0
+        term = self._term_str(wp)
         if wp.motion_type == MotionType.JOINT:
-            pct = int(min(100, max(1, wp.speed / 5.0 * scale)))
-            speed_str = f"{pct}%"
-            return f"J P[{p_idx}] {speed_str} FINE"
-        elif wp.motion_type == MotionType.LINEAR:
-            speed_str = f"{int(wp.speed * scale)}mm/sec"
-            return f"L P[{p_idx}] {speed_str} FINE"
+            if wp.joint_speed_pct is not None:
+                pct = int(min(100, max(1, wp.joint_speed_pct)))
+            else:
+                pct = int(min(100, max(1, wp.speed / 5.0 * scale)))
+            return f"J P[{p_idx}] {pct}% {term}"
         elif wp.motion_type == MotionType.CIRCULAR:
-            speed_str = f"{int(wp.speed * scale)}mm/sec"
             return f"C P[{p_idx}]"  # CIRCULAR needs two points; simplified
         else:
             speed_str = f"{int(wp.speed * scale)}mm/sec"
-            return f"L P[{p_idx}] {speed_str} FINE"
+            return f"L P[{p_idx}] {speed_str} {term}"
 
     # ------------------------------------------------------------------
     # /POS section
     # ------------------------------------------------------------------
 
     def _build_pos_section(
-        self, route: Route, joint_angles: List[Optional[np.ndarray]]
+        self, route: Route, joint_angles: List[Optional[np.ndarray]],
+        cart_pos: bool = False,
+        uframe_pos: Optional[Tuple[float, ...]] = None,
+        utool_pos: Optional[Tuple[float, ...]] = None,
+        pos_comments: bool = True,
     ) -> List[str]:
-        """Build the /POS joint position definitions."""
+        """Build the /POS position definitions.
+
+        Joint format for JOINT waypoints (or always, when cart_pos=False);
+        Cartesian X/Y/Z/W/P/R (+CONFIG) format for the rest when
+        cart_pos=True, expressed in the user frame:
+            P = inv(T_uframe) @ T_flange @ T_utool
+        """
         lines = []
         uframe = route.uframe
         utool = route.utool
 
-        for i, (wp, q) in enumerate(zip(route.waypoints, joint_angles)):
-            p_idx = i + 1
+        # User frame / tool transforms for Cartesian output
+        if uframe_pos and len(uframe_pos) >= 6:
+            T_uf_inv = np.linalg.inv(
+                Kinematics.pose_to_transform(*uframe_pos[:6]))
+        else:
+            T_uf_inv = np.eye(4)
+        if utool_pos and len(utool_pos) >= 6:
+            T_ut = Kinematics.pose_to_transform(*utool_pos[:6])
+        else:
+            T_ut = np.eye(4)
+
+        p_idx = 0
+        for wp, q in zip(route.waypoints, joint_angles):
+            if wp.call is not None:
+                continue  # CALL entries have no position
+            p_idx += 1
+            comment = f"  ; {wp.label}" if (wp.label and pos_comments) else ""
+
+            if cart_pos and wp.motion_type != MotionType.JOINT:
+                # Cartesian position in user frame coordinates
+                T_pose = T_uf_inv @ wp.to_transform() @ T_ut
+                x, y, z, w, p, r = Kinematics.transform_to_pose(T_pose)
+                lines.append(f"P[{p_idx}]{{")
+                lines.append(f"   GP1:")
+                lines.append(f"    UF : {uframe}, UT : {utool},"
+                             f"\t\tCONFIG : 'F U T, 0, 0, 0',{comment}")
+                lines.append(
+                    f"\tX = {x:9.3f}  mm,\tY = {y:9.3f}  mm,\tZ = {z:9.3f}  mm,"
+                )
+                lines.append(
+                    f"\tW = {w:9.3f} deg,\tP = {p:9.3f} deg,\tR = {r:9.3f} deg"
+                )
+                lines.append("};")
+                continue
+
             if q is None:
                 q = np.zeros(6)
-
             q_deg = np.rad2deg(q)
-            comment = f"  ; {wp.label}" if wp.label else ""
 
             lines.append(f"P[{p_idx}]{{")
             lines.append(f"   GP1:")
@@ -301,11 +424,18 @@ class TPExporter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _sanitize_name(name: str, max_len: int = 24) -> str:
-        """Sanitize program name for FANUC TP (alphanumeric + underscore, max 24)."""
+    def _sanitize_name(name: str, max_len: int = 24,
+                       preserve_case: bool = False) -> str:
+        """Sanitize program name for FANUC TP (alphanumeric + underscore, max 24).
+
+        preserve_case=True keeps the given case (e.g. "HaL" like RoboDK output);
+        otherwise the name is uppercased (legacy behaviour).
+        """
+        if not preserve_case:
+            name = name.upper()
         sanitized = "".join(
             c if (c.isalnum() or c == "_") else "_"
-            for c in name.upper()
+            for c in name
         )
         return sanitized[:max_len] if sanitized else "KNIFE_ROUTE"
 

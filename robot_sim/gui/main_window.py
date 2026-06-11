@@ -37,6 +37,9 @@ from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
 from ..path.route_generator import SharpeningParams, generate_sharpening_route
 from ..path.curve_follow import generate_curve_follow
+from ..path.kenma_export import (
+    generate_kenma_programs, export_kenma_ls, build_playback_sequence,
+    load_blade_csv as load_blade_csv_file)
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION, CHANGELOG
@@ -347,6 +350,8 @@ class MainWindow:
         r.add_command(label="  📋  基本サンプルルートを読み込む",       command=self._load_sample_route)
         r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
         r.add_command(label="  📐  曲線を辿る（刃付け生成）...",          command=self._curve_follow_dialog)
+        r.add_command(label="  📐  kenma形式LS出力（3ファイル1組）...",   command=self._export_kenma_ls)
+        r.add_command(label="  📐  kenma形式ルートを経路点リストへ展開",  command=self._load_kenma_sequence)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
         r.add_command(label="  🪨  Tormek T8 砥石を3D表示（STLのみ）",    command=self._load_tormek_stl)
@@ -1360,8 +1365,10 @@ class MainWindow:
 
     def _build_tree_panel(self, parent):
         """Station ツリーパネルを構築する。"""
+        # pady 上側を広めに取り、LabelFrame のタイトルが上端で
+        # 見切れないようにする（パネル上端ぎりぎりに配置されるため）
         lf = ttk.LabelFrame(parent, text="  ステーション")
-        lf.pack(fill=tk.BOTH, expand=True, padx=2, pady=(2, 2))
+        lf.pack(fill=tk.BOTH, expand=True, padx=2, pady=(8, 2))
 
         tree_frame = ttk.Frame(lf)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
@@ -2491,6 +2498,128 @@ class MainWindow:
                    command=on_generate).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_row, text="キャンセル",
                    command=win.destroy).pack(side=tk.LEFT, padx=6)
+
+    # ──────────────────────────────────────────────────────────────────
+    # kenma形式 3ファイルLS出力（HaL / HaR / kenma）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _kenma_inputs(self):
+        """kenma生成入力 (blade_pts, blade_normals, T_blade, T_contact, csv名)。
+
+        刃先CSVは読み込み済みのものを優先し、なければ同梱サンプルを使用。
+        UF9 STONE は USER_FRAMES → ビューポート参照フレーム → 既定値の順。
+        """
+        if self.viewport.has_blade():
+            pts = self.viewport._blade_pts
+            nrm = self.viewport._blade_normals
+            csv_name = os.path.basename(self._blade_csv_path or "blade.csv")
+        else:
+            sample = os.path.realpath(_asset_path("blade_sample.csv"))
+            if not os.path.isfile(sample):
+                raise FileNotFoundError(
+                    "刃先CSVが読み込まれておらず、assets/blade_sample.csv も見つかりません")
+            pts, nrm = load_blade_csv_file(sample)
+            csv_name = os.path.basename(sample)
+
+        vals = [float(v.get()) for v in self._blade_pose_vars]
+        T_blade = Kinematics.pose_to_transform(*vals)
+
+        T_contact = None
+        for uf in self.USER_FRAMES:
+            if uf.number == 9:
+                T_contact = uf.to_transform()
+                break
+        if T_contact is None:
+            for f in self.viewport.get_ref_frames():
+                if f["name"] == "UF9: STONE":
+                    T_contact = f["T"]
+                    break
+        if T_contact is None:
+            # 既定の UF9 STONE（_setup_stone_uframe と同じ値）
+            T_contact = Kinematics.pose_to_transform(
+                550.0, -10.0, 332.0, 0.0, 0.0, 90.0)
+        return pts, nrm, T_blade, T_contact, csv_name
+
+    def _generate_kenma(self):
+        """kenma形式プログラム一式を生成して返す（IK計算あり・時間がかかる）。"""
+        pts, nrm, T_blade, T_contact, csv_name = self._kenma_inputs()
+        self._set_status(
+            "kenma形式ルート生成中 — IK計算しています（数十秒かかる場合があります）...")
+        self.root.update()
+        result = generate_kenma_programs(pts, nrm, T_blade, T_contact, self.kin)
+        return result, csv_name
+
+    def _export_kenma_ls(self):
+        """kenma形式LS（kenma.LS / HaL.LS / HaR.LS の3ファイル1組）を出力する。"""
+        out_dir = filedialog.askdirectory(
+            title="kenma形式LS（3ファイル1組）の出力先フォルダを選択")
+        if not out_dir:
+            return
+        try:
+            result, csv_name = self._generate_kenma()
+            paths = export_kenma_ls(result, out_dir, self.kin,
+                                    mn_comments=[csv_name])
+        except Exception as e:
+            messagebox.showerror("kenma形式LS出力エラー",
+                                 f"出力に失敗しました:\n{e}")
+            self._set_status("⚠  kenma形式LS出力に失敗しました")
+            return
+
+        names = " / ".join(os.path.basename(p) for p in paths)
+        self._set_status(
+            f"✔  kenma形式LS出力完了: {names}  "
+            f"(到達不能 {result.n_unreachable}点) → {out_dir}")
+
+        msg = (
+            "kenma形式LSを出力しました。\n\n"
+            f"出力先: {out_dir}\n"
+            + "\n".join(f"  ・{os.path.basename(p)}" for p in paths)
+            + f"\n\n左 {result.n_groups_left} / 右 {result.n_groups_right} グループ"
+            "（各グループ: ホバー→接触→ストローク5点→リトラクト）\n"
+            f"IK到達不能: {result.n_unreachable} 点"
+        )
+        if result.unreachable_labels:
+            shown = ", ".join(result.unreachable_labels[:8])
+            if len(result.unreachable_labels) > 8:
+                shown += " ..."
+            msg += f"\n（{shown}）"
+        msg += ("\n\n生成した全シーケンスを経路点リストへ展開しますか？\n"
+                "（シミュレーション実行で動作を再生できます）")
+        if messagebox.askyesno("kenma形式LS出力", msg):
+            self._apply_kenma_sequence(result)
+
+    def _load_kenma_sequence(self):
+        """kenma形式ルートを生成し、経路点リストへ展開する（LS出力なし）。"""
+        try:
+            result, _ = self._generate_kenma()
+        except Exception as e:
+            messagebox.showerror("kenma形式ルート生成エラー",
+                                 f"生成に失敗しました:\n{e}")
+            self._set_status("⚠  kenma形式ルート生成に失敗しました")
+            return
+        self._apply_kenma_sequence(result)
+        if result.n_unreachable:
+            messagebox.showwarning(
+                "IK到達性",
+                f"IK到達不能の経路点が {result.n_unreachable} 点あります。\n"
+                "刃先CSVの取付姿勢や UF9 STONE の位置を確認してください。")
+
+    def _apply_kenma_sequence(self, result):
+        """生成済み kenma シーケンス（CALL展開済み）を経路点リストへ反映する。"""
+        seq = build_playback_sequence(result)
+        self.route.waypoints = seq
+        self.route.name = "kenma"
+        self.route.comment = "kenma 3-file sequence"
+        self.route.uframe = 9
+        self.route.utool = 9
+        self.route_editor.set_route(self.route)
+        self.viewport.set_route(self.route)
+        self.viewport.refresh()
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(
+            f"✔  kenma形式ルートを経路点リストへ展開: {len(seq)} 点 "
+            f"(到達不能 {result.n_unreachable}点) — シミュ実行で再生できます")
 
     def _clear_route(self):
         if messagebox.askyesno("確認", "経路点をすべて削除しますか？\nこの操作は元に戻せません。"):
