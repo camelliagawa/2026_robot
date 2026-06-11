@@ -3,7 +3,7 @@ title Blade Sharpening Robot Simulator
 cd /d "%~dp0"
 
 echo Checking for latest version...
-git pull origin claude/trusting-bohr-8lz84p
+git pull
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [WARNING] Failed to fetch updates. You may be offline.
@@ -13,6 +13,7 @@ if %ERRORLEVEL% neq 0 (
 
 python -m robot_sim.main
 if %ERRORLEVEL% neq 0 (
+    echo.
     echo.
     echo [ERROR] An error occurred. If libraries are missing, run:
     echo   pip install -r requirements.txt
