@@ -223,6 +223,10 @@ class Viewport3D:
         self._zoom_scale: float = 1.0
         self._elev: float = 25.0
         self._azim: float = -45.0
+        self._pan_cx: float = 0.0
+        self._pan_cy: float = 0.0
+        self._rotate_start = None  # (x, y, elev0, azim0)
+        self._pan_start    = None  # (x, y, cx0, cy0)
 
         self._stl_verts: Optional[np.ndarray] = None   # (N,3,3) STL triangles
         self._stl_name: str = ""
@@ -255,10 +259,10 @@ class Viewport3D:
         if hasattr(self.ax, '_cids'):
             self.ax._cids.clear()
 
-        for ev in ("button_press_event", "button_release_event", "motion_notify_event"):
-            self.canvas.mpl_connect(ev, lambda e: None)
-
-        self.canvas.mpl_connect("scroll_event", self._on_scroll)
+        self.canvas.mpl_connect("scroll_event",         self._on_scroll)
+        self.canvas.mpl_connect("button_press_event",   self._on_mpress)
+        self.canvas.mpl_connect("button_release_event", self._on_mrelease)
+        self.canvas.mpl_connect("motion_notify_event",  self._on_mmove)
         self.update_robot(self._joint_angles)
 
     # ── Public interface ───────────────────────────────────────────────
@@ -300,9 +304,34 @@ class Viewport3D:
         self._zoom_scale = float(np.clip(self._zoom_scale, 0.05, 5.0))
         self._redraw()
 
+    def _on_mpress(self, event):
+        if event.button == 1:
+            self._rotate_start = (event.x, event.y, self._elev, self._azim)
+        elif event.button == 3:
+            self._pan_start = (event.x, event.y, self._pan_cx, self._pan_cy)
+
+    def _on_mrelease(self, event):
+        self._rotate_start = None
+        self._pan_start    = None
+
+    def _on_mmove(self, event):
+        if self._rotate_start is not None and event.button == 1:
+            dx = event.x - self._rotate_start[0]
+            dy = event.y - self._rotate_start[1]
+            self._azim = self._rotate_start[3] - dx * 0.5
+            self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
+            self._redraw()
+        elif self._pan_start is not None and event.button == 3:
+            lim = 700.0 * self._zoom_scale
+            fig_w = self.fig.get_figwidth() * self.fig.dpi
+            scale = (2.0 * lim) / max(fig_w, 1.0)
+            dx = (event.x - self._pan_start[0]) * scale
+            dy = (event.y - self._pan_start[1]) * scale
+            self._pan_cx = float(np.clip(self._pan_start[2] - dx, -3000, 3000))
+            self._pan_cy = float(np.clip(self._pan_start[3] + dy, -3000, 3000))
+            self._redraw()
+
     def _redraw(self):
-        self._elev = float(self.ax.elev)
-        self._azim = float(self.ax.azim)
         self.ax.cla()
         self._setup_axes()
         self.ax.view_init(elev=self._elev, azim=self._azim)
@@ -320,8 +349,8 @@ class Viewport3D:
         ax.set_facecolor("#0D1117")
 
         lim = 700 * self._zoom_scale
-        ax.set_xlim(-lim, lim)
-        ax.set_ylim(-lim, lim)
+        ax.set_xlim(self._pan_cx - lim, self._pan_cx + lim)
+        ax.set_ylim(self._pan_cy - lim, self._pan_cy + lim)
         ax.set_zlim(0, lim * 1.6)
 
         ax.set_xlabel("X [mm]", color="#8B949E", fontsize=7, labelpad=2)
@@ -329,9 +358,10 @@ class Viewport3D:
         ax.set_zlabel("Z [mm]", color="#8B949E", fontsize=7, labelpad=2)
 
         step = int(lim / 3 / 100) * 100 or 100
-        ticks = list(range(int(-lim), int(lim) + 1, step))
+        ticks = list(range(int(self._pan_cx - lim), int(self._pan_cx + lim) + 1, step))
+        yticks = list(range(int(self._pan_cy - lim), int(self._pan_cy + lim) + 1, step))
         zticks = list(range(0, int(lim * 1.6) + 1, step))
-        ax.set_xticks(ticks); ax.set_yticks(ticks); ax.set_zticks(zticks)
+        ax.set_xticks(ticks); ax.set_yticks(yticks); ax.set_zticks(zticks)
         ax.tick_params(colors="#555E6A", labelsize=6, length=2, pad=1)
         ax.xaxis.set_tick_params(labelcolor="#555E6A")
         ax.yaxis.set_tick_params(labelcolor="#555E6A")
