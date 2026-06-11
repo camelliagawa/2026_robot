@@ -380,41 +380,12 @@ class MainWindow:
         tree_outer.pack_propagate(False)
         self._build_tree_panel(tree_outer)
 
-        # ── 下部：折りたたみ式更新履歴（先にpackしてBOTTOM確保）──
+        # ── 上部：固定フレーム（スクロール廃止 — フォント変更時のずれを防止）──
+        right = ttk.Frame(right_outer)
+        right.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # ── 下部：折りたたみ式更新履歴 ──
         self._build_changelog_panel_collapsible(right_outer)
-
-        # ── 上部：スクロール可能なパネル群 ──
-        right_sb = tk.Scrollbar(right_outer, orient=tk.VERTICAL)
-        right_sb.pack(side=tk.RIGHT, fill=tk.Y)
-        right_canvas = tk.Canvas(right_outer, bg="#21262D",
-                                  yscrollcommand=right_sb.set,
-                                  highlightthickness=0)
-        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        right_sb.config(command=right_canvas.yview)
-
-        right = ttk.Frame(right_canvas)
-        right_canvas_id = right_canvas.create_window((0, 0), window=right, anchor="nw")
-
-        def _on_right_configure(event):
-            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
-        def _on_canvas_resize(event):
-            right_canvas.itemconfig(right_canvas_id, width=event.width)
-        right.bind("<Configure>", _on_right_configure)
-        right_canvas.bind("<Configure>", _on_canvas_resize)
-
-        def _on_mousewheel(event):
-            right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        # bind_all は使わず、キャンバスと内部フレームにのみバインド
-        right_canvas.bind("<MouseWheel>", _on_mousewheel)
-        right.bind("<MouseWheel>", _on_mousewheel)
-        # 右パネル内の子ウィジェットへ伝播（Textウィジェット以外）
-        def _bind_scroll_to_children(widget):
-            cls = widget.winfo_class()
-            if cls not in ("Text", "Scrollbar"):
-                widget.bind("<MouseWheel>", _on_mousewheel)
-            for child in widget.winfo_children():
-                _bind_scroll_to_children(child)
-        right.bind("<Map>", lambda e: _bind_scroll_to_children(right))
 
         # 左コンテナ：ビューポート＋ジョグパネルをまとめて右パネルと同幅に
         left_container = ttk.Frame(self.root)

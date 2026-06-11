@@ -2,10 +2,13 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.6.10"
+APP_VERSION = "0.6.11"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.6.11", "2026-06-11", "13:14 JST", [
+        "右パネルが上下にずれる不具合を修正: スクロールキャンバスを廃止し固定フレーム化",
+    ]),
     ("0.6.10", "2026-06-11", "13:11 JST", [
         "研磨機STL初期位置を修正: X=800, Y=148, Z=266, Rz=-90°（実機レイアウトに合わせた配置）",
         "ルートメニューの研磨機ボタンを分離: STLのみ / 研削経路CSVのみ を個別に読み込めるよう変更",
