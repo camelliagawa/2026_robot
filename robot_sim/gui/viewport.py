@@ -225,9 +225,9 @@ class Viewport3D:
         self._azim: float = -45.0
         self._pan_cx: float = 0.0
         self._pan_cy: float = 0.0
-        self._pan_cz: float = 400.0   # Z中心（地面0固定だとズーム時に上下にドリフトするため）
+        self._pan_cz: float = 300.0   # 視点注視点Z（地面0固定だとズーム時に上下ドリフト）
         self._rotate_start = None  # (x, y, elev0, azim0)
-        self._pan_start    = None  # (x, y, cx0, cy0)
+        self._pan_start    = None  # (x, y, cx0, cy0, cz0)
 
         self._stl_verts: Optional[np.ndarray] = None   # (N,3,3) STL triangles
         self._stl_name: str = ""
@@ -297,19 +297,65 @@ class Viewport3D:
 
     # ── Drawing ────────────────────────────────────────────────────────
 
+    # ── カメラベクトル（RoboDK風の直感的操作の基盤） ──────────────────────
+    def _cam_vectors(self):
+        """方位角・仰角から、画面右方向・画面上方向のワールドベクトルを返す。"""
+        a = np.deg2rad(self._azim)
+        e = np.deg2rad(self._elev)
+        ca, sa = np.cos(a), np.sin(a)
+        ce, se = np.cos(e), np.sin(e)
+        right = np.array([-sa,      ca,       0.0])
+        up    = np.array([-se * ca, -se * sa, ce])
+        return right, up
+
+    def _px_per_world(self) -> float:
+        """ワールド1mmあたりの画面ピクセル数（おおよそ）。"""
+        lim = 700.0 * self._zoom_scale
+        fig_w = self.fig.get_figwidth() * self.fig.dpi
+        return max(fig_w, 1.0) / (2.0 * lim)
+
+    def _center_disp(self):
+        """注視点 (pan_cx, pan_cy, pan_cz) の画面ピクセル座標。"""
+        from mpl_toolkits.mplot3d import proj3d
+        xs, ys, _ = proj3d.proj_transform(
+            self._pan_cx, self._pan_cy, self._pan_cz, self.ax.get_proj())
+        return self.ax.transData.transform((xs, ys))
+
+    def _world_under_cursor(self, px, py):
+        """カーソル位置を、注視点を通る画面平行面上のワールド点に逆投影する。"""
+        if px is None or py is None:
+            return None
+        try:
+            cpx, cpy = self._center_disp()
+        except Exception:
+            return None
+        right, up = self._cam_vectors()
+        s = 1.0 / self._px_per_world()   # world per pixel
+        c = np.array([self._pan_cx, self._pan_cy, self._pan_cz], float)
+        return c + (px - cpx) * s * right + (py - cpy) * s * up
+
     def _on_scroll(self, event):
-        if event.button == "up":
-            self._zoom_scale *= 0.85
-        elif event.button == "down":
-            self._zoom_scale *= 1.18
-        self._zoom_scale = float(np.clip(self._zoom_scale, 0.05, 5.0))
+        old = self._zoom_scale
+        factor = 0.85 if event.button == "up" else 1.18
+        new = float(np.clip(old * factor, 0.05, 5.0))
+        if new == old:
+            return
+        r = new / old
+        # カーソル下のワールド点を固定したままズーム（RoboDK風）
+        W = self._world_under_cursor(event.x, event.y)
+        if W is not None:
+            self._pan_cx = float(np.clip(W[0] + r * (self._pan_cx - W[0]), -3000, 3000))
+            self._pan_cy = float(np.clip(W[1] + r * (self._pan_cy - W[1]), -3000, 3000))
+            self._pan_cz = float(np.clip(W[2] + r * (self._pan_cz - W[2]), -2000, 4000))
+        self._zoom_scale = new
         self._redraw()
 
     def _on_mpress(self, event):
         if event.button == 1:
             self._rotate_start = (event.x, event.y, self._elev, self._azim)
         elif event.button in (2, 3):   # 右ボタン or ホイール（中）ボタン = パン
-            self._pan_start = (event.x, event.y, self._pan_cx, self._pan_cy)
+            self._pan_start = (event.x, event.y,
+                               self._pan_cx, self._pan_cy, self._pan_cz)
 
     def _on_mrelease(self, event):
         self._rotate_start = None
@@ -323,13 +369,15 @@ class Viewport3D:
             self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
             self._redraw()
         elif self._pan_start is not None and event.button in (2, 3):
-            lim = 700.0 * self._zoom_scale
-            fig_w = self.fig.get_figwidth() * self.fig.dpi
-            scale = (2.0 * lim) / max(fig_w, 1.0)
-            dx = (event.x - self._pan_start[0]) * scale
-            dy = (event.y - self._pan_start[1]) * scale
-            self._pan_cx = float(np.clip(self._pan_start[2] - dx, -3000, 3000))
-            self._pan_cy = float(np.clip(self._pan_start[3] + dy, -3000, 3000))
+            # 掴んだ点がカーソルに追従する画面平面パン（上下ドラッグでZも移動）
+            right, up = self._cam_vectors()
+            s = 1.0 / self._px_per_world()
+            dpx = (event.x - self._pan_start[0]) * s
+            dpy = (event.y - self._pan_start[1]) * s
+            delta = dpx * right + dpy * up
+            self._pan_cx = float(np.clip(self._pan_start[2] - delta[0], -3000, 3000))
+            self._pan_cy = float(np.clip(self._pan_start[3] - delta[1], -3000, 3000))
+            self._pan_cz = float(np.clip(self._pan_start[4] - delta[2], -2000, 4000))
             self._redraw()
 
     def _redraw(self):
@@ -350,10 +398,14 @@ class Viewport3D:
         ax.set_facecolor("#0D1117")
 
         lim = 700 * self._zoom_scale
-        zhalf = lim * 0.8   # 高さレンジは従来同様 1.6*lim、ただし中心固定でズーム
+        zhalf = lim   # 立方体ボックス（各軸スケール均一→カーソル追従が正確）
         ax.set_xlim(self._pan_cx - lim, self._pan_cx + lim)
         ax.set_ylim(self._pan_cy - lim, self._pan_cy + lim)
         ax.set_zlim(self._pan_cz - zhalf, self._pan_cz + zhalf)
+        try:
+            ax.set_box_aspect((1, 1, 1))
+        except Exception:
+            pass
 
         ax.set_xlabel("X [mm]", color="#8B949E", fontsize=7, labelpad=2)
         ax.set_ylabel("Y [mm]", color="#8B949E", fontsize=7, labelpad=2)
