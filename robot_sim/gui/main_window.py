@@ -403,6 +403,7 @@ class MainWindow:
         self.viewport = Viewport3D(left, self.kin)
 
         self._build_markers_panel(right)
+        self._build_ref_frames_panel(right)
 
         route_lf = ttk.LabelFrame(right,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
@@ -608,6 +609,119 @@ class MainWindow:
             for m in self._mk_list if m["type"] == "target"
         ]
         self.viewport.set_markers(tcp_markers, target_markers)
+
+    # ──────────────────────────────────────────────────────────────────
+    # 参照フレームパネル (Reference Frames)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_ref_frames_panel(self, parent):
+        """参照フレーム（座標軸）の管理パネル。"""
+        lf = ttk.LabelFrame(parent, text="  参照フレーム (Reference Frames)")
+        lf.pack(fill=tk.X, padx=4, pady=(4, 2))
+        _tip(lf, "名前付き座標フレームを3Dビューポートに表示します。\n"
+                 "各フレームはX(赤)/Y(緑)/Z(青)軸と菱形マーカーで表示されます。")
+
+        lb_frame = ttk.Frame(lf)
+        lb_frame.pack(fill=tk.X, padx=6, pady=(4, 0))
+        sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._rf_listbox = tk.Listbox(
+            lb_frame, height=3, yscrollcommand=sb.set,
+            bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 8),
+            selectbackground=BTN_PRIMARY, selectforeground="white",
+            borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
+            activestyle="none",
+        )
+        self._rf_listbox.pack(fill=tk.X)
+        sb.config(command=self._rf_listbox.yview)
+
+        btn_row = ttk.Frame(lf)
+        btn_row.pack(fill=tk.X, padx=6, pady=(3, 5))
+        ttk.Button(btn_row, text="+ フレーム追加",
+                   command=self._add_ref_frame_dialog).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="削除",
+                   command=self._rf_delete).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="全クリア",
+                   command=self._rf_clear_all).pack(side=tk.LEFT, padx=2)
+
+    def _rf_refresh_listbox(self):
+        self._rf_listbox.delete(0, tk.END)
+        for rf in self.viewport.get_ref_frames():
+            T = rf["T"]
+            ox, oy, oz = T[0, 3], T[1, 3], T[2, 3]
+            entry = f"{rf['name']:12s}  ({ox:.0f}, {oy:.0f}, {oz:.0f})"
+            self._rf_listbox.insert(tk.END, entry)
+            self._rf_listbox.itemconfig(tk.END, fg=rf.get("color", "#FF88FF"))
+
+    def _rf_delete(self):
+        sel = self._rf_listbox.curselection()
+        if not sel:
+            self._set_status("⚠  削除するフレームをリストから選択してください")
+            return
+        idx = sel[0]
+        frames = self.viewport.get_ref_frames()
+        if idx < len(frames):
+            name = frames[idx]["name"]
+            self.viewport.remove_ref_frame(name)
+            self._rf_refresh_listbox()
+            self._set_status(f"✔  参照フレーム削除: {name}")
+
+    def _rf_clear_all(self):
+        self.viewport.clear_ref_frames()
+        self._rf_refresh_listbox()
+        self._set_status("✔  参照フレームをすべてクリア")
+
+    def _add_ref_frame_dialog(self):
+        """Show dialog to add a custom reference frame."""
+        win = tk.Toplevel(self.root)
+        win.title("参照フレームを追加")
+        win.geometry("380x280")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+
+        tk.Label(win, text="参照フレームを追加",
+                 bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 11, "bold")).pack(pady=(12, 4), padx=16, anchor="w")
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=16)
+
+        fields = {}
+        labels = ["名前", "X (mm)", "Y (mm)", "Z (mm)", "Rx (deg)", "Ry (deg)", "Rz (deg)"]
+        defaults = ["MyFrame", "0", "0", "0", "0", "0", "0"]
+        for lbl, dflt in zip(labels, defaults):
+            row = ttk.Frame(frame)
+            row.pack(fill=tk.X, pady=2)
+            tk.Label(row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
+                     font=("Yu Gothic UI", 9), width=10, anchor="w").pack(side=tk.LEFT)
+            v = tk.StringVar(value=dflt)
+            fields[lbl] = v
+            ttk.Entry(row, textvariable=v, width=18).pack(side=tk.LEFT, padx=4)
+
+        def _apply():
+            name = fields["名前"].get().strip() or "Frame"
+            try:
+                x  = float(fields["X (mm)"].get())
+                y  = float(fields["Y (mm)"].get())
+                z  = float(fields["Z (mm)"].get())
+                rx = float(fields["Rx (deg)"].get())
+                ry = float(fields["Ry (deg)"].get())
+                rz = float(fields["Rz (deg)"].get())
+            except ValueError:
+                messagebox.showerror("入力エラー", "数値を入力してください", parent=win)
+                return
+            self.viewport.add_ref_frame(name, x, y, z, rx, ry, rz)
+            self._rf_refresh_listbox()
+            self._set_status(f"✔  参照フレーム追加: {name}  ({x:.0f}, {y:.0f}, {z:.0f})")
+            win.destroy()
+
+        btn_row = ttk.Frame(win)
+        btn_row.pack(pady=8)
+        ttk.Button(btn_row, text="追加", style="Primary.TButton",
+                   command=_apply).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row, text="キャンセル",
+                   command=win.destroy).pack(side=tk.LEFT, padx=6)
+        win.bind("<Return>", lambda e: _apply())
 
     # ──────────────────────────────────────────────────────────────────
     # 更新履歴パネル（右サイドバー下部）
@@ -1457,6 +1571,13 @@ class MainWindow:
             filetypes=[("FANUC TP", "*.ls *.LS"), ("All files", "*.*")])
         if not path:
             return
+        path = os.path.realpath(path)
+        if not os.path.isfile(path):
+            messagebox.showerror("LS 読込エラー", "ファイルが見つかりません")
+            return
+        if not path.lower().endswith(".ls"):
+            messagebox.showerror("LS 読込エラー", "LS ファイル (.ls) を選択してください")
+            return
         try:
             routes = _ls_to_route(path, self.kin)
         except Exception as e:
@@ -1798,6 +1919,13 @@ class MainWindow:
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path:
             return
+        path = os.path.realpath(path)
+        if not os.path.isfile(path):
+            messagebox.showerror("読込エラー", "ファイルが見つかりません")
+            return
+        if not path.lower().endswith(".csv"):
+            messagebox.showerror("読込エラー", "CSV ファイル (.csv) を選択してください")
+            return
         try:
             loaded = RouteCSVIO.route_from_csv(path)
             self.route.waypoints = loaded.waypoints
@@ -2124,14 +2252,28 @@ class MainWindow:
         """Tormek T8 STL のみ読み込む（研削経路CSVは読み込まない）。"""
         assets = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
-        stl_path = os.path.join(assets, "Tormek_T8.stl")
-        if not os.path.exists(stl_path):
+        stl_path = os.path.realpath(os.path.join(assets, "Tormek_T8.stl"))
+        if not os.path.isfile(stl_path):
             self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
             return
         ok = self.viewport.load_stl(stl_path)
         if ok:
             self._apply_stl_default_pose()
-            self._set_status("✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）")
+            # Auto-add UF9 stone top reference frame using actual STL bbox
+            bb = self.viewport.stl_bbox()
+            if bb and self.viewport._stl_verts is not None:
+                R = self.viewport._stl_T[:3, :3]
+                t = self.viewport._stl_T[:3, 3]
+                all_v = self.viewport._stl_verts.reshape(-1, 3)
+                tv = ((R @ all_v.T).T + t)
+                stone_top_z = float(tv[:, 2].max())
+            else:
+                stone_top_z = 266.0
+            self.viewport.remove_ref_frame("UF9: STONE")
+            self.viewport.add_ref_frame(
+                "UF9: STONE", 550, -10, stone_top_z, 0, 0, 90, color="#FF88FF")
+            self._set_status(
+                f"✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
         else:
             self._set_status("⚠  STL 読込失敗")
 

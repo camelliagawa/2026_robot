@@ -2,10 +2,19 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.6.11"
+APP_VERSION = "0.7.0"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.7.0", "2026-06-11", "14:00 JST", [
+        "ls_parser.py 全面改修: デカルト位置 (X,Y,Z,W,P,R) 対応 — HaL.LS / HaR.LS の UF9 座標を正しく解析",
+        "/MN セクションの PR[n,axis]=value 行を解析し UFrame/UTool トランスフォームを再構築",
+        "ビューポートに参照フレーム (Reference Frames) 機能追加: 名前付き XYZ 軸トライアドを3D表示",
+        "右パネルに参照フレーム管理パネルを追加（追加ダイアログ・削除・全クリア）",
+        "STL 読込時に UF9 STONE 参照フレームを自動追加（砥石上面 Z 座標を bbox から算出）",
+        "セキュリティ修正: _load_csv / _load_ls_file でパストラバーサル対策 (realpath + isfile + 拡張子チェック)",
+        "_load_tormek_stl でも realpath + isfile チェックを適用",
+    ]),
     ("0.6.11", "2026-06-11", "13:14 JST", [
         "右パネルが上下にずれる不具合を修正: スクロールキャンバスを廃止し固定フレーム化",
     ]),

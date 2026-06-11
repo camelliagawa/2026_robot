@@ -238,6 +238,7 @@ class Viewport3D:
 
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
+        self._ref_frames: list = []  # [{"name": str, "T": np.ndarray, "color": str}]
 
         # 刃先CSV（ツールローカル座標・フランジ追従）
         self._blade_pts: Optional[np.ndarray] = None      # (N,3) local points
@@ -388,6 +389,7 @@ class Viewport3D:
         self._draw_user_frame()
         self._draw_robot(self._joint_angles)
         self._draw_overlay()
+        self._draw_ref_frames()
         self._draw_markers()
         self._draw_route()
         self._draw_jog_target()
@@ -846,6 +848,46 @@ class Viewport3D:
                             depthshade=False, marker="o")
             self.ax.text(x + 14, y + 14, z + 14,
                          f"[TGT] {m['name']}", color="#FF8800", fontsize=7, fontweight="bold")
+
+    # ── Reference Frames ───────────────────────────────────────────────
+
+    def add_ref_frame(self, name: str, x, y, z, rx, ry, rz, color="#FF88FF"):
+        """Add a named reference frame displayed as XYZ axes in the 3D viewport."""
+        from ..robot.kinematics import Kinematics
+        T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._ref_frames.append({"name": name, "T": T, "color": color})
+        self._redraw()
+
+    def remove_ref_frame(self, name: str):
+        """Remove a reference frame by name."""
+        self._ref_frames = [f for f in self._ref_frames if f["name"] != name]
+        self._redraw()
+
+    def clear_ref_frames(self):
+        """Remove all reference frames."""
+        self._ref_frames.clear()
+        self._redraw()
+
+    def get_ref_frames(self) -> list:
+        """Return a copy of the current reference frame list."""
+        return list(self._ref_frames)
+
+    def _draw_ref_frames(self):
+        """Draw all named reference frames as XYZ axis triads with labels."""
+        scale = 80
+        for rf in self._ref_frames:
+            T = rf["T"]
+            origin = T[:3, 3]
+            R = T[:3, :3]
+            base_color = rf.get("color", "#FF88FF")
+            for col, clr in enumerate(["#FF4444", "#44FF44", "#4444FF"]):
+                tip = origin + scale * R[:, col]
+                self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
+                             [origin[2], tip[2]], color=clr, lw=2.5, alpha=0.9)
+            self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
+                            c=base_color, s=80, zorder=8, depthshade=False, marker="D")
+            self.ax.text(origin[0]+12, origin[1]+12, origin[2]+12,
+                         rf["name"], color=base_color, fontsize=7, fontweight="bold")
 
     # ── Cleanup ────────────────────────────────────────────────────────
 
