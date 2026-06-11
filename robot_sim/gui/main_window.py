@@ -137,9 +137,9 @@ class MainWindow:
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
 
-        # 研磨機（Tormek T8 STL）を起動時から表示
+        # 研磨機（Tormek T8 STL）を起動時から表示（研削経路CSVは読み込まない）
         try:
-            self._load_tormek_sample()
+            self._load_tormek_stl()
         except Exception:
             pass
 
@@ -328,7 +328,8 @@ class MainWindow:
         r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
-        r.add_command(label="  🪨  Tormek T8 砥石を3D表示",            command=self._load_tormek_sample)
+        r.add_command(label="  🪨  Tormek T8 砥石を3D表示（STLのみ）",    command=self._load_tormek_stl)
+        r.add_command(label="  📈  Tormek 研削経路CSVを表示",              command=self._load_tormek_csv)
         r.add_separator()
         r.add_command(label="  ▶   シミュレーション実行      F5",       command=self._start_simulation)
 
@@ -1422,12 +1423,30 @@ class MainWindow:
 
     def _build_workflow_bar(self, parent):
         """「CSV読込 →→ シミュ →→ 調整 →→ LS出力」水平ワークフローバー。"""
-        bar = tk.Frame(parent, bg=BG_DARK, height=38)
-        bar.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
-        bar.pack_propagate(False)
+        # 外枠: 横スクロール可能なキャンバスでボタンが見切れないようにする
+        outer = tk.Frame(parent, bg=BG_DARK, height=38)
+        outer.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+        outer.pack_propagate(False)
 
-        inner = tk.Frame(bar, bg=BG_DARK)
-        inner.pack(side=tk.LEFT, padx=8, pady=5)
+        # スクロール可能な内部キャンバス
+        wf_canvas = tk.Canvas(outer, bg=BG_DARK, height=38,
+                              highlightthickness=0, bd=0)
+        wf_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        wf_hscroll = tk.Scrollbar(outer, orient=tk.HORIZONTAL,
+                                   command=wf_canvas.xview)
+        wf_canvas.configure(xscrollcommand=wf_hscroll.set)
+
+        inner = tk.Frame(wf_canvas, bg=BG_DARK)
+        wf_canvas_win = wf_canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(e):
+            wf_canvas.configure(scrollregion=wf_canvas.bbox("all"))
+            # ボタンが全部収まるなら スクロールバーを隠す
+            if inner.winfo_reqwidth() <= wf_canvas.winfo_width():
+                wf_hscroll.pack_forget()
+            else:
+                wf_hscroll.pack(side=tk.BOTTOM, fill=tk.X)
+        inner.bind("<Configure>", _on_inner_configure)
 
         steps = [
             ("📂 CSV読込",  self._workflow_load_csv,
@@ -1435,27 +1454,24 @@ class MainWindow:
             ("▶ シミュ",    self._start_simulation,    "シミュレーション実行 (F5)"),
             ("🔧 調整",     self._route_adjust_dialog, "経路点の位置・速度を一括調整"),
             ("📤 LS出力",   self._export_tp,           "FANUC LS ファイルを出力 (Ctrl+E)"),
+            ("📥 LS読込",   self._load_ls_file,
+             "FANUC .ls ファイルを読み込んでツリーに追加\n複数 /PROG（HaL/HaR 等）も対応"),
         ]
 
         for i, (label, cmd, tip) in enumerate(steps):
             if i > 0:
-                tk.Label(inner, text=" → ", bg=BG_DARK, fg=ACCENT,
+                tk.Label(inner, text=" →  ", bg=BG_DARK, fg=ACCENT,
                          font=("Consolas", 9, "bold")).pack(side=tk.LEFT)
             style = "Primary.TButton" if i == 0 else "TButton"
             btn = ttk.Button(inner, text=label, command=cmd, style=style)
-            btn.pack(side=tk.LEFT)
+            btn.pack(side=tk.LEFT, padx=2, pady=5)
             _tip(btn, tip)
             if i == 0:
                 # CSV読込の直後に再読込ボタン（頻繁なCSV差し替えワークフロー用）
                 reload_btn = ttk.Button(inner, text="🔄", width=3,
                                         command=self._reload_blade_csv)
-                reload_btn.pack(side=tk.LEFT, padx=(2, 0))
+                reload_btn.pack(side=tk.LEFT, padx=(0, 0))
                 _tip(reload_btn, "前回の刃先CSVを再読込（CSVファイル更新時にワンクリック反映）")
-
-        # 右端: LS読込ボタン
-        ls_btn = ttk.Button(bar, text="📥 LS読込", command=self._load_ls_file)
-        ls_btn.pack(side=tk.RIGHT, padx=8, pady=5)
-        _tip(ls_btn, "FANUC .ls ファイルを読み込んでツリーに追加\n複数 /PROG（HaL/HaR 等）も対応")
 
     # ──────────────────────────────────────────────────────────────────
     # FANUC LS ファイル読込
@@ -2121,40 +2137,51 @@ class MainWindow:
         self.viewport.refresh()
         self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
 
-    def _load_tormek_sample(self):
-        assets = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
+    # 研磨機 STL の既定配置パラメータ（ユーザー確認済みの値）
+    _STL_DEFAULT_POSE = (800.0, 148.0, 266.0, 0.0, 0.0, -90.0)
+
+    def _apply_stl_default_pose(self):
+        """STL既定位置をビューポートおよび入力欄に反映する。"""
+        ix, iy, iz, irx, iry, irz = self._STL_DEFAULT_POSE
+        self.viewport.set_stl_pose(ix, iy, iz, irx, iry, irz)
+        if len(self._stl_pose_vars) >= 6:
+            for var, val in zip(self._stl_pose_vars,
+                                [ix, iy, iz, irx, iry, irz]):
+                var.set(f"{val:.2f}")
+
+    def _load_tormek_stl(self):
+        """Tormek T8 STL のみ読み込む（研削経路CSVは読み込まない）。"""
+        assets = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
         stl_path = os.path.join(assets, "Tormek_T8.stl")
+        if not os.path.exists(stl_path):
+            self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
+            return
+        ok = self.viewport.load_stl(stl_path)
+        if ok:
+            self._apply_stl_default_pose()
+            self._set_status("✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）")
+        else:
+            self._set_status("⚠  STL 読込失敗")
+
+    def _load_tormek_csv(self):
+        """Tormek 研削経路 CSV のみ読み込む（STLは触らない）。"""
+        assets = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets")
         csv_path = os.path.join(assets, "grinding_path_sample.csv")
-        msgs = []
-        if os.path.exists(stl_path):
-            ok = self.viewport.load_stl(stl_path)
-            if ok:
-                # X/Y は中心を原点に、Z は底面が Z=0 になるよう配置
-                bb = self.viewport.stl_bbox()
-                if bb:
-                    xmin, xmax, ymin, ymax, zmin, zmax = bb
-                    ix = -((xmin + xmax) / 2)
-                    iy = -((ymin + ymax) / 2)
-                    iz = -zmin  # 底面を Z=0 へ
-                    self.viewport.set_stl_pose(ix, iy, iz, 0, 0, 0)
-                    if len(self._stl_pose_vars) >= 3:
-                        self._stl_pose_vars[0].set(f"{ix:.2f}")
-                        self._stl_pose_vars[1].set(f"{iy:.2f}")
-                        self._stl_pose_vars[2].set(f"{iz:.2f}")
-                msgs.append("STL 読込済")
-            else:
-                msgs.append("STL 読込失敗 (numpy-stl が必要)")
+        if not os.path.exists(csv_path):
+            self._set_status("⚠  研削経路 CSV が見つかりません: " + csv_path)
+            return
+        ok = self.viewport.load_csv_points(csv_path)
+        if ok:
+            self._set_status("✔  Tormek 研削経路 CSV 読込済")
         else:
-            msgs.append("STL ファイルが見つかりません")
-        if os.path.exists(csv_path):
-            ok = self.viewport.load_csv_points(csv_path)
-            if ok:
-                msgs.append("研削経路 CSV 読込済")
-            else:
-                msgs.append("CSV 読込失敗")
-        else:
-            msgs.append("CSV ファイルが見つかりません")
-        self._set_status("✔  " + " / ".join(msgs))
+            self._set_status("⚠  CSV 読込失敗")
+
+    def _load_tormek_sample(self):
+        """後方互換: STL + CSV を両方読み込む（起動時の自動ロード用）。"""
+        self._load_tormek_stl()
+        self._load_tormek_csv()
 
     def _auto_generate_route(self):
         win = tk.Toplevel(self.root)
