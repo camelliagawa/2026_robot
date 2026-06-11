@@ -1140,12 +1140,12 @@ class MainWindow:
         _tip(sf_blade,
              "刃先CSV (x,y,z,nx,ny,nz 形式) を包丁に取り付けます。\n"
              "X/Y/Z/Rx/Ry/Rz: フランジから刃先原点へのオフセット\n"
-             "デフォルト: Z=150mm (柄の先端), Rx=90° (刃渡りを刃方向に整列)\n"
+             "デフォルト: Z=150mm (柄の先端), Ry=180° Rz=-90° (刃を砥石方向へ整列)\n"
              "「再読込」: 同じCSVファイルを再読込（CSV更新時に使用）")
         inner_blade = ttk.Frame(sf_blade)
         inner_blade.pack(fill=tk.X, padx=4, pady=2)
         self._blade_pose_vars: list = []
-        blade_defaults = ["0.0", "0.0", "150.0", "90.0", "0.0", "0.0"]
+        blade_defaults = ["0.0", "0.0", "150.0", "0.0", "180.0", "-90.0"]
         for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
             r, c = divmod(i, 3)
             tk.Label(inner_blade, text=axis, bg=BG_PANEL, fg=FG_SUB,

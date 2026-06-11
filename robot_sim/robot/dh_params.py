@@ -114,8 +114,8 @@ class DHParams:
 
     def ready_position(self) -> np.ndarray:
         """Return a 'ready' pose — arm raised diagonally, suitable for sharpening work."""
-        # J2=-45° (肩を上方45°), J3=+30° (肘を前方へ), J5=-60° (手首やや下向き)
-        return np.deg2rad([0, -45, 30, 0, -60, 0])
+        # J2=-70° (肩を上方), J3=+20° (肘を前方へ), J4=+5°, J5=-60° (手首やや下向き)
+        return np.deg2rad([0, -70, 20, 5, -60, 0])
 
     def get_joint_max_speeds(self) -> List[float]:
         """Returns list of max speeds (deg/s) for each joint."""

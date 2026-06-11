@@ -2,10 +2,15 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.7.1"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.7.1", "2026-06-11", "14:30 JST", [
+        "ロボット起動時の関節角度を変更: J2=-70°, J3=20°, J4=5°, J5=-60°（刃付け作業姿勢に最適化）",
+        "刃先CSV（包丁）の初期取付姿勢を変更: Ry=180°, Rz=-90°（刃を砥石方向へ整列）",
+        "包丁モデルの描画を刃先CSVの取付オフセット（_blade_T）に追従させ、CSVと同じ向きに回転",
+    ]),
     ("0.7.0", "2026-06-11", "14:00 JST", [
         "ls_parser.py 全面改修: デカルト位置 (X,Y,Z,W,P,R) 対応 — HaL.LS / HaR.LS の UF9 座標を正しく解析",
         "/MN セクションの PR[n,axis]=value 行を解析し UFrame/UTool トランスフォームを再構築",

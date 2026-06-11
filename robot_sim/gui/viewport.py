@@ -530,9 +530,13 @@ class Viewport3D:
         self._draw_tcp(q, T_ee)
 
     def _draw_knife(self, q: np.ndarray, T_ee: np.ndarray):
-        """Draw simplified knife model at end-effector."""
-        origin = T_ee[:3, 3]
-        R = T_ee[:3, :3]
+        """Draw simplified knife model at end-effector.
+
+        包丁は刃先CSVの取付オフセット（_blade_T）に追従して回転する。
+        """
+        T_knife = T_ee @ self._blade_T
+        origin = T_knife[:3, 3]
+        R = T_knife[:3, :3]
         z_axis = R[:, 2]
         y_axis = R[:, 1]
 
