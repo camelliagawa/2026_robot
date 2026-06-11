@@ -1223,8 +1223,8 @@ class MainWindow:
         for tf in self.TOOL_FRAMES:
             tree.insert(tools_node, "end", iid=f"ut_{tf.number}",
                          text=f"UT{tf.number}: {tf.name} (z={tf.z:.0f}mm)")
-        # 刃先CSV（包丁に追従中の点群）
-        if self.viewport.has_blade():
+        # 刃先CSV（包丁に追従中の点群）— viewport 未構築時はスキップ
+        if hasattr(self, "viewport") and self.viewport.has_blade():
             n_blade = len(self.viewport._blade_pts)
             name = os.path.basename(self._blade_csv_path or "blade.csv")
             tree.insert(tools_node, "end", iid="blade_csv",
