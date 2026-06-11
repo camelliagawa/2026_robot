@@ -2,10 +2,14 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.6.5"
+APP_VERSION = "0.6.6"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.6.6", "2026-06-11", "02:00 JST", [
+        "ツリーパネル幅を220pxに拡大（UF/UTノード名の切れを解消）",
+        "ツリー表示テキストを短縮化（絵文字なし・コンパクト）",
+    ]),
     ("0.6.5", "2026-06-11", "01:30 JST", [
         "刃先CSV読込機能: x,y,z,nx,ny,nz 形式のCSVを包丁（フランジ）に追従表示",
         "刃先CSV取付オフセット調整 (X/Y/Z/Rx/Ry/Rz) — デフォルト Z=150/Rx=90°",

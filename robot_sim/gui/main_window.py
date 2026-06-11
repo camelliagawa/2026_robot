@@ -299,7 +299,7 @@ class MainWindow:
         right_outer.pack_propagate(False)
 
         # ── ツリーパネル（RoboDK風・左サイド） ──────────────────────────
-        tree_outer = ttk.Frame(self.root, width=210)
+        tree_outer = ttk.Frame(self.root, width=220)
         tree_outer.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0), pady=(4, 0))
         tree_outer.pack_propagate(False)
         self._build_tree_panel(tree_outer)
@@ -1208,26 +1208,27 @@ class MainWindow:
         frames = tree.insert(robot, "end", iid="frames",
                               text="🔧 Frames", open=True)
         for uf in self.USER_FRAMES:
+            # ツリー幅に合わせた短い表示
             tree.insert(frames, "end", iid=f"uf_{uf.number}",
-                         text=f"📐 UF{uf.number}: {uf.name}"
-                              f"  ({uf.x:.0f},{uf.y:.0f},{uf.z:.0f})")
+                         text=f"UF{uf.number}: {uf.name}"
+                              f" ({uf.x:.0f},{uf.y:.0f},{uf.z:.0f})")
         # UF9 STONE – 固定参照エントリ（USER_FRAMES に含まれていない場合）
         if not any(uf.number == 9 for uf in self.USER_FRAMES):
             tree.insert(frames, "end", iid="uf_9",
-                         text="📐 UF9: STONE  (550,-10,332)  ← 未設定")
+                         text="UF9: STONE ← 右クリックで設定")
 
         # Tools
         tools_node = tree.insert(robot, "end", iid="tools",
                                   text="🔨 Tools", open=True)
         for tf in self.TOOL_FRAMES:
             tree.insert(tools_node, "end", iid=f"ut_{tf.number}",
-                         text=f"🔑 UT{tf.number}: {tf.name}  (z={tf.z:.0f}mm)")
+                         text=f"UT{tf.number}: {tf.name} (z={tf.z:.0f}mm)")
         # 刃先CSV（包丁に追従中の点群）
         if self.viewport.has_blade():
             n_blade = len(self.viewport._blade_pts)
             name = os.path.basename(self._blade_csv_path or "blade.csv")
             tree.insert(tools_node, "end", iid="blade_csv",
-                         text=f"🔪 刃先CSV: {name}  ({n_blade}点)")
+                         text=f"[刃先] {name} ({n_blade}pt)")
 
         # Targets (経路点)
         n = len(self.route.waypoints)
