@@ -234,6 +234,12 @@ class Viewport3D:
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
 
+        # 刃先CSV（ツールローカル座標・フランジ追従）
+        self._blade_pts: Optional[np.ndarray] = None      # (N,3) local points
+        self._blade_normals: Optional[np.ndarray] = None  # (N,3) local normals
+        self._blade_name: str = ""
+        self._blade_T: np.ndarray = np.eye(4)             # local offset from flange
+
         self.fig = plt.figure(facecolor="#161B22")
         self.fig.subplots_adjust(left=-0.18, right=1.18, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -433,6 +439,7 @@ class Viewport3D:
                          color=color, fontsize=6, alpha=0.85)
 
         self._draw_knife(q, T_ee)
+        self._draw_blade_csv(T_ee)
         self._draw_tcp(q, T_ee)
 
     def _draw_knife(self, q: np.ndarray, T_ee: np.ndarray):
@@ -573,6 +580,73 @@ class Viewport3D:
             return True
         return False
 
+    # ── 刃先CSV（フランジ追従） ────────────────────────────────────────
+
+    def load_blade_csv(self, path: str) -> int:
+        """刃先CSV（x,y,z,nx,ny,nz 6列・ヘッダーなし）を読み込み、
+        ナイフ先端に追従するローカル点群として保持する。
+
+        Returns: 読み込んだ点数（0=失敗）。
+        """
+        import csv
+        pts, nrm = [], []
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                for row in csv.reader(f):
+                    if len(row) >= 6:
+                        try:
+                            vals = [float(v) for v in row[:6]]
+                        except ValueError:
+                            continue
+                        pts.append(vals[:3])
+                        nrm.append(vals[3:6])
+        except OSError:
+            return 0
+        if not pts:
+            return 0
+        self._blade_pts     = np.array(pts, dtype=float)
+        self._blade_normals = np.array(nrm, dtype=float)
+        self._blade_name    = os.path.basename(path)
+        self._redraw()
+        return len(pts)
+
+    def set_blade_pose(self, x, y, z, rx, ry, rz):
+        """フランジから刃先CSVローカル原点へのオフセットを設定する。"""
+        from ..robot.kinematics import Kinematics
+        self._blade_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._redraw()
+
+    def clear_blade(self):
+        self._blade_pts = None
+        self._blade_normals = None
+        self._blade_name = ""
+        self._blade_T = np.eye(4)
+        self._redraw()
+
+    def has_blade(self) -> bool:
+        return self._blade_pts is not None
+
+    def _draw_blade_csv(self, T_ee: np.ndarray):
+        """刃先CSV点群をフランジ姿勢に追従させて描画する。"""
+        if self._blade_pts is None:
+            return
+        T = T_ee @ self._blade_T
+        R, t = T[:3, :3], T[:3, 3]
+        pts = (R @ self._blade_pts.T).T + t
+        self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
+                        c="#FF5577", s=4, alpha=0.85, depthshade=False)
+        # 法線ウィスカー（間引き表示・研磨接触方向の確認用）
+        if self._blade_normals is not None:
+            nrm = (R @ self._blade_normals.T).T
+            for p, n in zip(pts[::8], nrm[::8]):
+                tip = p + 8.0 * n
+                self.ax.plot([p[0], tip[0]], [p[1], tip[1]], [p[2], tip[2]],
+                             color="#FF99AA", lw=0.5, alpha=0.5)
+        ctr = pts.mean(axis=0)
+        self.ax.text(ctr[0] + 10, ctr[1] + 10, ctr[2] + 10,
+                     f"{self._blade_name} ({len(pts)} pts)",
+                     color="#FF7799", fontsize=6, alpha=0.9)
+
     def stl_bbox(self):
         """Return (xmin,xmax, ymin,ymax, zmin,zmax) of STL, or None."""
         if self._stl_verts is None:
@@ -621,17 +695,33 @@ class Viewport3D:
             all_verts = self._stl_verts.reshape(-1, 3)
             tv = ((R @ all_verts.T).T + t)
             tverts = tv.reshape(-1, 3, 3)
-            # 頂点 scatter（確実に何か表示される）
-            self.ax.scatter(tv[::5, 0], tv[::5, 1], tv[::5, 2],
-                            c="#6699FF", s=2, alpha=0.5, depthshade=False)
-            # ワイヤーフレーム（間引き）
-            for tri in tverts[::4]:
-                xs = [tri[0,0], tri[1,0], tri[2,0], tri[0,0]]
-                ys = [tri[0,1], tri[1,1], tri[2,1], tri[0,1]]
-                zs = [tri[0,2], tri[1,2], tri[2,2], tri[0,2]]
-                self.ax.plot(xs, ys, zs, color="#6699FF", linewidth=0.4, alpha=0.5)
+
+            # 三角形を間引いてソリッド面で描画（法線による簡易シェーディング）
+            max_tris = 1500
+            step = max(1, len(tverts) // max_tris)
+            tris = tverts[::step]
+
+            v1 = tris[:, 1] - tris[:, 0]
+            v2 = tris[:, 2] - tris[:, 0]
+            normals = np.cross(v1, v2)
+            lens = np.linalg.norm(normals, axis=1, keepdims=True)
+            lens[lens < 1e-9] = 1.0
+            normals /= lens
+
+            light = np.array([0.4, -0.3, 0.85])
+            light /= np.linalg.norm(light)
+            intensity = 0.35 + 0.65 * np.abs(normals @ light)
+
+            base = np.array([0.45, 0.58, 0.75])  # 青灰色（機械色）
+            facecolors = np.clip(base[None, :] * intensity[:, None], 0, 1)
+
+            poly = Poly3DCollection(tris, facecolors=facecolors,
+                                    edgecolors="none", alpha=0.95)
+            self.ax.add_collection3d(poly)
+
             ctr = tv.mean(axis=0)
-            self.ax.text(ctr[0], ctr[1], ctr[2],
+            zmax = tv[:, 2].max()
+            self.ax.text(ctr[0], ctr[1], zmax + 25,
                          self._stl_name, color="#99BBFF", fontsize=7)
         if self._csv_points is not None:
             R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]

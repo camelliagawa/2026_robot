@@ -118,6 +118,7 @@ class MainWindow:
         self._active_tool   = self.TOOL_FRAMES[1]
         self._active_uframe = self.USER_FRAMES[0]
         self._tree_programs: list = []   # [(prog_name, Route)]
+        self._blade_csv_path: Optional[str] = None
 
         self._build_root()
         self._build_menu()
@@ -969,6 +970,41 @@ class MainWindow:
         ttk.Button(btn_csv, text="クリア",
                    command=self._clear_csv).pack(side=tk.LEFT, padx=2)
 
+        # ── 刃先CSV セクション（フランジ追従） ──────────────────────
+        sf_blade = ttk.LabelFrame(lf, text="  🔪 刃先CSV（包丁に追従）")
+        sf_blade.pack(fill=tk.X, padx=4, pady=3)
+        _tip(sf_blade,
+             "刃先CSV (x,y,z,nx,ny,nz 形式) を包丁に取り付けます。\n"
+             "X/Y/Z/Rx/Ry/Rz: フランジから刃先原点へのオフセット\n"
+             "デフォルト: Z=150mm (柄の先端), Rx=90° (刃渡りを刃方向に整列)\n"
+             "「再読込」: 同じCSVファイルを再読込（CSV更新時に使用）")
+        inner_blade = ttk.Frame(sf_blade)
+        inner_blade.pack(fill=tk.X, padx=4, pady=2)
+        self._blade_pose_vars: list = []
+        blade_defaults = ["0.0", "0.0", "150.0", "90.0", "0.0", "0.0"]
+        for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+            r, c = divmod(i, 3)
+            tk.Label(inner_blade, text=axis, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
+            v = tk.StringVar(value=blade_defaults[i])
+            self._blade_pose_vars.append(v)
+            ent = ttk.Entry(inner_blade, textvariable=v, width=6)
+            ent.grid(row=r, column=c*2+1, padx=1, pady=1)
+            ent.bind("<MouseWheel>",
+                     lambda e, idx=i: self._blade_scroll(e, idx))
+            ent.bind("<Button-4>",
+                     lambda e, idx=i: self._blade_scroll(e, idx))
+            ent.bind("<Button-5>",
+                     lambda e, idx=i: self._blade_scroll(e, idx))
+        btn_blade = ttk.Frame(sf_blade)
+        btn_blade.pack(padx=4, pady=(0, 3))
+        ttk.Button(btn_blade, text="適用", style="Primary.TButton",
+                   command=self._apply_blade_pose).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_blade, text="🔄 再読込",
+                   command=self._reload_blade_csv).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_blade, text="クリア",
+                   command=self._clear_blade).pack(side=tk.LEFT, padx=2)
+
     def _overlay_step(self, event) -> float:
         ctrl  = bool(event.state & 0x4)
         shift = bool(event.state & 0x1)
@@ -1031,6 +1067,101 @@ class MainWindow:
             v.set("0.0")
         self._set_status("✔  CSV オーバーレイをクリアしました")
 
+    # ── 刃先CSV ──────────────────────────────────────────────────────
+
+    def _blade_scroll(self, event, idx: int):
+        try:
+            current = float(self._blade_pose_vars[idx].get())
+        except ValueError:
+            current = 0.0
+        self._blade_pose_vars[idx].set(
+            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
+        self._apply_blade_pose()
+        return "break"
+
+    def _apply_blade_pose(self):
+        try:
+            vals = [float(v.get()) for v in self._blade_pose_vars]
+        except ValueError:
+            self._set_status("⚠  数値を入力してください")
+            return
+        self.viewport.set_blade_pose(*vals)
+        self._set_status(
+            f"✔  刃先CSV 取付位置更新: Z={vals[2]:.1f} Rx={vals[3]:.1f}°")
+
+    def _clear_blade(self):
+        self.viewport.clear_blade()
+        self._blade_csv_path = None
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status("✔  刃先CSV をクリアしました")
+
+    def _load_blade_csv(self, path: Optional[str] = None):
+        """刃先CSV (x,y,z,nx,ny,nz) を読み込んで包丁に取り付ける。"""
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="刃先CSV を開く (x,y,z,nx,ny,nz 形式)",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+            if not path:
+                return
+        n = self.viewport.load_blade_csv(path)
+        if n == 0:
+            messagebox.showerror("読込エラー",
+                "刃先CSVの読込に失敗しました。\n"
+                "形式: x,y,z,nx,ny,nz（6列・ヘッダーなし）")
+            return
+        self._blade_csv_path = path
+        self._apply_blade_pose()  # 現在の取付オフセットを適用
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(
+            f"✔  刃先CSV 読込: {os.path.basename(path)}  {n} 点 — 包丁に追従表示中")
+
+    def _reload_blade_csv(self):
+        """前回読み込んだ刃先CSVを再読込する（CSV更新ワークフロー用）。"""
+        path = getattr(self, "_blade_csv_path", None)
+        if not path or not os.path.exists(path):
+            self._load_blade_csv()
+            return
+        self._load_blade_csv(path)
+
+    @staticmethod
+    def _is_blade_csv(path: str) -> bool:
+        """先頭行が6個以上の数値のみなら刃先CSV形式と判定する。"""
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                first = f.readline().strip()
+            fields = first.split(",")
+            if len(fields) < 6:
+                return False
+            for v in fields[:6]:
+                float(v)
+            return True
+        except (ValueError, OSError):
+            return False
+
+    def _workflow_load_csv(self):
+        """ワークフロー先頭: CSVを開き、刃先CSV/経路CSVを自動判別して読み込む。"""
+        path = filedialog.askopenfilename(
+            title="CSV を開く（刃先CSV または 経路CSV を自動判別）",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+        if not path:
+            return
+        if self._is_blade_csv(path):
+            self._load_blade_csv(path)
+        else:
+            try:
+                loaded = RouteCSVIO.route_from_csv(path)
+                self.route.waypoints = loaded.waypoints
+                self.route.name      = loaded.name
+                self.route.comment   = loaded.comment
+                self.route_editor.set_route(self.route)
+                self._on_route_changed()
+                self._set_status(
+                    f"✔  経路CSV読込: {len(self.route)} 点 ← {os.path.basename(path)}")
+            except Exception as e:
+                messagebox.showerror("読込エラー", f"CSV 読込に失敗しました:\n{e}")
+
     def _apply_overlay(self, kind: str):
         if kind == "stl":
             self._apply_stl_pose()
@@ -1091,6 +1222,12 @@ class MainWindow:
         for tf in self.TOOL_FRAMES:
             tree.insert(tools_node, "end", iid=f"ut_{tf.number}",
                          text=f"🔑 UT{tf.number}: {tf.name}  (z={tf.z:.0f}mm)")
+        # 刃先CSV（包丁に追従中の点群）
+        if self.viewport.has_blade():
+            n_blade = len(self.viewport._blade_pts)
+            name = os.path.basename(self._blade_csv_path or "blade.csv")
+            tree.insert(tools_node, "end", iid="blade_csv",
+                         text=f"🔪 刃先CSV: {name}  ({n_blade}点)")
 
         # Targets (経路点)
         n = len(self.route.waypoints)
@@ -1153,6 +1290,16 @@ class MainWindow:
         elif item.startswith("ut_"):
             menu.add_command(label="🔑  UTool 編集...",
                              command=self._edit_tool_frame)
+        elif item == "blade_csv":
+            menu.add_command(label="🔄  刃先CSV を再読込",
+                             command=self._reload_blade_csv)
+            menu.add_command(label="📂  別の刃先CSV を読込...",
+                             command=lambda: self._load_blade_csv())
+            menu.add_command(label="🗑  刃先CSV をクリア",
+                             command=self._clear_blade)
+        elif item == "tools":
+            menu.add_command(label="📂  刃先CSV を読込...",
+                             command=lambda: self._load_blade_csv())
         elif item.startswith("wp_"):
             idx = int(item[3:])
             menu.add_command(label=f"🎯  P[{idx+1}] へ IK 移動",
@@ -1203,7 +1350,8 @@ class MainWindow:
         inner.pack(side=tk.LEFT, padx=8, pady=5)
 
         steps = [
-            ("📂 CSV読込",  self._load_csv,            "研磨経路 CSV を読み込む (Ctrl+O)"),
+            ("📂 CSV読込",  self._workflow_load_csv,
+             "CSVを読み込む（自動判別）\n・刃先CSV (x,y,z,nx,ny,nz): 包丁に追従表示\n・経路CSV (ヘッダー付き): 経路点として読込"),
             ("▶ シミュ",    self._start_simulation,    "シミュレーション実行 (F5)"),
             ("🔧 調整",     self._route_adjust_dialog, "経路点の位置・速度を一括調整"),
             ("📤 LS出力",   self._export_tp,           "FANUC LS ファイルを出力 (Ctrl+E)"),
@@ -1217,6 +1365,12 @@ class MainWindow:
             btn = ttk.Button(inner, text=label, command=cmd, style=style)
             btn.pack(side=tk.LEFT)
             _tip(btn, tip)
+            if i == 0:
+                # CSV読込の直後に再読込ボタン（頻繁なCSV差し替えワークフロー用）
+                reload_btn = ttk.Button(inner, text="🔄", width=3,
+                                        command=self._reload_blade_csv)
+                reload_btn.pack(side=tk.LEFT, padx=(2, 0))
+                _tip(reload_btn, "前回の刃先CSVを再読込（CSVファイル更新時にワンクリック反映）")
 
         # 右端: LS読込ボタン
         ls_btn = ttk.Button(bar, text="📥 LS読込", command=self._load_ls_file)
@@ -1454,11 +1608,14 @@ class MainWindow:
             else:
                 self._set_status("⚠  STL 読込失敗: numpy-stl が必要です (pip install numpy-stl)")
         elif ext == ".csv":
-            ok = self.viewport.load_csv_points(path)
-            if ok:
-                self._set_status(f"✔  CSV 読込: {os.path.basename(path)}")
+            if self._is_blade_csv(path):
+                self._load_blade_csv(path)
             else:
-                self._set_status("⚠  CSV に有効な X,Y,Z 列がありません")
+                ok = self.viewport.load_csv_points(path)
+                if ok:
+                    self._set_status(f"✔  CSV 読込: {os.path.basename(path)}")
+                else:
+                    self._set_status("⚠  CSV に有効な X,Y,Z 列がありません")
         else:
             self._set_status(f"⚠  対応形式: .stl または .csv のみ ({ext})")
 
