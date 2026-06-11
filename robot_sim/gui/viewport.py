@@ -529,33 +529,51 @@ class Viewport3D:
         self._draw_blade_csv(T_ee)
         self._draw_tcp(q, T_ee)
 
-    def _draw_knife(self, q: np.ndarray, T_ee: np.ndarray):
-        """Draw simplified knife model at end-effector.
+    def _blade_axes(self, T_ee: np.ndarray):
+        """刃先CSV取付フレームの原点・刃長軸・刃幅軸・刃長を返す。
 
-        包丁は刃先CSVの取付オフセット（_blade_T）に追従して回転する。
+        刃先CSVは局所 Y 軸方向に刃渡りが伸び（0〜約170mm）、
+        局所 Z 軸方向に刃幅をもつ。包丁モデル・TCP はこの軸に整列させる。
         """
-        T_knife = T_ee @ self._blade_T
-        origin = T_knife[:3, 3]
-        R = T_knife[:3, :3]
-        z_axis = R[:, 2]
-        y_axis = R[:, 1]
+        T = T_ee @ self._blade_T
+        origin = T[:3, 3]
+        R = T[:3, :3]
+        blade_dir  = R[:, 1]   # 刃渡り方向（局所 +Y）
+        width_dir  = R[:, 2]   # 刃幅方向（局所 +Z）
+        if self._blade_pts is not None and len(self._blade_pts):
+            blade_len = float(np.max(self._blade_pts[:, 1]))
+            if blade_len < 1.0:
+                blade_len = KNIFE_BLADE_LEN
+        else:
+            blade_len = KNIFE_BLADE_LEN
+        return origin, blade_dir, width_dir, blade_len
 
-        handle_end = origin + KNIFE_HANDLE_LEN * z_axis
-        self.ax.plot([origin[0], handle_end[0]],
-                     [origin[1], handle_end[1]],
-                     [origin[2], handle_end[2]],
+    def _draw_knife(self, q: np.ndarray, T_ee: np.ndarray):
+        """Draw simplified knife model aligned with the blade-CSV axis.
+
+        包丁は刃先CSVの取付オフセット（_blade_T）に追従し、刃渡り方向（局所Y）に
+        整列させて描画する。柄はフランジから刃元へ橋渡しする。
+        """
+        flange = T_ee[:3, 3]
+        origin, blade_dir, width_dir, blade_len = self._blade_axes(T_ee)
+
+        # 柄: フランジ → 刃元（origin）
+        self.ax.plot([flange[0], origin[0]],
+                     [flange[1], origin[1]],
+                     [flange[2], origin[2]],
                      color=KNIFE_HANDLE, lw=5, solid_capstyle="round")
 
-        blade_tip = handle_end + KNIFE_BLADE_LEN * z_axis
-        self.ax.plot([handle_end[0], blade_tip[0]],
-                     [handle_end[1], blade_tip[1]],
-                     [handle_end[2], blade_tip[2]],
+        # 刃: 刃元 → 刃先（刃渡り方向）
+        blade_tip = origin + blade_len * blade_dir
+        self.ax.plot([origin[0], blade_tip[0]],
+                     [origin[1], blade_tip[1]],
+                     [origin[2], blade_tip[2]],
                      color=KNIFE_BLADE, lw=2.5, solid_capstyle="round")
 
         hw = KNIFE_BLADE_WIDTH / 2
         corners = np.array([
-            handle_end - hw * y_axis, handle_end + hw * y_axis,
-            blade_tip  + hw * y_axis, blade_tip  - hw * y_axis,
+            origin    - hw * width_dir, origin    + hw * width_dir,
+            blade_tip + hw * width_dir, blade_tip - hw * width_dir,
         ])
         poly = Poly3DCollection([corners], alpha=0.22,
                                 facecolor=KNIFE_BLADE,
@@ -563,12 +581,16 @@ class Viewport3D:
         self.ax.add_collection3d(poly)
 
     def _draw_tcp(self, q: np.ndarray, T_ee: np.ndarray):
-        """Draw TCP marker if tool frame has offset."""
-        if self._tool_frame is None or self._tool_frame.z == 0.0:
+        """Draw TCP marker. 刃先CSVがあれば刃先端へ、無ければツールフレームへ。"""
+        flange = T_ee[:3, 3]
+        if self._blade_pts is not None and len(self._blade_pts):
+            origin, blade_dir, _w, blade_len = self._blade_axes(T_ee)
+            tcp_pos = origin + blade_len * blade_dir
+        elif self._tool_frame is not None and self._tool_frame.z != 0.0:
+            T_tcp   = T_ee @ self._tool_frame.to_transform()
+            tcp_pos = T_tcp[:3, 3]
+        else:
             return
-        T_tcp   = T_ee @ self._tool_frame.to_transform()
-        tcp_pos = T_tcp[:3, 3]
-        flange  = T_ee[:3, 3]
 
         self.ax.scatter([tcp_pos[0]], [tcp_pos[1]], [tcp_pos[2]],
                         c=TCP_COLOR, s=120, zorder=8,
