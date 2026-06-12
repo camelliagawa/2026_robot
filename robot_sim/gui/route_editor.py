@@ -218,14 +218,15 @@ class RouteEditor(ttk.Frame):
         sel = self._get_selection()
         self._listbox.delete(0, tk.END)
 
-        for i, wp in enumerate(self.route.waypoints):
-            label = wp.label or f"P[{i+1}]"
-            mt = wp.motion_type.value
-            line = (
-                f"{i+1:3d} [{mt}] ({wp.x:7.1f},{wp.y:7.1f},{wp.z:7.1f})"
-                f"  {wp.speed:5.0f}mm/s  {label}"
-            )
-            self._listbox.insert(tk.END, line)
+        # 一括 insert（per-row の Tk 呼び出しを避ける — 300点超ルート対策）
+        lines = [
+            (f"{i+1:3d} [{wp.motion_type.value}] "
+             f"({wp.x:7.1f},{wp.y:7.1f},{wp.z:7.1f})"
+             f"  {wp.speed:5.0f}mm/s  {wp.label or f'P[{i+1}]'}")
+            for i, wp in enumerate(self.route.waypoints)
+        ]
+        if lines:
+            self._listbox.insert(tk.END, *lines)
 
         # Restore selection
         if sel is not None and sel < len(self.route.waypoints):

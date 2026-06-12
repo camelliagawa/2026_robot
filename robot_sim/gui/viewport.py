@@ -246,6 +246,13 @@ class Viewport3D:
         self._blade_name: str = ""
         self._blade_T: np.ndarray = np.eye(4)             # local offset from flange
 
+        # 選択可能曲線（RoboDK風 曲線選択ダイアログ用・ワールド座標）
+        self._pick_curves: List[np.ndarray] = []      # [(M,3) world pts]
+        self._pick_orders: List[Optional[int]] = []   # 選択順 (1始まり) / None=未選択
+        self._pick_callback = None                    # callback(curve_idx)
+        self._pick_artist_map: dict = {}              # id(artist) -> curve_idx
+        self._pick_candidate: Optional[int] = None    # press時のピック候補
+
         self.fig = plt.figure(facecolor="#161B22")
         self.fig.subplots_adjust(left=-0.18, right=1.18, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -265,6 +272,7 @@ class Viewport3D:
         self.canvas.mpl_connect("button_press_event",   self._on_mpress)
         self.canvas.mpl_connect("button_release_event", self._on_mrelease)
         self.canvas.mpl_connect("motion_notify_event",  self._on_mmove)
+        self.canvas.mpl_connect("pick_event",           self._on_pick)
         self.update_robot(self._joint_angles)
 
     # ── Public interface ───────────────────────────────────────────────
@@ -278,6 +286,8 @@ class Viewport3D:
         self._redraw()
 
     def set_selected_waypoint(self, idx: Optional[int]):
+        if idx == self._selected_wp_idx:
+            return  # 同一選択は再描画しない（シミュ再生中の冗長再描画防止）
         self._selected_wp_idx = idx
         self._redraw()
 
@@ -359,6 +369,22 @@ class Viewport3D:
                                self._pan_cx, self._pan_cy, self._pan_cz)
 
     def _on_mrelease(self, event):
+        # クリック（ドラッグ距離 < 5px）なら曲線ピックとして処理。
+        # ドラッグ（>= 5px）は従来どおり視点回転のみ（ピック候補は破棄）。
+        if (event.button == 1 and self._pick_candidate is not None
+                and self._rotate_start is not None
+                and self._pick_callback is not None):
+            dx = event.x - self._rotate_start[0]
+            dy = event.y - self._rotate_start[1]
+            if dx * dx + dy * dy < 25.0:   # 5px 未満 → クリック扱い
+                idx = self._pick_candidate
+                cb  = self._pick_callback
+                self._pick_candidate = None
+                self._rotate_start = None
+                self._pan_start    = None
+                cb(idx)
+                return
+        self._pick_candidate = None
         self._rotate_start = None
         self._pan_start    = None
 
@@ -392,6 +418,7 @@ class Viewport3D:
         self._draw_ref_frames()
         self._draw_markers()
         self._draw_route()
+        self._draw_pick_curves()
         self._draw_jog_target()
         self.canvas.draw_idle()
 
@@ -649,14 +676,48 @@ class Viewport3D:
                      f"({x:.0f},{y:.0f},{z:.0f})",
                      color=JOG_COLOR, fontsize=6, alpha=0.85)
 
+    # 大規模ルートしきい値: これを超えると per-point マーカー/ラベルを省略
+    ROUTE_BIG_N = 25
+
     def _draw_route(self):
-        """Draw waypoints and route path."""
+        """Draw waypoints and route path.
+
+        大規模ルート（> ROUTE_BIG_N 点）は1本のポリライン + 始点/終点
+        マーカーのみで描画する（per-point の scatter / text を作らない）。
+        300点超のルートでも再描画・シミュ再生が軽量に保たれる。
+        """
         if self._route is None or len(self._route) == 0:
             return
 
         positions = self._route.positions_array()
+        n = len(positions)
         self.ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                      color=ROUTE_COLOR, lw=1.5, alpha=0.7, zorder=3)
+
+        if n > self.ROUTE_BIG_N:
+            # 軽量モード: 始点(緑)・終点(赤)と選択中の1点のみマーカー表示
+            p0, p1 = positions[0], positions[-1]
+            self.ax.scatter([p0[0]], [p0[1]], [p0[2]],
+                            c=WP_ACTIVE, s=60, zorder=7,
+                            depthshade=False, marker="o")
+            self.ax.scatter([p1[0]], [p1[1]], [p1[2]],
+                            c=WP_COLOR, s=60, zorder=7,
+                            depthshade=False, marker="s")
+            self.ax.text(p0[0] + 10, p0[1] + 10, p0[2] + 10,
+                         f"START ({n}点)", color=WP_ACTIVE,
+                         fontsize=6, alpha=0.85)
+            self.ax.text(p1[0] + 10, p1[1] + 10, p1[2] + 10,
+                         "END", color=WP_COLOR, fontsize=6, alpha=0.85)
+            sel = self._selected_wp_idx
+            if sel is not None and 0 <= sel < n:
+                wp = self._route.waypoints[sel]
+                self.ax.scatter([wp.x], [wp.y], [wp.z],
+                                c=WP_ACTIVE, s=100, zorder=8,
+                                depthshade=False, marker="*")
+                label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
+                self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
+                             label_text, color="white", fontsize=6, alpha=0.9)
+            return
 
         for i, wp in enumerate(self._route.waypoints):
             selected = (i == self._selected_wp_idx)
@@ -881,6 +942,67 @@ class Viewport3D:
                             depthshade=False, marker="o")
             self.ax.text(x + 14, y + 14, z + 14,
                          f"[TGT] {m['name']}", color="#FF8800", fontsize=7, fontweight="bold")
+
+    # ── 選択可能曲線（RoboDK風 曲線選択） ──────────────────────────────
+
+    def set_pick_curves(self, curves: List[np.ndarray], callback):
+        """クリック選択可能な曲線（ワールド座標のポリライン群）を設定する。
+
+        Args:
+            curves   : [(M,3) ndarray] ワールド座標の曲線点列リスト
+            callback : callback(curve_idx) — クリック（ドラッグなし）で呼ばれる
+        """
+        self._pick_curves = [np.asarray(c, dtype=float) for c in curves]
+        self._pick_orders = [None] * len(self._pick_curves)
+        self._pick_callback = callback
+        self._redraw()
+
+    def set_pick_orders(self, orders: List[Optional[int]]):
+        """各曲線の選択順（1始まり・None=未選択）を更新する。"""
+        self._pick_orders = list(orders)
+        self._redraw()
+
+    def clear_pick_curves(self):
+        """選択可能曲線をすべて解除する。"""
+        if not self._pick_curves and self._pick_callback is None:
+            return
+        self._pick_curves = []
+        self._pick_orders = []
+        self._pick_callback = None
+        self._pick_artist_map = {}
+        self._pick_candidate = None
+        self._redraw()
+
+    def _on_pick(self, event):
+        """pick_event: 押下時に候補のみ記録する（確定はリリース時の
+        ドラッグ距離判定 — _on_mrelease 参照）。"""
+        if getattr(event.mouseevent, "button", None) != 1:
+            return
+        idx = self._pick_artist_map.get(id(event.artist))
+        if idx is not None and self._pick_candidate is None:
+            self._pick_candidate = idx
+
+    def _draw_pick_curves(self):
+        """選択可能曲線を描画する。未選択=シアン細線 / 選択=緑太線+順番号。"""
+        self._pick_artist_map = {}
+        if not self._pick_curves:
+            return
+        for i, pts in enumerate(self._pick_curves):
+            order = (self._pick_orders[i]
+                     if i < len(self._pick_orders) else None)
+            if order is not None:
+                color, lw, alpha = "#00FF66", 3.0, 1.0
+            else:
+                color, lw, alpha = "#00CCDD", 1.2, 0.9
+            ln, = self.ax.plot(pts[:, 0], pts[:, 1], pts[:, 2],
+                               color=color, lw=lw, alpha=alpha,
+                               zorder=9, picker=5)
+            self._pick_artist_map[id(ln)] = i
+            if order is not None:
+                p = pts[0]
+                self.ax.text(p[0] + 5, p[1] + 5, p[2] + 5, str(order),
+                             color="#00FF66", fontsize=8,
+                             fontweight="bold", zorder=10)
 
     # ── Reference Frames ───────────────────────────────────────────────
 

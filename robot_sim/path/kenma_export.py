@@ -327,6 +327,7 @@ def generate_kenma_programs(
     prog_left: str = "HaL",
     prog_right: str = "HaR",
     prog_main: str = "kenma",
+    selected_groups: Optional[List[int]] = None,
 ) -> KenmaPrograms:
     """刃先CSV点列から kenma 形式 3 プログラム（HaL/HaR/kenma）を生成する。
 
@@ -337,16 +338,36 @@ def generate_kenma_programs(
         kin       : Kinematics（IK 到達性検証に使用、None でスキップ）
         edge_angle_deg : 接線まわりの追加刃付け角（CSV法線が揺動を含むため通常0）
         hover_mm  : ホバー/リトラクト離隔距離
+        selected_groups : 使用するストロークグループの index 列
+                          （detect_stroke_groups の返り値に対する添字・実行順）。
+                          None = 全グループを既定順で使用（従来動作）。
+                          左側面の選択は HaL へ・右側面は HaR へ、それぞれ
+                          指定の相対順を保って振り分けられる。片側が空の場合
+                          その側のプログラムは空になり、kenma メインの CALL
+                          も省略される。
     Returns:
         KenmaPrograms
     """
     from ..robot.kinematics import Kinematics
 
     groups = detect_stroke_groups(blade_pts, blade_normals)
-    left, right = split_sides(groups)
-    if not left or not right:
-        raise ValueError(
-            f"左右側面の検出に失敗しました（左={len(left)} / 右={len(right)}グループ）")
+    if selected_groups is not None:
+        bad = [i for i in selected_groups if not (0 <= i < len(groups))]
+        if bad:
+            raise ValueError(f"曲線インデックスが範囲外です: {bad}")
+        ordered = [groups[i] for i in selected_groups]
+        # 左右へ振り分け（ユーザー指定の相対順を保持）
+        left  = [g for g in ordered
+                 if float(np.mean(g.normals[:, 0])) < 0.0]
+        right = [g for g in ordered
+                 if float(np.mean(g.normals[:, 0])) >= 0.0]
+        if not left and not right:
+            raise ValueError("曲線が選択されていません")
+    else:
+        left, right = split_sides(groups)
+        if not left or not right:
+            raise ValueError(
+                f"左右側面の検出に失敗しました（左={len(left)} / 右={len(right)}グループ）")
 
     C = T_contact[:3, 3]
     s = _normalize(T_contact[:3, 2])
@@ -409,15 +430,22 @@ def generate_kenma_programs(
 
     route_main = Route(name=prog_main, comment="RoboDK sequence",
                        uframe=UF_NUM, utool=UT_NUM)
-    route_main.waypoints = [
-        _joint_wp(wps_left[0],  "HOME"),
-        _call_wp(prog_left),
-        _joint_wp(wps_left[0],  "HOME"),
-        _joint_wp(wps_right[0], "SAFE_R"),
-        _call_wp(prog_right),
-        _joint_wp(wps_right[0], "SAFE_R"),
-        _joint_wp(wps_left[0],  "HOME"),
-    ]
+    main_wps: List[Waypoint] = []
+    if wps_left:
+        main_wps += [
+            _joint_wp(wps_left[0],  "HOME"),
+            _call_wp(prog_left),
+            _joint_wp(wps_left[0],  "HOME"),
+        ]
+    if wps_right:
+        main_wps += [
+            _joint_wp(wps_right[0], "SAFE_R"),
+            _call_wp(prog_right),
+            _joint_wp(wps_right[0], "SAFE_R"),
+        ]
+    if wps_left:
+        main_wps.append(_joint_wp(wps_left[0], "HOME"))
+    route_main.waypoints = main_wps
 
     return KenmaPrograms(
         route_left=route_left,
@@ -470,6 +498,8 @@ def export_kenma_ls(result: KenmaPrograms, out_dir: str, kin=None,
     )
     for route, sols in zip((result.route_left, result.route_right),
                            side_solutions):
+        if not route.waypoints:
+            continue   # 片側のみ選択時: 空プログラムは出力しない
         path = os.path.join(out_dir, f"{route.name}.LS")
         exporter.export(route, path,
                         uframe_pos=result.uframe_pos,
@@ -482,10 +512,16 @@ def export_kenma_ls(result: KenmaPrograms, out_dir: str, kin=None,
 
     # kenma メイン: 関節位置のみ + CALL（理想 kenma.LS 同様 PR 定義なし）
     # ホーム = HaL 先頭ホバー解 / 安全姿勢 = HaR 先頭ホバー解
-    main_solutions = None
-    if result.q_left_start is not None and result.q_right_start is not None:
-        qL, qR = result.q_left_start, result.q_right_start
-        main_solutions = {0: qL, 2: qL, 3: qR, 5: qR, 6: qL}
+    # メイン構造は選択内容で可変のためラベルから index を解決する
+    main_solutions = {}
+    for i, wp in enumerate(result.route_main.waypoints):
+        if wp.call is not None:
+            continue
+        if wp.label == "HOME" and result.q_left_start is not None:
+            main_solutions[i] = result.q_left_start
+        elif wp.label == "SAFE_R" and result.q_right_start is not None:
+            main_solutions[i] = result.q_right_start
+    main_solutions = main_solutions or None
     main_path = os.path.join(out_dir, f"{result.route_main.name}.LS")
     exporter.export(result.route_main, main_path,
                     cart_pos=True, ideal_attr=True,

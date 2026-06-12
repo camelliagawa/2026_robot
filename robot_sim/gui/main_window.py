@@ -352,6 +352,7 @@ class MainWindow:
         r.add_command(label="  📐  曲線を辿る（刃付け生成）...",          command=self._curve_follow_dialog)
         r.add_command(label="  📐  kenma形式LS出力（3ファイル1組）...",   command=self._export_kenma_ls)
         r.add_command(label="  📐  kenma形式ルートを経路点リストへ展開",  command=self._load_kenma_sequence)
+        r.add_command(label="  📐  曲線を選択して研磨ルート生成...",       command=self._kenma_curve_select_dialog)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
         r.add_command(label="  🪨  Tormek T8 砥石を3D表示（STLのみ）",    command=self._load_tormek_stl)
@@ -1424,13 +1425,24 @@ class MainWindow:
                          text=f"[刃先] {name} ({n_blade}pt)")
 
         # Targets (経路点)
+        # 大規模ルート（>25点）は数百ノードの挿入で固まるため、
+        # 先頭5点 + サマリーノードのみ表示する（O(1) 規模に抑える）
         n = len(self.route.waypoints)
+        big_route = n > 25
         targets = tree.insert(robot, "end", iid="targets",
-                               text=f"🎯 Targets  ({n}点)",
-                               open=(n <= 30))
-        for i, wp in enumerate(self.route.waypoints):
-            lbl = wp.label or f"P[{i+1}]"
-            tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
+                               text=f"🎯 Targets  ({n}点)"
+                                    + ("  — 大規模ルート" if big_route else ""),
+                               open=True)
+        if big_route:
+            for i, wp in enumerate(self.route.waypoints[:5]):
+                lbl = wp.label or f"P[{i+1}]"
+                tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
+            tree.insert(targets, "end", iid="targets_more",
+                         text=f"… 他{n - 5}点（大規模ルートのため省略）")
+        else:
+            for i, wp in enumerate(self.route.waypoints):
+                lbl = wp.label or f"P[{i+1}]"
+                tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
 
         # Programs (読み込み済み LS)
         progs = tree.insert(robot, "end", iid="programs",
@@ -1924,8 +1936,7 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
 
     def _on_route_changed(self):
-        self.viewport.set_route(self.route)
-        self.viewport.refresh()
+        self.viewport.set_route(self.route)   # set_route が再描画する
         n   = len(self.route)
         self._set_status(f"✔  経路更新 — {n} 点")
         if hasattr(self, "_tree"):
@@ -2605,21 +2616,245 @@ class MainWindow:
                 "刃先CSVの取付姿勢や UF9 STONE の位置を確認してください。")
 
     def _apply_kenma_sequence(self, result):
-        """生成済み kenma シーケンス（CALL展開済み）を経路点リストへ反映する。"""
+        """生成済み kenma シーケンス（CALL展開済み）を経路点リストへ反映する。
+
+        一括反映: リスト構築 → set_route 1回 → 再描画 1回（per-point 処理なし）。
+        """
         seq = build_playback_sequence(result)
         self.route.waypoints = seq
         self.route.name = "kenma"
         self.route.comment = "kenma 3-file sequence"
         self.route.uframe = 9
         self.route.utool = 9
-        self.route_editor.set_route(self.route)
-        self.viewport.set_route(self.route)
-        self.viewport.refresh()
+        self.route_editor.set_route(self.route)   # リスト一括再構築（1回）
+        self.viewport.set_route(self.route)       # 再描画（1回・軽量モード）
         if hasattr(self, "_tree"):
             self._tree_refresh()
         self._set_status(
             f"✔  kenma形式ルートを経路点リストへ展開: {len(seq)} 点 "
             f"(到達不能 {result.n_unreachable}点) — シミュ実行で再生できます")
+
+    # ──────────────────────────────────────────────────────────────────
+    # RoboDK風 曲線選択 → 研磨ルート生成
+    # ──────────────────────────────────────────────────────────────────
+
+    def _kenma_curve_select_dialog(self):
+        """曲線を選択して研磨ルート生成（RoboDK の Curve Follow 曲線選択相当）。
+
+        刃先CSVのストロークグループ（=「角で曲線を分ける」結果に相当）を
+        3Dビューポートにクリック可能な曲線として表示し、クリックした順番が
+        研磨の実行順になる。左側面の選択は HaL、右側面は HaR に振り分けられる。
+
+        クリック判定: ドラッグ距離 5px 未満のリリースをクリックとして扱う。
+        ドラッグ（5px 以上）は従来どおり視点回転 — 選択モード切替は不要。
+        """
+        from ..path.kenma_export import detect_stroke_groups
+
+        try:
+            pts, nrm, T_blade, T_contact, csv_name = self._kenma_inputs()
+            groups = detect_stroke_groups(pts, nrm)
+        except Exception as e:
+            messagebox.showerror("曲線選択",
+                                 f"刃先CSVの曲線検出に失敗しました:\n{e}")
+            return
+
+        # 命名: 側（左=L/右=R）+ 刃渡り位置順（CSV順 = 刃元→刃先）
+        names: list = []
+        sides: list = []
+        n_left = n_right = 0
+        for g in groups:
+            if float(np.mean(g.normals[:, 0])) < 0.0:
+                n_left += 1
+                names.append(f"L{n_left:02d}")
+                sides.append("L")
+            else:
+                n_right += 1
+                names.append(f"R{n_right:02d}")
+                sides.append("R")
+
+        # ブレードローカル → ワールド変換（刃先CSVオーバーレイと同じ math:
+        # T = T_ee @ T_blade — 包丁の現在姿勢に追従）
+        T_ee = self.kin.forward(self._joint_angles)
+        T = T_ee @ T_blade
+        Rw, tw = T[:3, :3], T[:3, 3]
+        world_curves = [(Rw @ g.pts.T).T + tw for g in groups]
+
+        sel: list = []   # 選択順のグループ index 列
+
+        win = tk.Toplevel(self.root)
+        win.title("曲線を選択して研磨ルート生成")
+        win.geometry("420x560")
+        win.configure(bg=BG_DARK)
+        win.resizable(False, False)
+
+        tk.Label(win, text="📐  曲線を選択して研磨ルート生成",
+                 bg=BG_DARK, fg=ACCENT,
+                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(12, 2), padx=14, anchor="w")
+        tk.Label(win,
+            text="3Dビューの水色の曲線をクリックすると選択（緑・番号付き）されます。\n"
+                 "クリックした順番 = 研磨の実行順（RoboDKの曲線選択と同じ）。\n"
+                 "選択済み曲線を再クリックすると解除されます。\n"
+                 "※ クリック（5px未満）で選択 / ドラッグはそのまま視点回転です。",
+            bg=BG_DARK, fg=FG_SUB,
+            font=("Yu Gothic UI", 8), justify="left").pack(padx=14, anchor="w")
+
+        ttk.Separator(win).pack(fill=tk.X, padx=14, pady=6)
+
+        # 選択リスト（実行順）
+        lb_frame = ttk.Frame(win)
+        lb_frame.pack(fill=tk.BOTH, expand=True, padx=14)
+        sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb = tk.Listbox(
+            lb_frame, height=12, yscrollcommand=sb.set,
+            bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 9),
+            selectbackground=BTN_PRIMARY, selectforeground="white",
+            borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
+            activestyle="none")
+        lb.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        sb.config(command=lb.yview)
+
+        info_var = tk.StringVar()
+        tk.Label(win, textvariable=info_var, bg=BG_DARK, fg=ACCENT2,
+                 font=("", 9, "bold")).pack(padx=14, pady=(4, 0), anchor="w")
+
+        def _refresh(keep_sel: Optional[int] = None):
+            orders = [None] * len(groups)
+            for k, gi in enumerate(sel):
+                orders[gi] = k + 1
+            self.viewport.set_pick_orders(orders)
+            lb.delete(0, tk.END)
+            for k, gi in enumerate(sel):
+                g = groups[gi]
+                y0 = float(g.pts[:, 1].min())
+                y1 = float(g.pts[:, 1].max())
+                lb.insert(tk.END,
+                          f"{k+1:2d}. {names[gi]}  刃渡り {y0:6.1f}〜{y1:6.1f}mm")
+            if keep_sel is not None and 0 <= keep_sel < lb.size():
+                lb.selection_set(keep_sel)
+                lb.see(keep_sel)
+            nl = sum(1 for gi in sel if sides[gi] == "L")
+            nr = len(sel) - nl
+            info_var.set(
+                f"選択 {len(sel)} / 全{len(groups)} 曲線"
+                f"（HaL: {nl} / HaR: {nr}・残り {len(groups) - len(sel)}）")
+
+        def _on_pick(gi: int):
+            if gi in sel:
+                sel.remove(gi)            # 再クリックで解除（以降を再採番）
+                self._set_status(f"曲線 {names[gi]} の選択を解除しました")
+            else:
+                sel.append(gi)            # クリック順に追加
+                self._set_status(
+                    f"曲線 {names[gi]} を選択（{len(sel)}番目）")
+            _refresh()
+
+        def _select_all():
+            sel.clear()
+            sel.extend(range(len(groups)))   # 標準順 = CSV順（従来の全曲線生成と同順）
+            _refresh()
+
+        def _reset():
+            sel.clear()
+            _refresh()
+
+        def _move(delta: int):
+            cur = lb.curselection()
+            if not cur:
+                return
+            i = cur[0]
+            j = i + delta
+            if 0 <= j < len(sel):
+                sel[i], sel[j] = sel[j], sel[i]
+                _refresh(keep_sel=j)
+
+        def _close():
+            self.viewport.clear_pick_curves()
+            win.destroy()
+
+        def _generate():
+            if not sel:
+                messagebox.showwarning("曲線未選択",
+                    "曲線が選択されていません。\n"
+                    "3Dビューで曲線をクリックして選択してください。",
+                    parent=win)
+                return
+            order = list(sel)
+            nl = sum(1 for gi in order if sides[gi] == "L")
+            nr = len(order) - nl
+            self._set_status(
+                f"選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）から研磨ルート生成中 "
+                "— IK計算しています（数十秒かかる場合があります）...")
+            self.root.update()
+            try:
+                result = generate_kenma_programs(
+                    pts, nrm, T_blade, T_contact, self.kin,
+                    selected_groups=order)
+            except Exception as e:
+                messagebox.showerror("生成エラー",
+                                     f"生成に失敗しました:\n{e}", parent=win)
+                self._set_status("⚠  曲線選択ルートの生成に失敗しました")
+                return
+            _close()
+
+            ans = messagebox.askyesnocancel(
+                "曲線選択ルート生成",
+                f"選択 {len(order)} 曲線から生成しました。\n"
+                f"  HaL（左側面）: {nl} 曲線\n"
+                f"  HaR（右側面）: {nr} 曲線\n"
+                f"  IK到達不能: {result.n_unreachable} 点\n\n"
+                "「はい」: kenma形式LS（3ファイル1組）を出力して経路点リストへ展開\n"
+                "「いいえ」: 経路点リストへ展開のみ（シミュ再生用）\n"
+                "「キャンセル」: 何もしない",
+                icon="question")
+            if ans is None:
+                self._set_status("曲線選択ルート: 生成結果を破棄しました")
+                return
+            if ans:
+                out_dir = filedialog.askdirectory(
+                    title="kenma形式LS（選択曲線）の出力先フォルダを選択")
+                if out_dir:
+                    try:
+                        paths = export_kenma_ls(result, out_dir, self.kin,
+                                                mn_comments=[csv_name])
+                        names_str = " / ".join(
+                            os.path.basename(p) for p in paths)
+                        self._set_status(
+                            f"✔  選択曲線LS出力完了: {names_str} → {out_dir}")
+                    except Exception as e:
+                        messagebox.showerror("LS出力エラー",
+                                             f"出力に失敗しました:\n{e}")
+            self._apply_kenma_sequence(result)
+            self._set_status(
+                f"✔  選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）の研磨ルートを"
+                f"経路点リストへ展開: {len(self.route)} 点 — シミュ実行で再生できます")
+
+        btn_row1 = ttk.Frame(win)
+        btn_row1.pack(pady=(6, 2))
+        ttk.Button(btn_row1, text="全選択（標準順）",
+                   command=_select_all).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_row1, text="リセット",
+                   command=_reset).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_row1, text="↑",  width=3,
+                   command=lambda: _move(-1)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(btn_row1, text="↓",  width=3,
+                   command=lambda: _move(+1)).pack(side=tk.LEFT, padx=3)
+
+        btn_row2 = ttk.Frame(win)
+        btn_row2.pack(pady=(2, 10))
+        ttk.Button(btn_row2, text="📐  ルート生成", style="Primary.TButton",
+                   command=_generate).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_row2, text="キャンセル",
+                   command=_close).pack(side=tk.LEFT, padx=6)
+
+        win.protocol("WM_DELETE_WINDOW", _close)
+
+        # ビューポートへ曲線を登録（クリックで _on_pick が呼ばれる）
+        self.viewport.set_pick_curves(world_curves, _on_pick)
+        _refresh()
+        self._set_status(
+            f"曲線選択モード: {len(groups)} 曲線（左{n_left}/右{n_right}）を表示中 — "
+            "3Dビューで曲線をクリックして研磨順に選択してください")
 
     def _clear_route(self):
         if messagebox.askyesno("確認", "経路点をすべて削除しますか？\nこの操作は元に戻せません。"):
