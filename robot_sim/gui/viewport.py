@@ -651,7 +651,7 @@ class Viewport3D:
             return
         origin = self._draw_frame_triad(
             self._user_frame.to_transform(), 120,
-            [UFRAME_COLOR, "#88FF88", "#8888FF"], ["Ux", "Uy", "Uz"])
+            ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])
 
         self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
                         c=UFRAME_COLOR, s=60, zorder=7,
@@ -1033,7 +1033,7 @@ class Viewport3D:
             base_color = rf.get("color", "#FF88FF")
             origin = self._draw_frame_triad(
                 rf["T"], 80, ["#FF4444", "#44FF44", "#4444FF"],
-                lw=2.5, alpha=0.9)
+                axis_labels=["X", "Y", "Z"], lw=2.5, alpha=0.9)
             self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
                             c=base_color, s=80, zorder=8, depthshade=False, marker="D")
             self.ax.text(origin[0]+12, origin[1]+12, origin[2]+12,

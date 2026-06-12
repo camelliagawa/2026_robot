@@ -2,10 +2,15 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.12.1"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.12.1", "2026-06-12", "21:00 JST", [
+        "UF9 STONE の既定値を X=600, Y=25, Z=340, Rz=90° に更新（Z はSTL上面から自動算出を継続）",
+        "STL（砥石モデル）の既定位置を X=740, Y=240, Z=266, Rz=-90° に更新",
+        "座標フレームの軸ラベルを「Ux/Uy/Uz」→「X/Y/Z」に変更し全フレームで X=赤/Y=緑/Z=青 に統一（参照フレームにも軸ラベルを追加）",
+    ]),
     ("0.12.0", "2026-06-12", "20:00 JST", [
         "ツールチップ等の注釈文字サイズを 表示→文字サイズ（小/中/大）と連動（表示時に倍率を参照し即時反映）",
         "UF1 と UF9 の重複を解消し UF9 STONE (550,-10,332,Rz90) に統一 — USER_FRAMES は UF0 WORLD + UF9 STONE のみに",

@@ -1278,7 +1278,7 @@ class MainWindow:
              "UFrame（ユーザーフレーム）:\n"
              "作業対象（砥石など）の座標系定義です。\n"
              "・UF0 WORLD: ロボット基準座標（デフォルト）\n"
-             "・UF9 STONE: 砥石座標系（X=550, Y=-10, Z=332mm, Rz=90°）\n"
+             "・UF9 STONE: 砥石座標系（X=600, Y=25, Z=340mm, Rz=90°）\n"
              "  kenma 生成の砥石接触座標としても使われます。\n"
              "3Dビューの紫色の座標軸で位置を確認できます。\n"
              "ロボット メニューや UF9 STONE 位置調整パネルから編集できます。")
@@ -1741,7 +1741,7 @@ class MainWindow:
             num = int(item[3:])
             if num == 9:
                 menu.add_command(
-                    label="🏗  UF9 STONE を自動設定 (x550,y-10,STL Z)",
+                    label="🏗  UF9 STONE を自動設定 (x600,y25,STL Z)",
                     command=self._setup_stone_uframe)
                 menu.add_separator()
             uf = next((u for u in self.USER_FRAMES if u.number == num), None)
@@ -1960,10 +1960,10 @@ class MainWindow:
             tv = ((R @ all_v.T).T + t)
             grinder_top_z = float(tv[:, 2].max())
         else:
-            grinder_top_z = 332.0
+            grinder_top_z = 340.0
 
         uf9 = UserFrame(number=9, name="STONE",
-                        x=550.0, y=-10.0, z=grinder_top_z,
+                        x=600.0, y=25.0, z=grinder_top_z,
                         rx=0.0,  ry=0.0,  rz=90.0,
                         comment="Grinder top surface")
         self._sync_uf9(uf9)
@@ -1974,7 +1974,7 @@ class MainWindow:
         self._active_uframe = self.USER_FRAMES[idx9]
         self.viewport.set_user_frame(self._active_uframe)
         self._set_status(
-            f"✔  UF9 STONE 設定: x=550, y=-10, z={grinder_top_z:.0f}mm, rz=90°")
+            f"✔  UF9 STONE 設定: x=600, y=25, z={grinder_top_z:.0f}mm, rz=90°")
 
     # ──────────────────────────────────────────────────────────────────
     # 経路調整ダイアログ
@@ -2256,8 +2256,8 @@ class MainWindow:
                 "「いいえ」: UFRAME_NUM/UTOOL_NUM の設定のみ出力",
                 icon="question")
             if ans:
-                # UF9: X=550,Y=-10,Z=300(table),W=0,P=0,R=90
-                uframe_pos = (550.0, -10.0, 300.0, 0.0, 0.0, 90.0)
+                # UF9: X=600,Y=25,Z=340,W=0,P=0,R=90
+                uframe_pos = (600.0, 25.0, 340.0, 0.0, 0.0, 90.0)
                 # UT9: X=0,Y=0,Z=150,W=-90,P=0,R=90
                 utool_pos  = (0.0, 0.0, 150.0, -90.0, 0.0, 90.0)
 
@@ -2829,7 +2829,7 @@ class MainWindow:
         self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
 
     # 研磨機 STL の既定配置パラメータ（ユーザー確認済みの値）
-    _STL_DEFAULT_POSE = (800.0, 148.0, 266.0, 0.0, 0.0, -90.0)
+    _STL_DEFAULT_POSE = (740.0, 240.0, 266.0, 0.0, 0.0, -90.0)
 
     def _apply_stl_default_pose(self):
         """STL既定位置をビューポートおよび入力欄に反映する。"""
@@ -2862,12 +2862,12 @@ class MainWindow:
             # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
             # 参照フレーム / 調整パネルを一括更新）
             uf9 = UserFrame(number=9, name="STONE",
-                            x=550.0, y=-10.0, z=stone_top_z,
+                            x=600.0, y=25.0, z=stone_top_z,
                             rx=0.0, ry=0.0, rz=90.0,
                             comment="Grinder top surface")
             self._sync_uf9(uf9)
             self._set_status(
-                f"✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
+                f"✔  Tormek T8 STL 読込済（X=740, Y=240, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
         else:
             self._set_status("⚠  STL 読込失敗")
 
@@ -3111,9 +3111,9 @@ class MainWindow:
                     T_contact = f["T"]
                     break
         if T_contact is None:
-            # 既定の UF9 STONE（_setup_stone_uframe と同じ値）
+            # 既定の UF9 STONE（_setup_stone_uframe / stone9 と同じ値）
             T_contact = Kinematics.pose_to_transform(
-                550.0, -10.0, 332.0, 0.0, 0.0, 90.0)
+                600.0, 25.0, 340.0, 0.0, 0.0, 90.0)
         return pts, nrm, T_blade, T_contact, csv_name
 
     def _generate_kenma(self):
