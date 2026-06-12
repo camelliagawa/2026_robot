@@ -143,6 +143,15 @@ class MainWindow:
         self._tree_programs: list = []   # [(prog_name, Route)]
         self._blade_csv_path: Optional[str] = None
 
+        # ── シークバー / IK 事前計算状態 ──
+        self._sim_solutions: list = []        # List[np.ndarray] 各経路点の関節解
+        self._sim_solutions_ready = False     # 事前計算完了フラグ
+        self._sim_precompute_thread: Optional[threading.Thread] = None
+        self._sim_precompute_token = 0        # ルート変更ごとに増分（古い結果を破棄）
+        self._seek_dragging = False           # スクラブ中フラグ
+        self._seek_updating = False           # スライダー自動更新中フラグ（コールバック抑制）
+        self._sim_playing = False             # 再生中フラグ
+
         # 文字サイズ（小/中/大）— 既定は「中」
         self._orig_fonts: dict = {}
         self._font_scale: float = 1.3
@@ -168,6 +177,9 @@ class MainWindow:
 
         # 既定の文字サイズ（中）を全体に適用
         self._set_font_scale(self._font_scale)
+
+        # シークバー用 IK 事前計算（バックグラウンド）
+        self._invalidate_sim_solutions()
 
     # ──────────────────────────────────────────────────────────────────
     # Root window & style
@@ -401,10 +413,31 @@ class MainWindow:
         right_outer.pack_propagate(False)
 
         # ── ツリーパネル（RoboDK風・左サイド） ──────────────────────────
-        tree_outer = ttk.Frame(self.root, width=220)
+        tree_outer = ttk.Frame(self.root, width=240)
         tree_outer.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0), pady=(4, 0))
         tree_outer.pack_propagate(False)
+        self._tree_outer = tree_outer
         self._build_tree_panel(tree_outer)
+
+        # ── ドラッグ可能な仕切り（ツリー幅をマウスで変更） ──────────────
+        sash = tk.Frame(self.root, width=5, bg=BORDER,
+                        cursor="sb_h_double_arrow")
+        sash.pack(side=tk.LEFT, fill=tk.Y, pady=(4, 0))
+
+        def _sash_drag(event):
+            new_w = max(140, min(600, event.x_root - tree_outer.winfo_rootx()))
+            tree_outer.config(width=new_w)
+
+        def _sash_enter(event):
+            sash.config(bg=ACCENT2)
+
+        def _sash_leave(event):
+            sash.config(bg=BORDER)
+
+        sash.bind("<B1-Motion>", _sash_drag)
+        sash.bind("<Enter>", _sash_enter)
+        sash.bind("<Leave>", _sash_leave)
+        _tip(sash, "ドラッグでステーションパネルの幅を変更できます")
 
         # ── 上部：固定フレーム（スクロール廃止 — フォント変更時のずれを防止）──
         right = ttk.Frame(right_outer)
@@ -420,6 +453,9 @@ class MainWindow:
         # ジョグパネルを左コンテナ下部に（先にpackしてスペース確保）
         self._build_joint_jog_panel(left_container)
 
+        # シークバー（タイムラインスクラバー）— ジョグの上・ビューポートの下
+        self._build_seek_bar(left_container)
+
         # ワークフローバー（ジョグの上・ビューポートの下）
         self._build_workflow_bar(left_container)
 
@@ -430,6 +466,7 @@ class MainWindow:
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
+        self._build_stone_adjust_panel(right)
 
         route_lf = ttk.LabelFrame(right,
             text="  経路点リスト (Waypoint List) — 追加・編集・削除・並べ替えが可能")
@@ -503,15 +540,10 @@ class MainWindow:
                      font=("", 8), width=2).pack(side=tk.LEFT)
             v = tk.StringVar(value="0.0")
             self._mk_pos_vars.append(v)
-            ent = ttk.Entry(pos_row, textvariable=v, width=7)
+            ent = self._make_num_field(pos_row, v,
+                                       on_change=self._mk_apply_pos_if_selected,
+                                       width=7)
             ent.pack(side=tk.LEFT, padx=(0, 3))
-            ent.bind("<MouseWheel>",
-                     lambda e, i=axis_i: self._mk_scroll(e, i))
-            ent.bind("<Button-4>",
-                     lambda e, i=axis_i: self._mk_scroll(e, i))
-            ent.bind("<Button-5>",
-                     lambda e, i=axis_i: self._mk_scroll(e, i))
-            ent.bind("<Return>", lambda e: self._mk_apply_pos())
         ttk.Button(pos_row, text="適用", style="Primary.TButton",
                    command=self._mk_apply_pos).pack(side=tk.LEFT, padx=2)
 
@@ -572,29 +604,10 @@ class MainWindow:
         else:
             self._set_status(f"✔  現在TCP位置: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
 
-    def _mk_scroll(self, event, axis_idx: int):
-        """マウスホイールで X/Y/Z 値を増減し、即座にビューポートへ反映する。"""
-        # ステップ幅: Ctrl=10mm, Shift=0.1mm, 通常=1mm
-        ctrl  = bool(event.state & 0x4)
-        shift = bool(event.state & 0x1)
-        step  = 10.0 if ctrl else (0.1 if shift else 1.0)
-
-        # 上スクロール判定（Windows: delta>0, Linux: Button-4）
-        if hasattr(event, "delta") and event.delta != 0:
-            direction = 1 if event.delta > 0 else -1
-        else:
-            direction = 1 if event.num == 4 else -1
-
-        try:
-            current = float(self._mk_pos_vars[axis_idx].get())
-        except ValueError:
-            current = 0.0
-        self._mk_pos_vars[axis_idx].set(f"{current + direction * step:.2f}")
-
-        # 選択中のマーカーがあればリアルタイム更新
+    def _mk_apply_pos_if_selected(self):
+        """選択中のマーカーがあれば位置を即時反映する（ホイール/Enter用）。"""
         if self._mk_listbox.curselection():
             self._mk_apply_pos()
-        return "break"
 
     def _on_mk_select(self, event=None):
         sel = self._mk_listbox.curselection()
@@ -722,7 +735,10 @@ class MainWindow:
                      font=("Yu Gothic UI", 9), width=10, anchor="w").pack(side=tk.LEFT)
             v = tk.StringVar(value=dflt)
             fields[lbl] = v
-            ttk.Entry(row, textvariable=v, width=18).pack(side=tk.LEFT, padx=4)
+            if lbl == "名前":
+                ttk.Entry(row, textvariable=v, width=18).pack(side=tk.LEFT, padx=4)
+            else:
+                self._make_num_field(row, v, width=18).pack(side=tk.LEFT, padx=4)
 
         def _apply():
             name = fields["名前"].get().strip() or "Frame"
@@ -748,6 +764,104 @@ class MainWindow:
         ttk.Button(btn_row, text="キャンセル",
                    command=win.destroy).pack(side=tk.LEFT, padx=6)
         win.bind("<Return>", lambda e: _apply())
+
+    # ──────────────────────────────────────────────────────────────────
+    # UF9 STONE 位置調整パネル（即時反映）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_stone_adjust_panel(self, parent):
+        """UF9 STONE 参照フレームを X/Y/Z/Rx/Ry/Rz で即時調整するパネル。"""
+        lf = ttk.LabelFrame(parent, text="  🪨 UF9 STONE 位置調整 (即時反映)")
+        lf.pack(fill=tk.X, padx=4, pady=(2, 2))
+        _tip(lf,
+             "砥石 (UF9 STONE) 参照フレームの位置・姿勢を調整します。\n"
+             "X/Y/Z: 位置(mm)  Rx/Ry/Rz: 姿勢(°)\n"
+             "入力欄でマウスホイール → 3Dビューへ即時反映\n"
+             "Ctrl+ホイール=10, Shift+ホイール=0.1, 通常=1\n"
+             "ここで設定した値は kenma 生成の砥石接触座標として使われます。")
+
+        inner = ttk.Frame(lf)
+        inner.pack(fill=tk.X, padx=4, pady=2)
+        self._stone_vars: list = []
+        # 現在の UF9 から初期値を取得（なければ既定値）
+        uf9 = self._get_uf9()
+        defaults = [uf9.x, uf9.y, uf9.z, uf9.rx, uf9.ry, uf9.rz]
+        for i, axis in enumerate(["X", "Y", "Z", "Rx", "Ry", "Rz"]):
+            r, c = divmod(i, 3)
+            tk.Label(inner, text=axis, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
+            v = tk.StringVar(value=f"{defaults[i]:.1f}")
+            self._stone_vars.append(v)
+            ent = self._make_num_field(inner, v,
+                                       on_change=self._apply_stone_adjust, width=6)
+            ent.grid(row=r, column=c*2+1, padx=1, pady=1)
+
+        btn_row = ttk.Frame(lf)
+        btn_row.pack(padx=4, pady=(0, 3))
+        ttk.Button(btn_row, text="適用", style="Primary.TButton",
+                   command=self._apply_stone_adjust).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="現在UF9→",
+                   command=self._refresh_stone_fields).pack(side=tk.LEFT, padx=2)
+
+    def _get_uf9(self):
+        """現在の UF9 STONE を返す（USER_FRAMES → 既定値）。存在しなければ既定値の UF を返す（追加はしない）。"""
+        for uf in self.USER_FRAMES:
+            if uf.number == 9:
+                return uf
+        from ..robot.user_frame import UserFrame as _UF
+        return _UF(number=9, name="STONE",
+                   x=550.0, y=-10.0, z=332.0, rx=0.0, ry=0.0, rz=90.0,
+                   comment="Grinder top surface")
+
+    def _refresh_stone_fields(self):
+        """入力欄を現在の UF9 STONE 値で再設定する。"""
+        uf9 = self._get_uf9()
+        vals = [uf9.x, uf9.y, uf9.z, uf9.rx, uf9.ry, uf9.rz]
+        for v, val in zip(self._stone_vars, vals):
+            v.set(f"{val:.1f}")
+        self._set_status("✔  UF9 STONE の現在値を入力欄に反映しました")
+
+    def _apply_stone_adjust(self):
+        """入力欄の値で UF9 STONE を更新し、3Dビューへ即時反映する。
+
+        USER_FRAMES の UF9 と、ビューポートの参照フレーム / アクティブ UFrame を
+        すべて同期させる（kenma 生成が読み取る座標と一致させる）。
+        """
+        try:
+            x, y, z, rx, ry, rz = [float(v.get()) for v in self._stone_vars]
+        except (ValueError, tk.TclError):
+            self._set_status("⚠  数値を入力してください")
+            return
+
+        from ..robot.user_frame import UserFrame as _UF
+        uf9 = _UF(number=9, name="STONE", x=x, y=y, z=z,
+                  rx=rx, ry=ry, rz=rz, comment="Grinder top surface")
+
+        # USER_FRAMES を同期
+        nums = [uf.number for uf in self.USER_FRAMES]
+        if 9 in nums:
+            self.USER_FRAMES[nums.index(9)] = uf9
+        else:
+            self.USER_FRAMES.append(uf9)
+            # コンボボックスの選択肢も更新
+            uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
+            self._uframe_combo.config(values=uf_names)
+
+        # アクティブ UFrame が UF9 なら差し替えてビューを更新
+        if self._active_uframe is not None and self._active_uframe.number == 9:
+            self._active_uframe = uf9
+            self.viewport.set_user_frame(uf9)
+
+        # ビューポートの参照フレーム "UF9: STONE" を再登録（即時再描画）
+        self.viewport.remove_ref_frame("UF9: STONE")
+        self.viewport.add_ref_frame("UF9: STONE", x, y, z, rx, ry, rz,
+                                    color="#C586C0")
+        if hasattr(self, "_rf_listbox"):
+            self._rf_refresh_listbox()
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(
+            f"✔  UF9 STONE 更新: X={x:.1f} Y={y:.1f} Z={z:.1f} Rz={rz:.1f}°")
 
     # ──────────────────────────────────────────────────────────────────
     # 更新履歴パネル（右サイドバー下部）
@@ -1121,15 +1235,9 @@ class MainWindow:
                      font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
             v = tk.StringVar(value="0.0")
             self._stl_pose_vars.append(v)
-            ent = ttk.Entry(inner_stl, textvariable=v, width=6)
+            ent = self._make_num_field(inner_stl, v,
+                                       on_change=self._apply_stl_pose, width=6)
             ent.grid(row=r, column=c*2+1, padx=1, pady=1)
-            ent.bind("<MouseWheel>",
-                     lambda e, idx=i: self._stl_scroll(e, idx))
-            ent.bind("<Button-4>",
-                     lambda e, idx=i: self._stl_scroll(e, idx))
-            ent.bind("<Button-5>",
-                     lambda e, idx=i: self._stl_scroll(e, idx))
-            ent.bind("<Return>", lambda e: self._apply_stl_pose())
         btn_stl = ttk.Frame(sf_stl)
         btn_stl.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_stl, text="適用", style="Primary.TButton",
@@ -1148,15 +1256,9 @@ class MainWindow:
                      font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
             v = tk.StringVar(value="0.0")
             self._csv_pose_vars.append(v)
-            ent = ttk.Entry(inner_csv, textvariable=v, width=6)
+            ent = self._make_num_field(inner_csv, v,
+                                       on_change=self._apply_csv_pose, width=6)
             ent.grid(row=r, column=c*2+1, padx=1, pady=1)
-            ent.bind("<MouseWheel>",
-                     lambda e, idx=i: self._csv_scroll(e, idx))
-            ent.bind("<Button-4>",
-                     lambda e, idx=i: self._csv_scroll(e, idx))
-            ent.bind("<Button-5>",
-                     lambda e, idx=i: self._csv_scroll(e, idx))
-            ent.bind("<Return>", lambda e: self._apply_csv_pose())
         btn_csv = ttk.Frame(sf_csv)
         btn_csv.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_csv, text="適用", style="Primary.TButton",
@@ -1182,15 +1284,9 @@ class MainWindow:
                      font=("", 8), width=3).grid(row=r, column=c*2, padx=1)
             v = tk.StringVar(value=blade_defaults[i])
             self._blade_pose_vars.append(v)
-            ent = ttk.Entry(inner_blade, textvariable=v, width=6)
+            ent = self._make_num_field(inner_blade, v,
+                                       on_change=self._apply_blade_pose, width=6)
             ent.grid(row=r, column=c*2+1, padx=1, pady=1)
-            ent.bind("<MouseWheel>",
-                     lambda e, idx=i: self._blade_scroll(e, idx))
-            ent.bind("<Button-4>",
-                     lambda e, idx=i: self._blade_scroll(e, idx))
-            ent.bind("<Button-5>",
-                     lambda e, idx=i: self._blade_scroll(e, idx))
-            ent.bind("<Return>", lambda e: self._apply_blade_pose())
         btn_blade = ttk.Frame(sf_blade)
         btn_blade.pack(padx=4, pady=(0, 3))
         ttk.Button(btn_blade, text="適用", style="Primary.TButton",
@@ -1200,35 +1296,52 @@ class MainWindow:
         ttk.Button(btn_blade, text="クリア",
                    command=self._clear_blade).pack(side=tk.LEFT, padx=2)
 
-    def _overlay_step(self, event) -> float:
-        ctrl  = bool(event.state & 0x4)
-        shift = bool(event.state & 0x1)
-        return 10.0 if ctrl else (0.1 if shift else 1.0)
+    # ──────────────────────────────────────────────────────────────────
+    # 汎用数値入力欄（マウスホイールで増減・即時反映）
+    # ──────────────────────────────────────────────────────────────────
 
-    def _overlay_dir(self, event) -> int:
-        if hasattr(event, "delta") and event.delta != 0:
-            return 1 if event.delta > 0 else -1
-        return 1 if event.num == 4 else -1
+    def _make_num_field(self, parent, var, on_change=None,
+                        step=1.0, fine=0.1, coarse=10.0, width=7, fmt="{:.2f}"):
+        """ttk.Entry を生成し、マウスホイールで値を増減する数値入力欄を返す。
 
-    def _stl_scroll(self, event, idx: int):
-        try:
-            current = float(self._stl_pose_vars[idx].get())
-        except ValueError:
-            current = 0.0
-        self._stl_pose_vars[idx].set(
-            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
-        self._apply_stl_pose()
-        return "break"
+        ・ホイール上=増加 / 下=減少（Windows delta / Linux Button-4,5 両対応）
+        ・Shift=fine（微調整）, Ctrl=coarse（粗調整）, 通常=step
+        ・値変更（ホイール）後と <Return> / <FocusOut> で on_change() を呼ぶ
+        ・on_change は 3D ビューへの即時反映などに使う（None 可）
+        """
+        ent = ttk.Entry(parent, textvariable=var, width=width)
 
-    def _csv_scroll(self, event, idx: int):
-        try:
-            current = float(self._csv_pose_vars[idx].get())
-        except ValueError:
-            current = 0.0
-        self._csv_pose_vars[idx].set(
-            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
-        self._apply_csv_pose()
-        return "break"
+        def _amount(event):
+            ctrl  = bool(event.state & 0x4)
+            shift = bool(event.state & 0x1)
+            return coarse if ctrl else (fine if shift else step)
+
+        def _direction(event):
+            if getattr(event, "delta", 0):
+                return 1 if event.delta > 0 else -1
+            return 1 if getattr(event, "num", 0) == 4 else -1
+
+        def _on_wheel(event):
+            try:
+                current = float(var.get())
+            except (ValueError, tk.TclError):
+                current = 0.0
+            new_val = current + _direction(event) * _amount(event)
+            var.set(fmt.format(new_val))
+            if on_change is not None:
+                on_change()
+            return "break"
+
+        def _on_commit(event=None):
+            if on_change is not None:
+                on_change()
+
+        ent.bind("<MouseWheel>", _on_wheel)
+        ent.bind("<Button-4>",   _on_wheel)
+        ent.bind("<Button-5>",   _on_wheel)
+        ent.bind("<Return>",     _on_commit)
+        ent.bind("<FocusOut>",   _on_commit)
+        return ent
 
     def _apply_stl_pose(self):
         try:
@@ -1263,16 +1376,6 @@ class MainWindow:
         self._set_status("✔  CSV オーバーレイをクリアしました")
 
     # ── 刃先CSV ──────────────────────────────────────────────────────
-
-    def _blade_scroll(self, event, idx: int):
-        try:
-            current = float(self._blade_pose_vars[idx].get())
-        except ValueError:
-            current = 0.0
-        self._blade_pose_vars[idx].set(
-            f"{current + self._overlay_dir(event) * self._overlay_step(event):.2f}")
-        self._apply_blade_pose()
-        return "break"
 
     def _apply_blade_pose(self):
         try:
@@ -1369,10 +1472,14 @@ class MainWindow:
 
     def _build_tree_panel(self, parent):
         """Station ツリーパネルを構築する。"""
-        # pady 上側を広めに取り、LabelFrame のタイトルが上端で
-        # 見切れないようにする（パネル上端ぎりぎりに配置されるため）
-        lf = ttk.LabelFrame(parent, text="  ステーション")
-        lf.pack(fill=tk.BOTH, expand=True, padx=2, pady=(8, 2))
+        # タイトルは LabelFrame の枠タイトルに頼らず、内側の太字ラベルで
+        # 確実に表示する（上端での見切れを防止）。
+        lf = ttk.Frame(parent)
+        lf.pack(fill=tk.BOTH, expand=True, padx=2, pady=(6, 2))
+
+        tk.Label(lf, text="ステーション", bg=BG_PANEL, fg=ACCENT2,
+                 font=("Yu Gothic UI", 10, "bold"), anchor="w").pack(
+                     fill=tk.X, padx=4, pady=(4, 2))
 
         tree_frame = ttk.Frame(lf)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
@@ -1682,6 +1789,7 @@ class MainWindow:
         self.viewport.set_route(self.route)
         self.viewport.refresh()
         self._tree_refresh()
+        self._invalidate_sim_solutions()
         self._set_status(
             f"✔  経路適用: {route.name}  {len(self.route)} 点")
 
@@ -1944,6 +2052,7 @@ class MainWindow:
         self._set_status(f"✔  経路更新 — {n} 点")
         if hasattr(self, "_tree"):
             self._tree_refresh()
+        self._invalidate_sim_solutions()
 
     def _on_waypoint_selected(self, idx: int):
         self.viewport.set_selected_waypoint(idx)
@@ -1970,6 +2079,7 @@ class MainWindow:
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)
             self.viewport.refresh()
+            self._invalidate_sim_solutions()
             self._set_status(f"✔  読込完了: {len(self.route)} 点 ← {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("読込エラー", f"CSV 読込に失敗しました:\n{e}")
@@ -2037,96 +2147,353 @@ class MainWindow:
             messagebox.showerror("TP エクスポートエラー", f"エクスポートに失敗しました:\n{e}")
 
     # ──────────────────────────────────────────────────────────────────
-    # Simulation
+    # シークバー（タイムラインスクラバー）
     # ──────────────────────────────────────────────────────────────────
 
+    def _build_seek_bar(self, parent):
+        """YouTube/RoboDK 風のシークバー（タイムラインスクラバー）。"""
+        bar = ttk.Frame(parent)
+        bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 2))
+
+        # ⏮ 頭出し
+        ttk.Button(bar, text="⏮", style="Jog.TButton",
+                   command=self._seek_to_start).pack(side=tk.LEFT, padx=1)
+        # ▶/⏸ 再生・一時停止トグル
+        self._play_btn_var = tk.StringVar(value="▶")
+        self._seek_play_btn = ttk.Button(
+            bar, textvariable=self._play_btn_var, style="Jog.TButton",
+            command=self._toggle_play)
+        self._seek_play_btn.pack(side=tk.LEFT, padx=1)
+        _tip(self._seek_play_btn, "再生 / 一時停止")
+        # ⏹ 停止（先頭へリセット）
+        ttk.Button(bar, text="⏹", style="Jog.TButton",
+                   command=self._seek_stop).pack(side=tk.LEFT, padx=1)
+
+        # シークバー本体（0..N-1 の分数インデックス）
+        self._seek_var = tk.DoubleVar(value=0.0)
+        self._seek_scale = ttk.Scale(
+            bar, from_=0.0, to=1.0, variable=self._seek_var,
+            orient=tk.HORIZONTAL, command=self._on_seek_scale)
+        self._seek_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        self._seek_scale.bind("<ButtonPress-1>",   self._on_seek_press)
+        self._seek_scale.bind("<ButtonRelease-1>", self._on_seek_release)
+        _tip(self._seek_scale,
+             "ドラッグで経路をスクラブできます（IK事前計算済みで即時表示）")
+
+        # 時間 / 経路点インデックス表示
+        self._seek_info_var = tk.StringVar(value="経過 0.0s / 総 0.0s   P[0/0]")
+        tk.Label(bar, textvariable=self._seek_info_var,
+                 bg=BG_PANEL, fg=ACCENT, font=("Consolas", 8),
+                 anchor="e", width=30).pack(side=tk.LEFT, padx=4)
+
+        # 初期は事前計算待ち（無効化）
+        self._set_seek_enabled(False)
+
+    def _set_seek_enabled(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        if hasattr(self, "_seek_scale"):
+            self._seek_scale.config(state=state)
+        if hasattr(self, "_seek_play_btn"):
+            self._seek_play_btn.config(state=state)
+
+    # ── IK 事前計算（バックグラウンド） ───────────────────────────────
+
+    def _invalidate_sim_solutions(self):
+        """ルート変更時に IK 解キャッシュを破棄して再計算を起動する。"""
+        self._sim_solutions = []
+        self._sim_solutions_ready = False
+        self._sim_precompute_token += 1
+        token = self._sim_precompute_token
+        self._set_seek_enabled(False)
+
+        n = len(self.route.waypoints)
+        if hasattr(self, "_seek_scale"):
+            self._seek_scale.config(from_=0.0, to=max(1.0, float(n - 1)))
+        if hasattr(self, "_seek_var"):
+            self._seek_var.set(0.0)
+        if n == 0:
+            self._sim_solutions_ready = True
+            if hasattr(self, "_seek_info_var"):
+                self._seek_info_var.set("経過 0.0s / 総 0.0s   P[0/0]")
+            return
+
+        if hasattr(self, "_seek_info_var"):
+            self._seek_info_var.set("IK事前計算中...")
+
+        waypoints = list(self.route.waypoints)
+        q_seed = self._joint_angles.copy()
+
+        def work():
+            sols = self._compute_sim_solutions(waypoints, q_seed)
+            def done():
+                if token != self._sim_precompute_token:
+                    return  # 古い計算結果は破棄
+                self._sim_solutions = sols
+                self._sim_solutions_ready = True
+                self._set_seek_enabled(True)
+                self._update_seek_info(0.0)
+            self.root.after(0, done)
+
+        self._sim_precompute_thread = threading.Thread(target=work, daemon=True)
+        self._sim_precompute_thread.start()
+
+    def _compute_sim_solutions(self, waypoints, q_seed):
+        """全経路点の IK を連鎖シードで解く。到達不能点は直前 q をフォールバック。
+
+        戻り値: List[np.ndarray]（len == len(waypoints)、各要素は 6 要素ベクトル）
+        """
+        sols = []
+        q_prev = np.asarray(q_seed, dtype=float).copy()
+        for wp in waypoints:
+            T = wp.to_transform()
+            q, ok = self.kin.inverse(T, q_init=q_prev)
+            if not ok or q is None:
+                q = q_prev
+            q = np.asarray(q, dtype=float)
+            sols.append(q.copy())
+            q_prev = q
+        return sols
+
+    def _segment_times(self):
+        """各セグメントの所要時間（速度OVR込み）と累積時間配列を返す。
+
+        戻り値: (cum_time[N], total) — cum_time[i] は P[0]→P[i] までの累積秒。
+        """
+        wps = self.route.waypoints
+        n = len(wps)
+        cum = [0.0] * n
+        override = max(self._speed_override.get() / 100.0, 1e-6)
+        for i in range(1, n):
+            d = float(np.linalg.norm(
+                np.asarray(wps[i].position()) - np.asarray(wps[i - 1].position())))
+            speed = max(wps[i].speed, 1.0)
+            cum[i] = cum[i - 1] + (d / speed) / override
+        total = cum[-1] if n else 0.0
+        return cum, total
+
+    # ── スクラブ（ドラッグ） ───────────────────────────────────────────
+
+    def _on_seek_press(self, event=None):
+        self._seek_dragging = True
+        # ドラッグ開始時は再生を止める（位置はそのまま）
+        self._sim_playing = False
+        self._sim_running = False
+        self._play_btn_var.set("▶")
+
+    def _on_seek_release(self, event=None):
+        self._seek_dragging = False
+
+    def _on_seek_scale(self, value):
+        """スライダー値変更（コマンドコールバック）— 即時にロボット姿勢を設定。"""
+        if self._seek_updating:
+            return  # 自動更新由来は無視（無限ループ防止）
+        if not self._sim_solutions_ready or not self._sim_solutions:
+            return
+        try:
+            idx_f = float(value)
+        except (ValueError, tk.TclError):
+            return
+        self._seek_to_fraction(idx_f)
+
+    def _seek_to_fraction(self, idx_f: float):
+        """分数インデックス idx_f の補間姿勢にロボットを設定する（IK計算なし）。"""
+        sols = self._sim_solutions
+        n = len(sols)
+        if n == 0:
+            return
+        idx_f = max(0.0, min(float(n - 1), idx_f))
+        i0 = int(np.floor(idx_f))
+        i1 = min(i0 + 1, n - 1)
+        alpha = idx_f - i0
+        q = sols[i0] + alpha * (sols[i1] - sols[i0])
+
+        self._joint_angles = q.copy()
+        self._update_viewport_from_angles(q)
+        self._update_fk_display()
+        self._seek_updating = True
+        try:
+            for j, var in enumerate(self._slider_vars):
+                var.set(np.rad2deg(q[j]))
+        finally:
+            self._seek_updating = False
+        self.viewport.set_selected_waypoint(i0)
+        self._update_seek_info(idx_f)
+
+    def _update_seek_info(self, idx_f: float):
+        """経過/総時間と P[i/N] ラベルを更新する。"""
+        n = len(self.route.waypoints)
+        cum, total = self._segment_times()
+        idx_f = max(0.0, min(float(max(n - 1, 0)), idx_f))
+        i0 = int(np.floor(idx_f))
+        i1 = min(i0 + 1, max(n - 1, 0))
+        alpha = idx_f - i0
+        if n >= 1 and i0 < len(cum):
+            elapsed = cum[i0] + alpha * (cum[i1] - cum[i0]) if i1 < len(cum) else cum[i0]
+        else:
+            elapsed = 0.0
+        self._seek_info_var.set(
+            f"経過 {elapsed:.1f}s / 総 {total:.1f}s   P[{i0+1 if n else 0}/{n}]")
+
+    # ── 再生 / 一時停止 / 停止 ─────────────────────────────────────────
+
+    def _toggle_play(self):
+        if self._sim_playing:
+            self._pause_play()
+        else:
+            self._play_from_current()
+
+    def _seek_to_start(self):
+        """⏮ 頭出し（先頭へ）。"""
+        self._pause_play()
+        if hasattr(self, "_seek_var"):
+            self._seek_var.set(0.0)
+        if self._sim_solutions_ready and self._sim_solutions:
+            self._seek_to_fraction(0.0)
+
+    def _seek_stop(self):
+        """⏹ 停止（先頭へリセット）。"""
+        self._seek_to_start()
+        self.viewport.set_selected_waypoint(None)
+
+    def _pause_play(self):
+        self._sim_playing = False
+        self._sim_running = False
+        self._play_btn_var.set("▶")
+        if hasattr(self, "_sim_btn"):
+            self._sim_btn.config(state="normal")
+
+    # ── Simulation（互換: F5 / 実行ボタン → 先頭から再生） ──────────────
+
     def _start_simulation(self):
+        """F5 / 実行ボタン: 先頭から再生する。"""
         if not self.route.waypoints:
             messagebox.showwarning("経路点なし", "経路点が1つもありません。")
             return
+        self._seek_var.set(0.0)
+        self._play_from_current()
+
+    def _play_from_current(self):
+        """現在のシーク位置から前方へアニメーション再生する。"""
+        if not self.route.waypoints:
+            messagebox.showwarning("経路点なし", "経路点が1つもありません。")
+            return
+        if not self._sim_solutions_ready:
+            self._set_status("⌛  IK事前計算中です。完了までお待ちください...")
+            return
+        if self._sim_playing:
+            return
         if self._sim_thread and self._sim_thread.is_alive():
             return
-        self._sim_running = True
-        self._sim_btn.config(state="disabled")
-        override = self._speed_override.get() / 100.0
-        total    = len(self.route.waypoints)
 
-        # 再生時間表示: 経過（実時間）と推定総時間（速度オーバーライド込み）
+        n = len(self.route.waypoints)
+        if n < 2:
+            return
+
+        self._sim_playing = True
+        self._sim_running = True
+        self._play_btn_var.set("⏸")
+        self._sim_btn.config(state="disabled")
+
+        cum, total = self._segment_times()
+        start_idx = float(self._seek_var.get())
+        # 末尾近くから再生開始した場合は先頭へ
+        if start_idx >= n - 1 - 1e-6:
+            start_idx = 0.0
+            self._seek_var.set(0.0)
+
+        # 開始位置に対応する経過時間
+        def idx_to_time(idx_f):
+            i0 = int(np.floor(idx_f))
+            i1 = min(i0 + 1, n - 1)
+            a = idx_f - i0
+            return cum[i0] + a * (cum[i1] - cum[i0])
+
+        def time_to_idx(t):
+            # cum は単調増加。t に対応する分数インデックスを線形補間で求める。
+            if t <= 0:
+                return 0.0
+            if t >= total:
+                return float(n - 1)
+            for i in range(1, n):
+                if cum[i] >= t:
+                    seg = cum[i] - cum[i - 1]
+                    if seg <= 1e-9:
+                        return float(i)
+                    return (i - 1) + (t - cum[i - 1]) / seg
+            return float(n - 1)
+
+        t_start = idx_to_time(start_idx)
         self._sim_start_time = time.time()
-        self._sim_total_est = self.route.estimated_time_sec() / max(override, 1e-6)
-        self._sim_tick()
+        self._sim_total_est = total
+        self._sim_play_t0 = t_start
 
         def run():
-            q_prev    = self._joint_angles.copy()
-            waypoints = list(self.route.waypoints)
-            for i, wp in enumerate(waypoints):
-                if not self._sim_running:
-                    break
-                T = wp.to_transform()
-                q_target, ok = self.kin.inverse(T, q_init=q_prev)
-                if not ok:
-                    self.root.after(0, lambda i=i: self._set_status(
-                        f"⚠  IK 失敗: P[{i+1}] — 可動範囲外の可能性があります"))
-                    q_target = q_prev
+            while self._sim_running:
+                wall = time.time() - self._sim_start_time
+                t = self._sim_play_t0 + wall
+                idx_f = time_to_idx(t)
 
-                speeds_rad = np.deg2rad(self.kin.dh.get_joint_max_speeds()) * override
-                delta      = np.abs(q_target - q_prev)
-                max_time   = float(np.max(delta / np.maximum(speeds_rad, 1e-6)))
-                steps      = max(20, int(max_time / 0.03))
-
-                for step in range(steps + 1):
+                def _update(idx=idx_f):
                     if not self._sim_running:
-                        break
-                    alpha   = step / steps
-                    q_interp = q_prev + alpha * (q_target - q_prev)
+                        return
+                    self._seek_updating = True
+                    try:
+                        self._seek_var.set(idx)
+                    finally:
+                        self._seek_updating = False
+                    self._seek_to_fraction(idx)
+                    pct = int(idx / max(n - 1, 1) * 100)
+                    self._sim_progress_var.set(f"P[{int(idx)+1}]/{n}  {pct}%")
+                self.root.after(0, _update)
 
-                    def _update(q=q_interp.copy(), idx=i):
-                        self._joint_angles = q
-                        self._update_viewport_from_angles(q)
-                        self._update_fk_display()
-                        for j, var in enumerate(self._slider_vars):
-                            var.set(np.rad2deg(q[j]))
-                        self.viewport.set_selected_waypoint(idx)
-                        pct = int((idx + alpha) / total * 100)
-                        self._sim_progress_var.set(f"P[{idx+1}]/{total}  {pct}%")
-                        self._set_status(
-                            f"▶  シミュレーション実行中 — P[{idx+1}/{total}]  {wp.label}  "
-                            f"({pct}%)")
+                if t >= total:
+                    break
+                time.sleep(0.03)
 
-                    self.root.after(0, _update)
-                    time.sleep(0.03)
-
-                q_prev = q_target
-
-            self.root.after(0, self._simulation_done)
+            self.root.after(0, self._playback_done)
 
         self._sim_thread = threading.Thread(target=run, daemon=True)
         self._sim_thread.start()
+        self._sim_tick()
 
     def _sim_tick(self):
-        """再生時間ラベルを 0.1 秒ごとに更新する（メインスレッド自己スケジュール）。
-
-        画面が重い/フリーズしている場合は経過時間の更新が止まる/飛ぶため、
-        フリーズ検知の指標になる。
-        """
+        """再生時間ラベルを 0.1 秒ごとに更新する（フリーズ検知用）。"""
         if not self._sim_running:
             return
-        elapsed = time.time() - self._sim_start_time
+        wall = time.time() - self._sim_start_time
+        elapsed = getattr(self, "_sim_play_t0", 0.0) + wall
+        elapsed = min(elapsed, self._sim_total_est)
         self._sim_time_var.set(f"⏱  {elapsed:.1f}s / 約{self._sim_total_est:.1f}s")
         self.root.after(100, self._sim_tick)
 
     def _stop_simulation(self):
-        self._sim_running = False
+        """■ 停止（互換）: 再生を止め先頭へは戻さない。"""
+        self._pause_play()
 
-    def _simulation_done(self):
+    def _playback_done(self):
+        """再生が末尾に到達した／停止された後の後処理。"""
+        was_running = self._sim_running
+        self._sim_playing = False
         self._sim_running = False
+        self._play_btn_var.set("▶")
         self._sim_btn.config(state="normal")
-        self.viewport.set_selected_waypoint(None)
-        self.viewport.set_jog_target(None)
-        elapsed = time.time() - getattr(self, "_sim_start_time", time.time())
-        self._sim_progress_var.set("完了")
+        n = len(self.route.waypoints)
+        if was_running and n:
+            # 末尾まで再生し切った場合は末尾に合わせる
+            self._seek_updating = True
+            try:
+                self._seek_var.set(float(n - 1))
+            finally:
+                self._seek_updating = False
+            self._seek_to_fraction(float(n - 1))
+        elapsed = self._sim_total_est
+        self._sim_progress_var.set("完了" if was_running else "一時停止")
         self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
-        self._set_status(f"✔  シミュレーション完了（再生時間 {elapsed:.1f}s）")
+        self._set_status(f"✔  シミュレーション完了（推定再生時間 {elapsed:.1f}s）")
+
+    # ── 後方互換: 旧 _simulation_done を呼ぶコードがあれば動くように ──
+    def _simulation_done(self):
+        self._playback_done()
 
     # ──────────────────────────────────────────────────────────────────
     # IK
@@ -2215,6 +2582,16 @@ class MainWindow:
         ttk.Separator(win).pack(fill=tk.X, padx=12, pady=8)
 
         vars_ = {}
+
+        def _live_apply():
+            """各フィールドの値を obj に書き戻し 3D ビューへ即時反映する。"""
+            for f, v in vars_.items():
+                try:
+                    setattr(obj, f, float(v.get()))
+                except (ValueError, tk.TclError):
+                    pass
+            on_apply()
+
         for f, lbl in zip(fields, labels):
             row = ttk.Frame(win)
             row.pack(fill=tk.X, padx=16, pady=2)
@@ -2222,15 +2599,12 @@ class MainWindow:
                      font=("", 8), width=18, anchor="w").pack(side=tk.LEFT)
             v = tk.StringVar(value=str(getattr(obj, f)))
             vars_[f] = v
-            ttk.Entry(row, textvariable=v, width=12).pack(side=tk.LEFT, padx=4)
+            # ホイール/Enter/フォーカス離脱で即時プレビュー
+            self._make_num_field(row, v, on_change=_live_apply,
+                                 width=12).pack(side=tk.LEFT, padx=4)
 
         def apply():
-            for f, v in vars_.items():
-                try:
-                    setattr(obj, f, float(v.get()))
-                except ValueError:
-                    pass
-            on_apply()
+            _live_apply()
             self._set_status(f"✔  {title} を更新しました")
             win.destroy()
 
@@ -2272,6 +2646,7 @@ class MainWindow:
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)
             self.viewport.refresh()
+            self._invalidate_sim_solutions()
             self._set_status(
                 f"✔  研磨経路読込完了: {len(self.route)} 点 "
                 f"(UF{self.route.uframe}/UT{self.route.utool}) ← {os.path.basename(path)}"
@@ -2289,6 +2664,7 @@ class MainWindow:
         self.route_editor.set_route(self.route)
         self.viewport.set_route(self.route)
         self.viewport.refresh()
+        self._invalidate_sim_solutions()
         self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
 
     # 研磨機 STL の既定配置パラメータ（ユーザー確認済みの値）
@@ -2325,6 +2701,13 @@ class MainWindow:
             self.viewport.remove_ref_frame("UF9: STONE")
             self.viewport.add_ref_frame(
                 "UF9: STONE", 550, -10, stone_top_z, 0, 0, 90, color="#FF88FF")
+            # UF9 STONE 位置調整パネルの入力欄を STL から算出した値で同期
+            if hasattr(self, "_stone_vars") and len(self._stone_vars) >= 6:
+                for var, val in zip(self._stone_vars,
+                                    [550.0, -10.0, stone_top_z, 0.0, 0.0, 90.0]):
+                    var.set(f"{val:.1f}")
+            if hasattr(self, "_rf_listbox"):
+                self._rf_refresh_listbox()
             self._set_status(
                 f"✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
         else:
@@ -2415,6 +2798,7 @@ class MainWindow:
                 self.route_editor.set_route(self.route)
                 self.viewport.set_route(self.route)
                 self.viewport.refresh()
+                self._invalidate_sim_solutions()
                 self._set_status(
                     f"✔  ルート自動生成完了 — {len(self.route)} 点  "
                     f"(ストローク: {int(v_strk.get())} 往復 × "
@@ -2516,6 +2900,7 @@ class MainWindow:
                 self.route_editor.set_route(self.route)
                 self.viewport.set_route(self.route)
                 self.viewport.refresh()
+                self._invalidate_sim_solutions()
                 self._set_status(
                     f"✔  曲線追従ルートを生成: {len(wps)}点 "
                     f"(到達不能 {n_bad}点スキップ)")
@@ -2636,6 +3021,7 @@ class MainWindow:
         self.viewport.set_route(self.route)       # 再描画（1回・軽量モード）
         if hasattr(self, "_tree"):
             self._tree_refresh()
+        self._invalidate_sim_solutions()
         self._set_status(
             f"✔  kenma形式ルートを経路点リストへ展開: {len(seq)} 点 "
             f"(到達不能 {result.n_unreachable}点) — シミュ実行で再生できます")
@@ -2868,6 +3254,7 @@ class MainWindow:
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)
             self.viewport.refresh()
+            self._invalidate_sim_solutions()
             self._set_status("✔  経路をクリアしました")
 
     # ──────────────────────────────────────────────────────────────────
