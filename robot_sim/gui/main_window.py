@@ -1193,18 +1193,19 @@ class MainWindow:
         self._sim_time_var = tk.StringVar(value="⏱  0.0s / 0.0s")
         tk.Label(sim_inner, textvariable=self._sim_time_var,
                  bg=BG_PANEL, fg=ACCENT, font=("", 9, "bold")).pack()
-        # 再生中軽量表示トグル
-        self._fast_mode_var = tk.BooleanVar(value=True)
+        # 軽量表示トグル（停止中・再生中いずれも即時切替）
+        self._fast_mode_var = tk.BooleanVar(value=False)
         fm_cb = tk.Checkbutton(
-            sim_inner, text="再生中は軽量表示",
+            sim_inner, text="軽量表示（高速・円柱）",
             variable=self._fast_mode_var,
+            command=self._toggle_fast_mode,
             bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
             selectcolor=BG_WIDGET, font=("", 8))
         fm_cb.pack(anchor="w", pady=(2, 0))
         _tip(fm_cb,
-             "ON（推奨）: 再生中は円柱ジオメトリで高速描画し、\n"
-             "停止後に実機メッシュへ自動復帰します。\n"
-             "OFF: 再生中も実機メッシュを描画（PCが速い場合に）")
+             "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
+             "OFF: 実機メッシュで描画（高品質）。\n"
+             "停止中・再生中いずれもチェックで即座に切り替わります。")
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -2559,13 +2560,16 @@ class MainWindow:
         self._seek_to_start()
         self.viewport.set_selected_waypoint(None)
 
+    def _toggle_fast_mode(self):
+        """軽量表示チェックボックス: 停止中・再生中いずれも即座に反映する。"""
+        self.viewport.set_fast_mode(self._fast_mode_var.get())
+
     def _pause_play(self):
         self._sim_playing = False
         self._sim_running = False
         self._play_btn_var.set("▶")
         if hasattr(self, "_sim_btn"):
             self._sim_btn.config(state="normal")
-        self.viewport.set_fast_mode(False)
 
     # ── Simulation（互換: F5 / 実行ボタン → 先頭から再生） ──────────────
 
@@ -2598,8 +2602,6 @@ class MainWindow:
         self._sim_running = True
         self._play_btn_var.set("⏸")
         self._sim_btn.config(state="disabled")
-        if getattr(self, "_fast_mode_var", None) and self._fast_mode_var.get():
-            self.viewport.set_fast_mode(True)
 
         cum, total = self._segment_times()
         start_idx = float(self._seek_var.get())
@@ -2684,7 +2686,6 @@ class MainWindow:
         self._sim_running = False
         self._play_btn_var.set("▶")
         self._sim_btn.config(state="normal")
-        self.viewport.set_fast_mode(False)
         n = len(self.route.waypoints)
         if was_running and n:
             # 末尾まで再生し切った場合は末尾に合わせる

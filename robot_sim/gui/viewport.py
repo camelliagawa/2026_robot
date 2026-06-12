@@ -299,17 +299,16 @@ class Viewport3D:
         self._redraw()
 
     def set_fast_mode(self, enabled: bool):
-        """再生中軽量表示の ON/OFF を切り替える。
+        """軽量表示（円柱ジオメトリ）の ON/OFF を切り替える。
 
-        True の間は実機メッシュを使わず円柱ジオメトリで描画し、
-        1フレームあたりの描画時間を短縮する。
-        False に戻したとき再描画して実機メッシュを復元する。
+        True: 実機メッシュを使わず円柱ジオメトリで描画し描画時間を短縮。
+        False: 実機メッシュで描画。
+        再生中・停止中いずれでも呼べ、状態が変われば即座に再描画する。
         """
         if self._fast_mode == enabled:
             return
         self._fast_mode = enabled
-        if not enabled:
-            self._redraw()  # 停止後に実機メッシュで再描画
+        self._redraw()  # 表示モードを即時反映
 
     def set_route(self, route: Optional["Route"]):
         self._route = route
