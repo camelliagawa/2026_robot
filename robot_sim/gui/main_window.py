@@ -351,7 +351,6 @@ class MainWindow:
         r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
         r.add_command(label="  📐  曲線を辿る（刃付け生成）...",          command=self._curve_follow_dialog)
         r.add_command(label="  📐  kenma形式LS出力（3ファイル1組）...",   command=self._export_kenma_ls)
-        r.add_command(label="  📐  kenma形式ルートを経路点リストへ展開",  command=self._load_kenma_sequence)
         r.add_command(label="  📐  曲線を選択して研磨ルート生成...",       command=self._kenma_curve_select_dialog)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
         r.add_separator()
@@ -969,6 +968,10 @@ class MainWindow:
         self._sim_progress_var = tk.StringVar(value="待機中")
         tk.Label(sim_inner, textvariable=self._sim_progress_var,
                  bg=BG_PANEL, fg=FG_SUB, font=("", 7)).pack()
+        # 再生時間（経過時間／推定総時間）— フリーズ検知用に常時更新
+        self._sim_time_var = tk.StringVar(value="⏱  0.0s / 0.0s")
+        tk.Label(sim_inner, textvariable=self._sim_time_var,
+                 bg=BG_PANEL, fg=ACCENT, font=("", 9, "bold")).pack()
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -2048,6 +2051,11 @@ class MainWindow:
         override = self._speed_override.get() / 100.0
         total    = len(self.route.waypoints)
 
+        # 再生時間表示: 経過（実時間）と推定総時間（速度オーバーライド込み）
+        self._sim_start_time = time.time()
+        self._sim_total_est = self.route.estimated_time_sec() / max(override, 1e-6)
+        self._sim_tick()
+
         def run():
             q_prev    = self._joint_angles.copy()
             waypoints = list(self.route.waypoints)
@@ -2095,6 +2103,18 @@ class MainWindow:
         self._sim_thread = threading.Thread(target=run, daemon=True)
         self._sim_thread.start()
 
+    def _sim_tick(self):
+        """再生時間ラベルを 0.1 秒ごとに更新する（メインスレッド自己スケジュール）。
+
+        画面が重い/フリーズしている場合は経過時間の更新が止まる/飛ぶため、
+        フリーズ検知の指標になる。
+        """
+        if not self._sim_running:
+            return
+        elapsed = time.time() - self._sim_start_time
+        self._sim_time_var.set(f"⏱  {elapsed:.1f}s / 約{self._sim_total_est:.1f}s")
+        self.root.after(100, self._sim_tick)
+
     def _stop_simulation(self):
         self._sim_running = False
 
@@ -2103,8 +2123,10 @@ class MainWindow:
         self._sim_btn.config(state="normal")
         self.viewport.set_selected_waypoint(None)
         self.viewport.set_jog_target(None)
+        elapsed = time.time() - getattr(self, "_sim_start_time", time.time())
         self._sim_progress_var.set("完了")
-        self._set_status("✔  シミュレーション完了")
+        self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
+        self._set_status(f"✔  シミュレーション完了（再生時間 {elapsed:.1f}s）")
 
     # ──────────────────────────────────────────────────────────────────
     # IK
@@ -2598,22 +2620,6 @@ class MainWindow:
                 "（シミュレーション実行で動作を再生できます）")
         if messagebox.askyesno("kenma形式LS出力", msg):
             self._apply_kenma_sequence(result)
-
-    def _load_kenma_sequence(self):
-        """kenma形式ルートを生成し、経路点リストへ展開する（LS出力なし）。"""
-        try:
-            result, _ = self._generate_kenma()
-        except Exception as e:
-            messagebox.showerror("kenma形式ルート生成エラー",
-                                 f"生成に失敗しました:\n{e}")
-            self._set_status("⚠  kenma形式ルート生成に失敗しました")
-            return
-        self._apply_kenma_sequence(result)
-        if result.n_unreachable:
-            messagebox.showwarning(
-                "IK到達性",
-                f"IK到達不能の経路点が {result.n_unreachable} 点あります。\n"
-                "刃先CSVの取付姿勢や UF9 STONE の位置を確認してください。")
 
     def _apply_kenma_sequence(self, result):
         """生成済み kenma シーケンス（CALL展開済み）を経路点リストへ反映する。
