@@ -134,12 +134,53 @@ class Kinematics:
         """
         Analytical IK for 6R robot with spherical wrist.
 
+        Picks the candidate joint solution closest to home (zero) and verifies
+        it against forward kinematics. See ``_analytical_candidates`` for the
+        full decoupling approach that enumerates every arm configuration.
+        """
+        solutions = self._analytical_candidates(T)
+        if not solutions:
+            return None, False
+
+        # Pick solution closest to zero (home)
+        best = min(solutions, key=lambda q: np.linalg.norm(q))
+
+        # Verify solution
+        T_check = self.forward(best)
+        pos_err = np.linalg.norm(T_check[:3, 3] - T[:3, 3])
+        if pos_err > 5.0:  # mm tolerance for analytical verification
+            return None, False
+
+        return best, True
+
+    def inverse_all(self, T: np.ndarray) -> List[np.ndarray]:
+        """
+        Return every analytical IK solution (distinct arm configurations) that
+        reaches the target pose, each verified against forward kinematics.
+
+        Useful when the caller wants to pick a configuration by an external
+        criterion (e.g. avoiding floor collision) instead of the default
+        closest-to-home choice. Returns an empty list if none are reachable.
+        """
+        out: List[np.ndarray] = []
+        for q in self._analytical_candidates(T):
+            T_check = self.forward(q)
+            if np.linalg.norm(T_check[:3, 3] - T[:3, 3]) <= 5.0:
+                out.append(q)
+        return out
+
+    def _analytical_candidates(
+        self, T: np.ndarray
+    ) -> List[np.ndarray]:
+        """
+        Enumerate analytical IK candidates for a 6R robot with spherical wrist.
+
         Uses the standard decoupling approach:
           1. Find wrist center from desired EE pose.
           2. Solve J1, J2, J3 for the wrist center position.
           3. Solve J4, J5, J6 from the wrist orientation.
 
-        Returns first valid solution found.
+        Returns all in-limit candidate solutions (unverified).
         """
         # Extract position and orientation
         p_ee = T[:3, 3]
@@ -256,19 +297,7 @@ class Kinematics:
                 q_sol = np.array([j1, j2, j3, j4, j5, j6])
                 solutions.append(q_sol)
 
-        if not solutions:
-            return None, False
-
-        # Pick solution closest to zero (home)
-        best = min(solutions, key=lambda q: np.linalg.norm(q))
-
-        # Verify solution
-        T_check = self.forward(best)
-        pos_err = np.linalg.norm(T_check[:3, 3] - T[:3, 3])
-        if pos_err > 5.0:  # mm tolerance for analytical verification
-            return None, False
-
-        return best, True
+        return solutions
 
     def _numerical_ik(
         self,

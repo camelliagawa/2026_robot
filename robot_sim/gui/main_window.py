@@ -34,8 +34,6 @@ from ..robot.user_frame import UserFrame
 from ..path.route import Route
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
-from ..path.route_generator import SharpeningParams, generate_sharpening_route
-from ..path.curve_follow import generate_curve_follow
 from ..path.kenma_export import (
     generate_kenma_programs, export_kenma_ls, build_playback_sequence,
     parse_pose_expression, first_hover_T, enumerate_ik_branches,
@@ -377,9 +375,6 @@ class MainWindow:
         # ルート
         r = menu("  ルート (Route)  ")
         r.add_command(label="  🔪  研磨経路CSVを読み込む (kenma形式)", command=self._load_kenma_route)
-        r.add_command(label="  📋  基本サンプルルートを読み込む",       command=self._load_sample_route)
-        r.add_command(label="  ⚙   刃付けルートを自動生成...",          command=self._auto_generate_route)
-        r.add_command(label="  📐  曲線を辿る（刃付け生成）...",          command=self._curve_follow_dialog)
         r.add_command(label="  📐  kenma形式LS出力（3ファイル1組）...",   command=self._export_kenma_ls)
         r.add_command(label="  📐  曲線を選択して研磨ルート生成...",       command=self._kenma_curve_select_dialog)
         r.add_command(label="  🗑   ルートをクリア",                    command=self._clear_route)
@@ -1198,6 +1193,19 @@ class MainWindow:
         self._sim_time_var = tk.StringVar(value="⏱  0.0s / 0.0s")
         tk.Label(sim_inner, textvariable=self._sim_time_var,
                  bg=BG_PANEL, fg=ACCENT, font=("", 9, "bold")).pack()
+        # 軽量表示トグル（停止中・再生中いずれも即時切替）
+        self._fast_mode_var = tk.BooleanVar(value=False)
+        fm_cb = tk.Checkbutton(
+            sim_inner, text="軽量表示（高速・円柱）",
+            variable=self._fast_mode_var,
+            command=self._toggle_fast_mode,
+            bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
+            selectcolor=BG_WIDGET, font=("", 8))
+        fm_cb.pack(anchor="w", pady=(2, 0))
+        _tip(fm_cb,
+             "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
+             "OFF: 実機メッシュで描画（高品質）。\n"
+             "停止中・再生中いずれもチェックで即座に切り替わります。")
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -1850,6 +1858,8 @@ class MainWindow:
         steps = [
             ("📂 CSV読込",  self._workflow_load_csv,
              "CSVを読み込む（自動判別）\n・刃先CSV (x,y,z,nx,ny,nz): 包丁に追従表示\n・経路CSV (ヘッダー付き): 経路点として読込"),
+            ("📐 ルート生成", self._kenma_curve_select_dialog,
+             "曲線を選択して研磨ルート生成（RoboDK風）\n3Dビューで曲線をクリックした順に研磨順序を指定し HaL/HaR を生成"),
             ("▶ シミュ",    self._start_simulation,    "シミュレーション実行 (F5)"),
             ("🔧 調整",     self._route_adjust_dialog, "経路点の位置・速度を一括調整"),
             ("📤 LS出力",   self._export_tp,           "FANUC LS ファイルを出力 (Ctrl+E)"),
@@ -1871,6 +1881,13 @@ class MainWindow:
                                         command=self._reload_blade_csv)
                 reload_btn.pack(side=tk.LEFT, padx=(0, 0))
                 _tip(reload_btn, "前回の刃先CSVを再読込（CSVファイル更新時にワンクリック反映）")
+
+        # ワークフロー末尾に「ルートをクリア」（経路点を全削除）
+        tk.Label(inner, text="    ", bg=BG_DARK).pack(side=tk.LEFT)
+        clear_btn = ttk.Button(inner, text="🗑 ルートをクリア",
+                               command=self._clear_route)
+        clear_btn.pack(side=tk.LEFT, padx=2, pady=5)
+        _tip(clear_btn, "経路点をすべて削除する")
 
     # ──────────────────────────────────────────────────────────────────
     # FANUC LS ファイル読込
@@ -2360,7 +2377,7 @@ class MainWindow:
         q_seed = self._joint_angles.copy()
 
         def work():
-            sols = self._compute_sim_solutions(waypoints, q_seed)
+            sols, n_warn = self._compute_sim_solutions(waypoints, q_seed)
             def done():
                 if token != self._sim_precompute_token:
                     return  # 古い計算結果は破棄
@@ -2368,27 +2385,79 @@ class MainWindow:
                 self._sim_solutions_ready = True
                 self._set_seek_enabled(True)
                 self._update_seek_info(0.0)
+                if n_warn > 0:
+                    self._set_status(
+                        f"⚠  床干渉 {n_warn}点 — 代替 IK でも回避不能。"
+                        " 経路点の Z 高さを上げてください。")
             self.root.after(0, done)
 
         self._sim_precompute_thread = threading.Thread(target=work, daemon=True)
         self._sim_precompute_thread.start()
 
     def _compute_sim_solutions(self, waypoints, q_seed):
-        """全経路点の IK を連鎖シードで解く。到達不能点は直前 q をフォールバック。
+        """全経路点の IK を連鎖シードで解く。
 
-        戻り値: List[np.ndarray]（len == len(waypoints)、各要素は 6 要素ベクトル）
+        各点で床干渉（関節位置 Z < 0）を検出したら代替 IK シードを試みる。
+        戻り値: (sols, n_floor_warn)
+          sols: List[np.ndarray] 各経路点の関節解（len == len(waypoints)）
+          n_floor_warn: 床干渉が残った経路点数（0 なら安全）
         """
+        FLOOR_Z = 0.0        # ロボット取付面 = 床
+        MARGIN  = 10.0       # 10mm の余裕を設ける（mm）
+
+        # 床を踏まない代替 IK シード（腕を上方に持ち上げる構成）
+        arm_up_seeds = [
+            self.kin.dh.ready_position(),
+            np.deg2rad([0,  -90,  30,   0, -60,   0]),
+            np.deg2rad([0,  -80,  10,   0, -50,   0]),
+            np.deg2rad([0,  -70,  20,  90, -60,   0]),
+            np.deg2rad([0,  -70,  20, -90, -60,   0]),
+        ]
+
+        def _floor_ok(q: np.ndarray) -> bool:
+            pts = self.kin.get_joint_positions(q)
+            return float(pts[:, 2].min()) >= FLOOR_Z - MARGIN
+
         sols = []
+        n_floor_warn = 0
         q_prev = np.asarray(q_seed, dtype=float).copy()
+
         for wp in waypoints:
             T = wp.to_transform()
             q, ok = self.kin.inverse(T, q_init=q_prev)
             if not ok or q is None:
                 q = q_prev
-            q = np.asarray(q, dtype=float)
-            sols.append(q.copy())
-            q_prev = q
-        return sols
+
+            # 床干渉なければそのまま使う
+            if _floor_ok(q):
+                sols.append(q.copy())
+                q_prev = q
+                continue
+
+            # 代替シードを試して床干渉のない解を探す
+            best_q  = q
+            best_min_z = float(self.kin.get_joint_positions(q)[:, 2].min())
+            found_safe = False
+            for seed in arm_up_seeds:
+                q_alt, ok_alt = self.kin.inverse(T, q_init=seed)
+                if not ok_alt or q_alt is None:
+                    continue
+                if _floor_ok(q_alt):
+                    best_q = q_alt
+                    found_safe = True
+                    break
+                min_z = float(self.kin.get_joint_positions(q_alt)[:, 2].min())
+                if min_z > best_min_z:
+                    best_min_z = min_z
+                    best_q = q_alt
+
+            if not found_safe:
+                n_floor_warn += 1
+
+            sols.append(best_q.copy())
+            q_prev = best_q
+
+        return sols, n_floor_warn
 
     def _segment_times(self):
         """各セグメントの所要時間（速度OVR込み）と累積時間配列を返す。
@@ -2490,6 +2559,10 @@ class MainWindow:
         """⏹ 停止（先頭へリセット）。"""
         self._seek_to_start()
         self.viewport.set_selected_waypoint(None)
+
+    def _toggle_fast_mode(self):
+        """軽量表示チェックボックス: 停止中・再生中いずれも即座に反映する。"""
+        self.viewport.set_fast_mode(self._fast_mode_var.get())
 
     def _pause_play(self):
         self._sim_playing = False
@@ -2808,18 +2881,6 @@ class MainWindow:
         except Exception as e:
             messagebox.showerror("読込エラー", f"研磨経路CSV の読込に失敗しました:\n{e}")
 
-    def _load_sample_route(self):
-        sample = Route.default_sharpening_route()
-        self.route.waypoints = sample.waypoints
-        self.route.name      = sample.name
-        self.route.comment   = sample.comment
-        self.route.uframe    = self._active_uframe.number
-        self.route.utool     = self._active_tool.number
-        self.route_editor.set_route(self.route)
-        self.viewport.set_route(self.route)   # set_route が再描画する
-        self._invalidate_sim_solutions()
-        self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
-
     # 研磨機 STL の既定配置パラメータ（ユーザー確認済みの値）
     _STL_DEFAULT_POSE = (740.0, 240.0, 266.0, 0.0, 0.0, -90.0)
 
@@ -2862,178 +2923,6 @@ class MainWindow:
             self._set_status("✔  Tormek 研削経路 CSV 読込済")
         else:
             self._set_status("⚠  CSV 読込失敗")
-
-    def _auto_generate_route(self):
-        win = tk.Toplevel(self.root)
-        win.title("刃付けルート自動生成")
-        win.geometry("460x560")
-        win.configure(bg=BG_DARK)
-        win.resizable(False, False)
-
-        tk.Label(win, text="⚙  刃付けルート自動生成",
-                 bg=BG_DARK, fg=ACCENT,
-                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(14, 2), padx=16, anchor="w")
-        tk.Label(win,
-            text="砥石の位置・寸法と刃付けパラメータを入力すると、\n往復研磨ルートを自動で生成します。",
-            bg=BG_DARK, fg=FG_SUB,
-            font=("Yu Gothic UI", 8), justify="left").pack(padx=16, anchor="w")
-
-        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
-
-        frame = ttk.Frame(win)
-        frame.pack(fill=tk.BOTH, expand=True, padx=16)
-
-        def section(text):
-            self._dialog_section(frame, text)
-
-        def row(label, default, hint="", fmt="{:.2f}"):
-            return self._dialog_num_row(frame, label, default, hint, fmt=fmt)
-
-        section("▸ 砥石の位置（ロボット基準座標）")
-        v_sx = row("砥石 X mm（前方距離）:", 400, "ロボット正面方向")
-        v_sy = row("砥石 Y mm（左右）:",      0,   "正値=左")
-        v_sz = row("砥石 Z mm（高さ）:",    250,   "床面からの高さ")
-
-        section("▸ 砥石の寸法")
-        v_slen = row("砥石の長さ mm（包丁スライド方向）:", 200)
-        v_swid = row("砥石の幅  mm（包丁送り方向）:",      70)
-
-        section("▸ 刃付けパラメータ")
-        v_ang  = row("刃の角度 °（砥石面に対する傾き）:", 15, "一般的: 10〜20°")
-        v_blen = row("研磨する刃の長さ mm:",              180)
-        v_strk = row("往復ストローク回数:",                5, fmt="{:.0f}")
-        v_spd  = row("ストローク速度 mm/s:",              30, "推奨: 20〜50")
-
-        def on_generate():
-            try:
-                p = SharpeningParams(
-                    stone_x=float(v_sx.get()), stone_y=float(v_sy.get()),
-                    stone_z=float(v_sz.get()),
-                    stone_length=float(v_slen.get()), stone_width=float(v_swid.get()),
-                    blade_angle_deg=float(v_ang.get()),
-                    blade_length_mm=float(v_blen.get()),
-                    num_strokes=int(v_strk.get()),
-                    stroke_speed_mms=float(v_spd.get()),
-                    utool=self._active_tool.number,
-                    uframe=self._active_uframe.number,
-                )
-                new_route = generate_sharpening_route(p)
-                self.route.waypoints = new_route.waypoints
-                self.route.name      = new_route.name
-                self.route.comment   = new_route.comment
-                self.route.uframe    = p.uframe
-                self.route.utool     = p.utool
-                self.route_editor.set_route(self.route)
-                self.viewport.set_route(self.route)   # set_route が再描画する
-                self._invalidate_sim_solutions()
-                self._set_status(
-                    f"✔  ルート自動生成完了 — {len(self.route)} 点  "
-                    f"(ストローク: {int(v_strk.get())} 往復 × "
-                    f"{max(1, int(float(v_blen.get())/(float(v_swid.get())-10)))} パス)")
-                win.destroy()
-            except Exception as e:
-                messagebox.showerror("生成エラー", str(e), parent=win)
-
-        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
-        btn_row = ttk.Frame(win)
-        btn_row.pack(pady=4)
-        ttk.Button(btn_row, text="⚙  ルートを生成する",
-                   style="Primary.TButton",
-                   command=on_generate).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn_row, text="キャンセル",
-                   command=win.destroy).pack(side=tk.LEFT, padx=6)
-
-    def _curve_follow_dialog(self):
-        """RoboDK「曲線を辿るプロジェクト」相当: 刃先CSVの各点を砥石接触点へ接触させる刃付けルートを生成。"""
-        if not self.viewport.has_blade():
-            self._set_status("⚠  刃先CSV が読み込まれていません — 先に刃先CSVを読み込んでください")
-            return
-        frames = self.viewport.get_ref_frames()
-        if not frames:
-            self._set_status("⚠  参照フレームがありません — 砥石STLを読み込むか参照フレームを追加してください")
-            return
-
-        win = tk.Toplevel(self.root)
-        win.title("曲線を辿る（刃付けルート生成）")
-        win.geometry("460x400")
-        win.configure(bg=BG_DARK)
-        win.resizable(False, False)
-
-        tk.Label(win, text="📐  曲線を辿る（刃付けルート生成）",
-                 bg=BG_DARK, fg=ACCENT,
-                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(14, 2), padx=16, anchor="w")
-        tk.Label(win,
-            text="刃先CSVの各点を順番に砥石の接触点（参照フレーム原点）へ\n"
-                 "接触させる刃付けルートを生成し、既存ウェイポイントに追加します。",
-            bg=BG_DARK, fg=FG_SUB,
-            font=("Yu Gothic UI", 8), justify="left").pack(padx=16, anchor="w")
-
-        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
-
-        frame = ttk.Frame(win)
-        frame.pack(fill=tk.BOTH, expand=True, padx=16)
-
-        def row(label, default, hint="", fmt="{:.2f}"):
-            return self._dialog_num_row(frame, label, default, hint, fmt=fmt)
-
-        names = [f["name"] for f in frames]
-        fr = ttk.Frame(frame)
-        fr.pack(fill=tk.X, pady=2)
-        tk.Label(fr, text="参照フレーム（接触点）:", bg=BG_PANEL, fg=FG_PRIMARY,
-                 font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
-        v_frame = tk.StringVar(
-            value="UF9: STONE" if "UF9: STONE" in names else names[0])
-        ttk.Combobox(fr, textvariable=v_frame, values=names,
-                     state="readonly", width=16).pack(side=tk.LEFT)
-
-        v_ang  = row("刃付け角度 °:",        15.0, "一般的: 10〜20°")
-        v_step = row("間引きステップ:",       5,    "N点ごとに1点を使用",
-                     fmt="{:.0f}")
-        v_spd  = row("送り速度 mm/s:",       30.0)
-        v_app  = row("アプローチ距離 mm:",    30.0)
-
-        def on_generate():
-            try:
-                sel = v_frame.get()
-                T_contact = next(
-                    f["T"] for f in self.viewport.get_ref_frames()
-                    if f["name"] == sel)
-                vals = [float(v.get()) for v in self._blade_pose_vars]
-                T_blade = Kinematics.pose_to_transform(*vals)
-                wps, n_bad = generate_curve_follow(
-                    self.viewport._blade_pts,
-                    self.viewport._blade_normals,
-                    T_blade, T_contact, self.kin,
-                    edge_angle_deg=float(v_ang.get()),
-                    step=int(v_step.get()),
-                    speed=float(v_spd.get()),
-                    approach_mm=float(v_app.get()))
-                if not wps:
-                    messagebox.showwarning(
-                        "生成結果",
-                        "到達可能なウェイポイントが生成できませんでした。\n"
-                        "刃先CSVの取付姿勢や参照フレーム位置を確認してください。",
-                        parent=win)
-                    return
-                self.route.waypoints.extend(wps)
-                self.route_editor.set_route(self.route)
-                self.viewport.set_route(self.route)   # set_route が再描画する
-                self._invalidate_sim_solutions()
-                self._set_status(
-                    f"✔  曲線追従ルートを生成: {len(wps)}点 "
-                    f"(到達不能 {n_bad}点スキップ)")
-                win.destroy()
-            except Exception as e:
-                messagebox.showerror("生成エラー", str(e), parent=win)
-
-        ttk.Separator(win).pack(fill=tk.X, padx=16, pady=8)
-        btn_row = ttk.Frame(win)
-        btn_row.pack(pady=4)
-        ttk.Button(btn_row, text="📐  ルートを生成する",
-                   style="Primary.TButton",
-                   command=on_generate).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn_row, text="キャンセル",
-                   command=win.destroy).pack(side=tk.LEFT, padx=6)
 
     # ──────────────────────────────────────────────────────────────────
     # kenma形式 3ファイルLS出力（HaL / HaR / kenma）

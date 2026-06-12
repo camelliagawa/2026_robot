@@ -79,6 +79,22 @@ KNIFE_HANDLE_LEN  = 150.0
 KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
+# ── ロボット実機メッシュ（ROS-Industrial LR Mate 200iD/7L 形状・mm 単位） ──
+# 各リンクの (メッシュファイル名, ベースカラー RGB)。
+# link_2 / link_4 はロングアーム（7L/14L 共通外形）専用メッシュ。
+_ROBOT_MESH_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "assets", "robot")
+_ROBOT_LINKS = [
+    ("base_link", (0.282, 0.301, 0.317)),   # ベース: グレー
+    ("link_1",    (0.960, 0.768, 0.000)),   # J1〜J5: FANUC イエロー
+    ("link_2",    (0.960, 0.768, 0.000)),
+    ("link_3",    (0.960, 0.768, 0.000)),
+    ("link_4",    (0.960, 0.768, 0.000)),
+    ("link_5",    (0.960, 0.768, 0.000)),
+    ("link_6",    (0.180, 0.180, 0.190)),   # フランジ: ブラック
+]
+
 
 # ── 3D プリミティブ描画ヘルパー ─────────────────────────────────────────
 
@@ -249,6 +265,11 @@ class Viewport3D:
         self._pick_artist_map: dict = {}              # id(artist) -> curve_idx
         self._pick_candidate: Optional[int] = None    # press時のピック候補
 
+        # 実機メッシュ（assets/robot/*.stl）— 読込失敗時は円柱フォールバック
+        self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
+        self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
+        self._load_robot_meshes()
+
         self.fig = plt.figure(facecolor="#161B22")
         self.fig.subplots_adjust(left=-0.18, right=1.18, bottom=-0.08, top=1.08)
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
@@ -276,6 +297,18 @@ class Viewport3D:
     def update_robot(self, joint_angles: np.ndarray):
         self._joint_angles = np.asarray(joint_angles)
         self._redraw()
+
+    def set_fast_mode(self, enabled: bool):
+        """軽量表示（円柱ジオメトリ）の ON/OFF を切り替える。
+
+        True: 実機メッシュを使わず円柱ジオメトリで描画し描画時間を短縮。
+        False: 実機メッシュで描画。
+        再生中・停止中いずれでも呼べ、状態が変われば即座に再描画する。
+        """
+        if self._fast_mode == enabled:
+            return
+        self._fast_mode = enabled
+        self._redraw()  # 表示モードを即時反映
 
     def set_route(self, route: Optional["Route"]):
         self._route = route
@@ -464,9 +497,115 @@ class Viewport3D:
         self.ax.text(reach * 0.72, 0, base_z + 30,
                      f"{int(reach)}mm", color="#1E5A8F", fontsize=6, alpha=0.6)
 
+    # ── 実機メッシュ描画（ROS-Industrial LR Mate 200iD/7L） ────────────
+
+    def _load_robot_meshes(self):
+        """assets/robot/ の実機リンクメッシュを読み込み、法線を事前計算する。"""
+        meshes = []
+        for name, rgb in _ROBOT_LINKS:
+            path = os.path.join(_ROBOT_MESH_DIR, name + ".stl")
+            verts = _load_stl_file(path)
+            if verts is None:
+                self._link_meshes = []   # 1つでも欠けたら全てフォールバック
+                return
+            v1 = verts[:, 1] - verts[:, 0]
+            v2 = verts[:, 2] - verts[:, 0]
+            normals = np.cross(v1, v2)
+            lens = np.linalg.norm(normals, axis=1, keepdims=True)
+            lens[lens < 1e-12] = 1.0
+            normals = (normals / lens).astype(np.float32)
+            meshes.append((verts, normals, np.asarray(rgb, dtype=float)))
+        self._link_meshes = meshes
+
+    def _urdf_link_transforms(self, q: np.ndarray) -> list:
+        """各リンク（base_link, link_1..link_6）のワールド 4x4 変換を返す。
+
+        メッシュは ROS-Industrial URDF（lrmate200id7l）のリンク座標系で
+        定義されているため、URDF の連鎖でリンク姿勢を計算する。
+        関節角は本アプリの MDH 規約 q から
+        θ = (q1, q2+90°, -q3, -q4, -q5, -q6) で URDF 規約へ変換する
+        （この対応で URDF tool0 と MDH フランジが全姿勢で一致する）。
+        """
+        t1, t2, t3, t4, t5, t6 = (q[0], q[1] + np.pi / 2,
+                                  -q[2], -q[3], -q[4], -q[5])
+
+        def rot(axis, t):
+            c, s = np.cos(t), np.sin(t)
+            T = np.eye(4)
+            if axis == "z":
+                T[:2, :2] = [[c, -s], [s, c]]
+            elif axis == "y":
+                T[0, 0], T[0, 2], T[2, 0], T[2, 2] = c, s, -s, c
+            else:  # x
+                T[1, 1], T[1, 2], T[2, 1], T[2, 2] = c, -s, s, c
+            return T
+
+        def tr(x, y, z):
+            T = np.eye(4)
+            T[:3, 3] = [x, y, z]
+            return T
+
+        Ts = [np.eye(4)]                                  # base_link
+        T = tr(0, 0, 330) @ rot("z", t1);  Ts.append(T)   # link_1
+        T = T @ tr(50, 0, 0) @ rot("y", t2);  Ts.append(T)   # link_2
+        T = T @ tr(0, 0, 440) @ rot("y", -t3); Ts.append(T)  # link_3
+        T = T @ tr(0, 0, 35) @ rot("x", -t4);  Ts.append(T)  # link_4
+        T = T @ tr(420, 0, 0) @ rot("y", -t5); Ts.append(T)  # link_5
+        T = T @ tr(80, 0, 0) @ rot("x", -t6);  Ts.append(T)  # link_6
+        return Ts
+
+    _LIGHT_DIR = np.array([0.45, -0.35, 0.82]) / np.linalg.norm([0.45, -0.35, 0.82])
+
+    def _draw_robot_meshes(self, q: np.ndarray):
+        """実機メッシュをランバートシェーディング付きで描画する。
+
+        全リンクを1つの Poly3DCollection に統合する — matplotlib の
+        Zソートはコレクション内でのみ働くため、リンク間の前後関係を
+        正しく描画するには統合が必須。
+        """
+        Ts = self._urdf_link_transforms(q)
+        all_tris = []
+        all_colors = []
+        for (verts, normals, rgb), T in zip(self._link_meshes, Ts):
+            R, t = T[:3, :3], T[:3, 3]
+            all_tris.append(verts @ R.T + t)     # (N,3,3) ワールド座標へ
+            tn = normals @ R.T                   # (N,3)  回転のみ
+            inten = 0.30 + 0.70 * np.abs(tn @ self._LIGHT_DIR)
+            all_colors.append(np.clip(rgb[None, :] * inten[:, None], 0, 1))
+        poly = Poly3DCollection(np.concatenate(all_tris),
+                                facecolors=np.concatenate(all_colors),
+                                edgecolors="none", alpha=1.0)
+        poly.set_zsort("average")
+        self.ax.add_collection3d(poly)
+
     def _draw_robot(self, q: np.ndarray):
-        """Draw FANUC LR Mate 200iD/14L with realistic cylindrical geometry."""
+        """Draw FANUC LR Mate 200iD/14L（実機メッシュ、欠落時は円柱形状）。"""
         pos = self.kin.get_joint_positions(q)  # (7, 3)  Base + J1…J6
+
+        if self._link_meshes and not self._fast_mode:
+            self._draw_robot_meshes(q)
+
+            # 地面の影（リンク原点の投影ポリライン）
+            self.ax.plot(pos[:, 0], pos[:, 1], np.zeros(len(pos)),
+                         color="#333333", lw=3, alpha=0.25)
+
+            T_ee = self.kin.forward(q)
+            origin = T_ee[:3, 3]
+            R = T_ee[:3, :3]
+            for col, (color, name) in enumerate(
+                    zip(["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])):
+                tip = origin + 70 * R[:, col]
+                self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
+                             [origin[2], tip[2]], color=color, lw=2.0, alpha=0.9)
+                self.ax.text(tip[0], tip[1], tip[2], name,
+                             color=color, fontsize=6, alpha=0.85)
+
+            self._draw_knife(T_ee)
+            self._draw_blade_csv(T_ee)
+            self._draw_tcp(T_ee)
+            return
+
+        # ── フォールバック: 簡易円柱ジオメトリ ───────────────────────
 
         # ── ベース（土台） ────────────────────────────────────────────
         base   = pos[0].copy()
