@@ -267,6 +267,7 @@ class Viewport3D:
 
         # 実機メッシュ（assets/robot/*.stl）— 読込失敗時は円柱フォールバック
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
+        self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
         self._load_robot_meshes()
 
         self.fig = plt.figure(facecolor="#161B22")
@@ -296,6 +297,19 @@ class Viewport3D:
     def update_robot(self, joint_angles: np.ndarray):
         self._joint_angles = np.asarray(joint_angles)
         self._redraw()
+
+    def set_fast_mode(self, enabled: bool):
+        """再生中軽量表示の ON/OFF を切り替える。
+
+        True の間は実機メッシュを使わず円柱ジオメトリで描画し、
+        1フレームあたりの描画時間を短縮する。
+        False に戻したとき再描画して実機メッシュを復元する。
+        """
+        if self._fast_mode == enabled:
+            return
+        self._fast_mode = enabled
+        if not enabled:
+            self._redraw()  # 停止後に実機メッシュで再描画
 
     def set_route(self, route: Optional["Route"]):
         self._route = route
@@ -569,7 +583,7 @@ class Viewport3D:
         """Draw FANUC LR Mate 200iD/14L（実機メッシュ、欠落時は円柱形状）。"""
         pos = self.kin.get_joint_positions(q)  # (7, 3)  Base + J1…J6
 
-        if self._link_meshes:
+        if self._link_meshes and not self._fast_mode:
             self._draw_robot_meshes(q)
 
             # 地面の影（リンク原点の投影ポリライン）
