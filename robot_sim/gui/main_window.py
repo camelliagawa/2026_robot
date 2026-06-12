@@ -39,6 +39,7 @@ from ..path.route_generator import SharpeningParams, generate_sharpening_route
 from ..path.curve_follow import generate_curve_follow
 from ..path.kenma_export import (
     generate_kenma_programs, export_kenma_ls, build_playback_sequence,
+    parse_pose_expression, first_hover_T, enumerate_ik_branches,
     load_blade_csv as load_blade_csv_file)
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
@@ -86,8 +87,18 @@ def _validate_path(path: str, ext: str, label: str):
 
 # ── ツールチップ ────────────────────────────────────────────────────────
 
+# 表示メニュー「文字サイズ」(小/中/大) と連動する共通倍率。
+# MainWindow._set_font_scale() が更新し、ツールチップは表示時に参照する。
+_FONT_SCALE = 1.3
+_TOOLTIP_BASE_PT = 9
+
+
 class _Tooltip:
-    """マウスホバーで説明を表示するツールチップ。"""
+    """マウスホバーで説明を表示するツールチップ。
+
+    フォントサイズは表示時に _FONT_SCALE（文字サイズ設定）から算出する
+    ため、表示→文字サイズ の変更が既存ツールチップにも即時反映される。
+    """
     def __init__(self, widget: tk.Widget, text: str):
         self._w    = widget
         self._text = text
@@ -103,12 +114,13 @@ class _Tooltip:
         self._win = tw = tk.Toplevel(self._w)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
+        pt = max(7, int(round(_TOOLTIP_BASE_PT * _FONT_SCALE)))
         tk.Label(
             tw, text=self._text, justify="left",
             background="#1C2333", foreground="#E6EDF3",
             relief="solid", borderwidth=1,
-            font=("Yu Gothic UI", 8),
-            wraplength=340, padx=8, pady=5,
+            font=("Yu Gothic UI", pt),
+            wraplength=max(340, int(340 * _FONT_SCALE)), padx=8, pady=5,
         ).pack()
 
     def _hide(self, event=None):
@@ -130,7 +142,8 @@ class MainWindow:
     MIN_HEIGHT = 860
 
     TOOL_FRAMES  = [ToolFrame.flange(), ToolFrame.default_knife()]
-    USER_FRAMES  = [UserFrame.world(), UserFrame.default_stone()]
+    # UF0 WORLD + UF9 STONE のみ（旧 UF1 STONE は UF9 と重複のため統一済み）
+    USER_FRAMES  = [UserFrame.world(), UserFrame.stone9()]
 
     def __init__(self):
         self.kin   = Kinematics()
@@ -282,9 +295,15 @@ class MainWindow:
     # 文字サイズ（小/中/大）
     # ──────────────────────────────────────────────────────────────────
 
+    def _fnt(self, size: int, *flags, fam: str = "Yu Gothic UI"):
+        """現在の文字サイズ倍率を適用したフォントタプルを返す（後生成ダイアログ用）。"""
+        return (fam, max(6, int(round(size * self._font_scale))), *flags)
+
     def _set_font_scale(self, scale: float):
         """UI全体の文字サイズを倍率 scale で再設定する（小=1.1/中=1.3/大=1.6）。"""
         import tkinter.font as tkfont
+        global _FONT_SCALE
+        _FONT_SCALE = scale       # ツールチップが表示時に参照する共通倍率
         self._font_scale = scale
 
         def fnt(size, *flags, fam="Yu Gothic UI"):
@@ -518,6 +537,9 @@ class MainWindow:
         self._mk_listbox.pack(fill=tk.X)
         sb.config(command=self._mk_listbox.yview)
         self._mk_listbox.bind("<<ListboxSelect>>", self._on_mk_select)
+        self._mk_listbox.bind("<Double-Button-1>", self._mk_edit_selected)
+        _tip(self._mk_listbox,
+             "ダブルクリックでマーカー位置を編集できます\n（3Dビューへ即時反映）")
 
         # ボタン行（追加・削除）
         btn_row = ttk.Frame(lf)
@@ -609,6 +631,33 @@ class MainWindow:
         if self._mk_listbox.curselection():
             self._mk_apply_pos()
 
+    def _mk_edit_selected(self, event=None):
+        """マーカーをダブルクリックで位置編集（X/Y/Z、ライブ反映）。"""
+        sel = self._mk_listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= len(self._mk_list):
+            return
+        m = self._mk_list[idx]
+        from types import SimpleNamespace
+        obj = SimpleNamespace(x=m["pos"][0], y=m["pos"][1], z=m["pos"][2])
+
+        def _apply():
+            m["pos"] = [obj.x, obj.y, obj.z]
+            self._mk_refresh_listbox(select_idx=idx)
+            self._mk_sync_viewport()
+            for i, v in enumerate(self._mk_pos_vars):
+                v.set(f"{m['pos'][i]:.1f}")
+
+        self._frame_editor_dialog(
+            title=f"マーカー編集: {m['name']}",
+            desc="マーカーの位置を編集します（3Dビューへ即時反映）。",
+            obj=obj,
+            fields=["x", "y", "z"],
+            labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)"],
+            on_apply=_apply)
+
     def _on_mk_select(self, event=None):
         sel = self._mk_listbox.curselection()
         if not sel:
@@ -673,6 +722,10 @@ class MainWindow:
         )
         self._rf_listbox.pack(fill=tk.X)
         sb.config(command=self._rf_listbox.yview)
+        self._rf_listbox.bind("<Double-Button-1>", self._rf_edit_selected)
+        _tip(self._rf_listbox,
+             "ダブルクリックでフレームの位置・姿勢を編集できます\n"
+             "（3Dビューへ即時反映）")
 
         btn_row = ttk.Frame(lf)
         btn_row.pack(fill=tk.X, padx=6, pady=(3, 5))
@@ -709,6 +762,46 @@ class MainWindow:
         self.viewport.clear_ref_frames()
         self._rf_refresh_listbox()
         self._set_status("✔  参照フレームをすべてクリア")
+
+    def _rf_edit_selected(self, event=None):
+        """参照フレームをダブルクリックで編集（X/Y/Z/Rx/Ry/Rz、ライブ反映）。"""
+        sel = self._rf_listbox.curselection()
+        if not sel:
+            return
+        frames = self.viewport.get_ref_frames()
+        idx = sel[0]
+        if idx >= len(frames):
+            return
+        rf = frames[idx]
+        name  = rf["name"]
+        color = rf.get("color", "#FF88FF")
+        from types import SimpleNamespace
+        x, y, z, rx, ry, rz = Kinematics.transform_to_pose(rf["T"])
+        obj = SimpleNamespace(x=x, y=y, z=z, rx=rx, ry=ry, rz=rz)
+
+        def _apply():
+            if name == "UF9: STONE":
+                # UF9 は専用の同期ヘルパー経由（USER_FRAMES 等も更新）
+                uf9 = UserFrame(number=9, name="STONE",
+                                x=obj.x, y=obj.y, z=obj.z,
+                                rx=obj.rx, ry=obj.ry, rz=obj.rz,
+                                comment="Grinder top surface")
+                self._sync_uf9(uf9)
+            else:
+                self.viewport.remove_ref_frame(name)
+                self.viewport.add_ref_frame(name, obj.x, obj.y, obj.z,
+                                            obj.rx, obj.ry, obj.rz,
+                                            color=color)
+                self._rf_refresh_listbox()
+
+        self._frame_editor_dialog(
+            title=f"参照フレーム編集: {name}",
+            desc="参照フレームの位置・姿勢を編集します（3Dビューへ即時反映）。",
+            obj=obj,
+            fields=["x", "y", "z", "rx", "ry", "rz"],
+            labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)",
+                    "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
+            on_apply=_apply)
 
     def _add_ref_frame_dialog(self):
         """Show dialog to add a custom reference frame."""
@@ -808,10 +901,53 @@ class MainWindow:
         for uf in self.USER_FRAMES:
             if uf.number == 9:
                 return uf
-        from ..robot.user_frame import UserFrame as _UF
-        return _UF(number=9, name="STONE",
-                   x=550.0, y=-10.0, z=332.0, rx=0.0, ry=0.0, rz=90.0,
-                   comment="Grinder top surface")
+        return UserFrame.stone9()
+
+    def _sync_uf9(self, uf9, status: Optional[str] = None,
+                  update_fields: bool = True):
+        """UF9 STONE を全箇所へ同期する（単一の同期ヘルパー）。
+
+        USER_FRAMES・UFrame コンボボックス・アクティブ UFrame・
+        ビューポート参照フレーム "UF9: STONE"・STONE 調整パネル入力欄・
+        ステーションツリー を一括更新する。kenma 生成（_kenma_inputs）が
+        読み取る座標と常に一致させる。
+        """
+        nums = [uf.number for uf in self.USER_FRAMES]
+        if 9 in nums:
+            self.USER_FRAMES[nums.index(9)] = uf9
+        else:
+            self.USER_FRAMES.append(uf9)
+
+        # コンボボックスの選択肢を更新
+        if hasattr(self, "_uframe_combo"):
+            uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
+            self._uframe_combo.config(values=uf_names)
+
+        # アクティブ UFrame が UF9 なら差し替えてビューを更新
+        if self._active_uframe is not None and self._active_uframe.number == 9:
+            self._active_uframe = uf9
+            self.viewport.set_user_frame(uf9)
+
+        # ビューポートの参照フレーム "UF9: STONE" を再登録（即時再描画）
+        self.viewport.remove_ref_frame("UF9: STONE")
+        self.viewport.add_ref_frame("UF9: STONE",
+                                    uf9.x, uf9.y, uf9.z,
+                                    uf9.rx, uf9.ry, uf9.rz,
+                                    color="#C586C0")
+        if hasattr(self, "_rf_listbox"):
+            self._rf_refresh_listbox()
+
+        # STONE 位置調整パネルの入力欄を同期
+        if (update_fields and hasattr(self, "_stone_vars")
+                and len(self._stone_vars) >= 6):
+            for var, val in zip(self._stone_vars,
+                                [uf9.x, uf9.y, uf9.z, uf9.rx, uf9.ry, uf9.rz]):
+                var.set(f"{val:.1f}")
+
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        if status:
+            self._set_status(status)
 
     def _refresh_stone_fields(self):
         """入力欄を現在の UF9 STONE 値で再設定する。"""
@@ -833,35 +969,11 @@ class MainWindow:
             self._set_status("⚠  数値を入力してください")
             return
 
-        from ..robot.user_frame import UserFrame as _UF
-        uf9 = _UF(number=9, name="STONE", x=x, y=y, z=z,
-                  rx=rx, ry=ry, rz=rz, comment="Grinder top surface")
-
-        # USER_FRAMES を同期
-        nums = [uf.number for uf in self.USER_FRAMES]
-        if 9 in nums:
-            self.USER_FRAMES[nums.index(9)] = uf9
-        else:
-            self.USER_FRAMES.append(uf9)
-            # コンボボックスの選択肢も更新
-            uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
-            self._uframe_combo.config(values=uf_names)
-
-        # アクティブ UFrame が UF9 なら差し替えてビューを更新
-        if self._active_uframe is not None and self._active_uframe.number == 9:
-            self._active_uframe = uf9
-            self.viewport.set_user_frame(uf9)
-
-        # ビューポートの参照フレーム "UF9: STONE" を再登録（即時再描画）
-        self.viewport.remove_ref_frame("UF9: STONE")
-        self.viewport.add_ref_frame("UF9: STONE", x, y, z, rx, ry, rz,
-                                    color="#C586C0")
-        if hasattr(self, "_rf_listbox"):
-            self._rf_refresh_listbox()
-        if hasattr(self, "_tree"):
-            self._tree_refresh()
-        self._set_status(
-            f"✔  UF9 STONE 更新: X={x:.1f} Y={y:.1f} Z={z:.1f} Rz={rz:.1f}°")
+        uf9 = UserFrame(number=9, name="STONE", x=x, y=y, z=z,
+                        rx=rx, ry=ry, rz=rz, comment="Grinder top surface")
+        self._sync_uf9(
+            uf9, update_fields=False,
+            status=f"✔  UF9 STONE 更新: X={x:.1f} Y={y:.1f} Z={z:.1f} Rz={rz:.1f}°")
 
     # ──────────────────────────────────────────────────────────────────
     # 更新履歴パネル（右サイドバー下部）
@@ -1165,10 +1277,11 @@ class MainWindow:
         _tip(uf_lf,
              "UFrame（ユーザーフレーム）:\n"
              "作業対象（砥石など）の座標系定義です。\n"
-             "・WORLD: ロボット基準座標（デフォルト）\n"
-             "・STONE: 砥石座標系（X=400mm前方, Z=200mm上方）\n"
+             "・UF0 WORLD: ロボット基準座標（デフォルト）\n"
+             "・UF9 STONE: 砥石座標系（X=550, Y=-10, Z=332mm, Rz=90°）\n"
+             "  kenma 生成の砥石接触座標としても使われます。\n"
              "3Dビューの紫色の座標軸で位置を確認できます。\n"
-             "ロボット メニューから位置を編集できます。")
+             "ロボット メニューや UF9 STONE 位置調整パネルから編集できます。")
         self._uframe_var = tk.StringVar(value=self._active_uframe.name)
         uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
         self._uframe_combo = ttk.Combobox(uf_lf, textvariable=self._uframe_var,
@@ -1512,14 +1625,10 @@ class MainWindow:
         frames = tree.insert(robot, "end", iid="frames",
                               text="🔧 Frames", open=True)
         for uf in self.USER_FRAMES:
-            # ツリー幅に合わせた短い表示
+            # ツリー幅に合わせた短い表示（UF9 STONE は常に USER_FRAMES に含まれる）
             tree.insert(frames, "end", iid=f"uf_{uf.number}",
                          text=f"UF{uf.number}: {uf.name}"
                               f" ({uf.x:.0f},{uf.y:.0f},{uf.z:.0f})")
-        # UF9 STONE – 固定参照エントリ（USER_FRAMES に含まれていない場合）
-        if not any(uf.number == 9 for uf in self.USER_FRAMES):
-            tree.insert(frames, "end", iid="uf_9",
-                         text="UF9: STONE ← 右クリックで設定")
 
         # Tools
         tools_node = tree.insert(robot, "end", iid="tools",
@@ -1573,6 +1682,15 @@ class MainWindow:
                 self._ik_wp_var.set(idx + 1)
 
     def _on_tree_double_click(self, event=None):
+        """ダブルクリックで各ノードの主編集アクションを開く。
+
+        ・経路点 (wp_*)    : 従来どおり IK 移動
+        ・UFrame (uf_*)    : ユーザーフレーム編集ダイアログ
+        ・UTool (ut_*)     : ツールフレーム編集ダイアログ
+        ・刃先CSV          : 再読込（右クリックメニューの主アクション）
+        ・Programs         : LS ファイル読込
+        ・prog_* (各LS)    : 経路に適用
+        """
         sel = self._tree.selection()
         if not sel:
             return
@@ -1582,6 +1700,31 @@ class MainWindow:
             if 0 <= idx < len(self.route.waypoints):
                 self._ik_wp_var.set(idx + 1)
                 self._compute_ik_for_wp()
+            return "break"
+        if iid.startswith("uf_"):
+            num = int(iid[3:])
+            uf = next((u for u in self.USER_FRAMES if u.number == num), None)
+            if uf is not None:
+                self._edit_user_frame(uf)
+            return "break"
+        if iid.startswith("ut_"):
+            num = int(iid[3:])
+            tf = next((t for t in self.TOOL_FRAMES if t.number == num), None)
+            if tf is not None:
+                self._edit_tool_frame(tf)
+            return "break"
+        if iid == "blade_csv":
+            self._reload_blade_csv()
+            return "break"
+        if iid == "programs":
+            self._load_ls_file()
+            return "break"
+        if iid.startswith("prog_"):
+            i = int(iid[5:])
+            if 0 <= i < len(self._tree_programs):
+                _, route = self._tree_programs[i]
+                self._apply_prog_route(route)
+            return "break"
 
     def _on_tree_right_click(self, event=None):
         item = self._tree.identify_row(event.y)
@@ -1601,11 +1744,16 @@ class MainWindow:
                     label="🏗  UF9 STONE を自動設定 (x550,y-10,STL Z)",
                     command=self._setup_stone_uframe)
                 menu.add_separator()
-            menu.add_command(label="📐  UFrame 編集...",
-                             command=self._edit_user_frame)
+            uf = next((u for u in self.USER_FRAMES if u.number == num), None)
+            menu.add_command(
+                label="📐  UFrame 編集...（ダブルクリックでも可）",
+                command=lambda u=uf: self._edit_user_frame(u))
         elif item.startswith("ut_"):
-            menu.add_command(label="🔑  UTool 編集...",
-                             command=self._edit_tool_frame)
+            num = int(item[3:])
+            tf = next((t for t in self.TOOL_FRAMES if t.number == num), None)
+            menu.add_command(
+                label="🔑  UTool 編集...（ダブルクリックでも可）",
+                command=lambda t=tf: self._edit_tool_frame(t))
         elif item == "blade_csv":
             menu.add_command(label="🔄  刃先CSV を再読込",
                              command=self._reload_blade_csv)
@@ -1814,27 +1962,17 @@ class MainWindow:
         else:
             grinder_top_z = 332.0
 
-        from ..robot.user_frame import UserFrame as _UF
-        uf9 = _UF(number=9, name="STONE",
-                  x=550.0, y=-10.0, z=grinder_top_z,
-                  rx=0.0,  ry=0.0,  rz=90.0,
-                  comment="Grinder top surface")
+        uf9 = UserFrame(number=9, name="STONE",
+                        x=550.0, y=-10.0, z=grinder_top_z,
+                        rx=0.0,  ry=0.0,  rz=90.0,
+                        comment="Grinder top surface")
+        self._sync_uf9(uf9)
 
-        nums = [uf.number for uf in self.USER_FRAMES]
-        if 9 in nums:
-            self.USER_FRAMES[nums.index(9)] = uf9
-        else:
-            self.USER_FRAMES.append(uf9)
-
-        # コンボボックスを更新
-        uf_names = [f"UF{u.number}: {u.name}" for u in self.USER_FRAMES]
-        self._uframe_combo.config(values=uf_names)
+        # UF9 をアクティブ UFrame に切り替え
         idx9 = next(i for i, uf in enumerate(self.USER_FRAMES) if uf.number == 9)
         self._uframe_combo.current(idx9)
         self._active_uframe = self.USER_FRAMES[idx9]
         self.viewport.set_user_frame(self._active_uframe)
-
-        self._tree_refresh()
         self._set_status(
             f"✔  UF9 STONE 設定: x=550, y=-10, z={grinder_top_z:.0f}mm, rz=90°")
 
@@ -2542,28 +2680,51 @@ class MainWindow:
     # Tool / User frame dialogs
     # ──────────────────────────────────────────────────────────────────
 
-    def _edit_tool_frame(self):
-        tf = self._active_tool
+    def _edit_tool_frame(self, tf=None):
+        """ツールフレーム編集（tf 省略時はアクティブツール）。"""
+        tf = tf if tf is not None else self._active_tool
+
+        def _apply():
+            if tf is self._active_tool:
+                self.viewport.set_tool_frame(tf)
+            if hasattr(self, "_tree"):
+                self._tree_refresh()
+
         self._frame_editor_dialog(
-            title=f"ツールフレーム編集: {tf.name}",
+            title=f"ツールフレーム編集: UT{tf.number} {tf.name}",
             desc="フランジ（J6先端）からTCP（ツール中心点）までのオフセットを設定します。\n包丁の場合、刃の中心まで Z方向に延長します。",
             obj=tf,
             fields=["x", "y", "z", "rx", "ry", "rz"],
             labels=["X オフセット (mm)", "Y オフセット (mm)", "Z オフセット (mm)",
                     "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
-            on_apply=lambda: self.viewport.set_tool_frame(self._active_tool)
+            on_apply=_apply
         )
 
-    def _edit_user_frame(self):
-        uf = self._active_uframe
+    def _edit_user_frame(self, uf=None):
+        """ユーザーフレーム編集（uf 省略時はアクティブ UFrame）。
+
+        UF9 STONE の場合は _sync_uf9 で参照フレーム・調整パネル・
+        コンボボックスまで一括同期する（kenma 生成座標と一致を維持）。
+        """
+        uf = uf if uf is not None else self._active_uframe
+
+        def _apply():
+            if uf.number == 9:
+                self._sync_uf9(uf)
+            else:
+                if uf is self._active_uframe:
+                    self.viewport.set_user_frame(uf)
+                if hasattr(self, "_tree"):
+                    self._tree_refresh()
+
         self._frame_editor_dialog(
-            title=f"ユーザーフレーム編集: {uf.name}",
+            title=f"ユーザーフレーム編集: UF{uf.number} {uf.name}",
             desc="作業座標系の原点を設定します。\n砥石の場合、砥石面の中心をユーザーフレーム原点とします。",
             obj=uf,
             fields=["x", "y", "z", "rx", "ry", "rz"],
             labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)",
                     "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
-            on_apply=lambda: self.viewport.set_user_frame(self._active_uframe)
+            on_apply=_apply
         )
 
     def _frame_editor_dialog(self, title, desc, obj, fields, labels, on_apply):
@@ -2574,9 +2735,9 @@ class MainWindow:
         win.resizable(False, False)
 
         tk.Label(win, text=title, bg=BG_DARK, fg=ACCENT,
-                 font=("Yu Gothic UI", 10, "bold")).pack(pady=(12, 2), padx=12, anchor="w")
+                 font=self._fnt(10, "bold")).pack(pady=(12, 2), padx=12, anchor="w")
         tk.Label(win, text=desc, bg=BG_DARK, fg=FG_SUB,
-                 font=("Yu Gothic UI", 8), justify="left",
+                 font=self._fnt(8), justify="left",
                  wraplength=350).pack(padx=12, anchor="w")
 
         ttk.Separator(win).pack(fill=tk.X, padx=12, pady=8)
@@ -2596,7 +2757,7 @@ class MainWindow:
             row = ttk.Frame(win)
             row.pack(fill=tk.X, padx=16, pady=2)
             tk.Label(row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
-                     font=("", 8), width=18, anchor="w").pack(side=tk.LEFT)
+                     font=self._fnt(8, fam=""), width=18, anchor="w").pack(side=tk.LEFT)
             v = tk.StringVar(value=str(getattr(obj, f)))
             vars_[f] = v
             # ホイール/Enter/フォーカス離脱で即時プレビュー
@@ -2698,16 +2859,13 @@ class MainWindow:
                 stone_top_z = float(tv[:, 2].max())
             else:
                 stone_top_z = 266.0
-            self.viewport.remove_ref_frame("UF9: STONE")
-            self.viewport.add_ref_frame(
-                "UF9: STONE", 550, -10, stone_top_z, 0, 0, 90, color="#FF88FF")
-            # UF9 STONE 位置調整パネルの入力欄を STL から算出した値で同期
-            if hasattr(self, "_stone_vars") and len(self._stone_vars) >= 6:
-                for var, val in zip(self._stone_vars,
-                                    [550.0, -10.0, stone_top_z, 0.0, 0.0, 90.0]):
-                    var.set(f"{val:.1f}")
-            if hasattr(self, "_rf_listbox"):
-                self._rf_refresh_listbox()
+            # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
+            # 参照フレーム / 調整パネルを一括更新）
+            uf9 = UserFrame(number=9, name="STONE",
+                            x=550.0, y=-10.0, z=stone_top_z,
+                            rx=0.0, ry=0.0, rz=90.0,
+                            comment="Grinder top surface")
+            self._sync_uf9(uf9)
             self._set_status(
                 f"✔  Tormek T8 STL 読込済（X=800, Y=148, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
         else:
@@ -3071,24 +3229,26 @@ class MainWindow:
         Rw, tw = T[:3, :3], T[:3, 3]
         world_curves = [(Rw @ g.pts.T).T + tw for g in groups]
 
-        sel: list = []   # 選択順のグループ index 列
+        sel: list = []      # 選択順のグループ index 列
+        rev: dict = {}      # gi -> 逆方向フラグ（RoboDK の「逆方向」相当）
 
         win = tk.Toplevel(self.root)
         win.title("曲線を選択して研磨ルート生成")
-        win.geometry("420x560")
+        win.geometry("470x760")
         win.configure(bg=BG_DARK)
         win.resizable(False, False)
 
         tk.Label(win, text="📐  曲線を選択して研磨ルート生成",
                  bg=BG_DARK, fg=ACCENT,
-                 font=("Yu Gothic UI", 12, "bold")).pack(pady=(12, 2), padx=14, anchor="w")
+                 font=self._fnt(12, "bold")).pack(pady=(12, 2), padx=14, anchor="w")
         tk.Label(win,
             text="3Dビューの水色の曲線をクリックすると選択（緑・番号付き）されます。\n"
                  "クリックした順番 = 研磨の実行順（RoboDKの曲線選択と同じ）。\n"
                  "選択済み曲線を再クリックすると解除されます。\n"
-                 "※ クリック（5px未満）で選択 / ドラッグはそのまま視点回転です。",
+                 "※ クリック（5px未満）で選択 / ドラッグはそのまま視点回転です。\n"
+                 "※ リストの右クリック or「⇄ 逆方向」で掃引方向を反転できます。",
             bg=BG_DARK, fg=FG_SUB,
-            font=("Yu Gothic UI", 8), justify="left").pack(padx=14, anchor="w")
+            font=self._fnt(8), justify="left").pack(padx=14, anchor="w")
 
         ttk.Separator(win).pack(fill=tk.X, padx=14, pady=6)
 
@@ -3098,17 +3258,36 @@ class MainWindow:
         sb = tk.Scrollbar(lb_frame, orient=tk.VERTICAL)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         lb = tk.Listbox(
-            lb_frame, height=12, yscrollcommand=sb.set,
+            lb_frame, height=10, yscrollcommand=sb.set,
             bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 9),
             selectbackground=BTN_PRIMARY, selectforeground="white",
             borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
             activestyle="none")
         lb.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
         sb.config(command=lb.yview)
+        _tip(lb, "→ = 順方向（CSV順: 刃元→刃先）\n"
+                 "← = 逆方向（接触点順を逆転して掃引）\n"
+                 "右クリック or「⇄ 逆方向」ボタンで切替できます")
 
         info_var = tk.StringVar()
         tk.Label(win, textvariable=info_var, bg=BG_DARK, fg=ACCENT2,
-                 font=("", 9, "bold")).pack(padx=14, pady=(4, 0), anchor="w")
+                 font=self._fnt(9, "bold", fam="")).pack(padx=14, pady=(4, 0), anchor="w")
+
+        # スタート関節候補の状態（選択内容が変わったら再計算が必要）
+        q_branches: list = []          # List[np.ndarray]
+        q_state = {"key": None}        # 候補計算時の (先頭gi, rev) キー
+
+        def _first_key():
+            return (sel[0], bool(rev.get(sel[0], False))) if sel else None
+
+        def _invalidate_branches():
+            """先頭曲線が変わったら関節候補を無効化する。"""
+            if q_state["key"] is not None and q_state["key"] != _first_key():
+                q_branches.clear()
+                q_state["key"] = None
+                q_combo.config(values=[])
+                q_var.set("")
+                q_info_var.set("先頭曲線が変わりました — 「候補を計算」を再実行してください")
 
         def _refresh(keep_sel: Optional[int] = None):
             orders = [None] * len(groups)
@@ -3120,8 +3299,9 @@ class MainWindow:
                 g = groups[gi]
                 y0 = float(g.pts[:, 1].min())
                 y1 = float(g.pts[:, 1].max())
+                arrow = "←" if rev.get(gi, False) else "→"
                 lb.insert(tk.END,
-                          f"{k+1:2d}. {names[gi]}  刃渡り {y0:6.1f}〜{y1:6.1f}mm")
+                          f"{k+1:2d}. {names[gi]} {arrow}  刃渡り {y0:6.1f}〜{y1:6.1f}mm")
             if keep_sel is not None and 0 <= keep_sel < lb.size():
                 lb.selection_set(keep_sel)
                 lb.see(keep_sel)
@@ -3130,10 +3310,12 @@ class MainWindow:
             info_var.set(
                 f"選択 {len(sel)} / 全{len(groups)} 曲線"
                 f"（HaL: {nl} / HaR: {nr}・残り {len(groups) - len(sel)}）")
+            _invalidate_branches()
 
         def _on_pick(gi: int):
             if gi in sel:
                 sel.remove(gi)            # 再クリックで解除（以降を再採番）
+                rev.pop(gi, None)
                 self._set_status(f"曲線 {names[gi]} の選択を解除しました")
             else:
                 sel.append(gi)            # クリック順に追加
@@ -3143,11 +3325,13 @@ class MainWindow:
 
         def _select_all():
             sel.clear()
+            rev.clear()
             sel.extend(range(len(groups)))   # 標準順 = CSV順（従来の全曲線生成と同順）
             _refresh()
 
         def _reset():
             sel.clear()
+            rev.clear()
             _refresh()
 
         def _move(delta: int):
@@ -3160,9 +3344,145 @@ class MainWindow:
                 sel[i], sel[j] = sel[j], sel[i]
                 _refresh(keep_sel=j)
 
+        def _toggle_reverse(row: Optional[int] = None):
+            """ハイライト行（または指定行）の掃引方向を反転する。"""
+            if row is None:
+                cur = lb.curselection()
+                if not cur:
+                    self._set_status("⚠  逆方向にする曲線をリストから選択してください")
+                    return
+                row = cur[0]
+            if not (0 <= row < len(sel)):
+                return
+            gi = sel[row]
+            rev[gi] = not rev.get(gi, False)
+            self._set_status(
+                f"曲線 {names[gi]} を{'逆方向 ←' if rev[gi] else '順方向 →'}に設定しました")
+            _refresh(keep_sel=row)
+
+        def _on_lb_right_click(event):
+            row = lb.nearest(event.y)
+            if 0 <= row < len(sel):
+                lb.selection_clear(0, tk.END)
+                lb.selection_set(row)
+                _toggle_reverse(row)
+
+        lb.bind("<Button-3>", _on_lb_right_click)
+
         def _close():
             self.viewport.clear_pick_curves()
             win.destroy()
+
+        # ── パスからツールへのオフセット（RoboDK 互換の式入力） ──────
+        off_lf = ttk.LabelFrame(win, text="  パスからツールへのオフセット")
+        off_lf.pack(fill=tk.X, padx=14, pady=(6, 2))
+        _tip(off_lf,
+             "パス（砥石接触フレーム）に対するツールの追加オフセット式です。\n"
+             "transl(x,y,z) [mm] / rotx(°) / roty(°) / rotz(°) を * で連結します。\n\n"
+             "回転は接触点を固定したまま姿勢のみ変化します:\n"
+             "・rotx = 砥石接線（刃渡り方向）まわり ＝ 刃付け角度の軸\n"
+             "・roty = 送り方向まわり（刃の前後倒れ）\n"
+             "・rotz = 砥石面法線まわり（面内の向き）\n"
+             "transl は接触フレーム軸方向に接触点を平行移動します。\n\n"
+             "例: rotx(15) → 刃付け角を15°追加\n"
+             "既定 rotx(0)*roty(0)*rotz(0) = オフセットなし（従来と同一出力）")
+        off_var = tk.StringVar(value="rotx(0)*roty(0)*rotz(0)")
+        off_state = {"mat": np.eye(4)}   # 最後に有効だった行列を保持
+        off_row = ttk.Frame(off_lf)
+        off_row.pack(fill=tk.X, padx=6, pady=(2, 1))
+        off_entry = tk.Entry(off_row, textvariable=off_var,
+                             bg=BG_WIDGET, fg=FG_PRIMARY,
+                             insertbackground=FG_PRIMARY,
+                             relief="flat", highlightthickness=1,
+                             highlightbackground=BORDER,
+                             font=("Consolas", 9))
+        off_entry.pack(fill=tk.X, expand=True)
+        off_msg_var = tk.StringVar(value="")
+        tk.Label(off_lf, textvariable=off_msg_var, bg=BG_PANEL, fg=ERR_RED,
+                 font=self._fnt(7, fam=""), anchor="w").pack(
+                     fill=tk.X, padx=6, pady=(0, 3))
+
+        def _validate_offset(event=None) -> bool:
+            """式を検証し、成功なら off_state['mat'] を更新する。"""
+            try:
+                off_state["mat"] = parse_pose_expression(off_var.get())
+                off_entry.config(bg=BG_WIDGET, highlightbackground=BORDER)
+                off_msg_var.set("")
+                return True
+            except ValueError as e:
+                off_entry.config(bg="#4A1E1E", highlightbackground=ERR_RED)
+                off_msg_var.set(f"⚠ 式エラー: {e}（直前の有効な式を使用します）")
+                self._set_status(f"⚠  オフセット式エラー: {e}")
+                return False
+
+        off_entry.bind("<KeyRelease>", _validate_offset)
+        off_entry.bind("<FocusOut>",  _validate_offset)
+
+        # ── スタート地点に好ましい関節（RoboDK 互換） ────────────────
+        q_lf = ttk.LabelFrame(win, text="  スタート地点に好ましい関節")
+        q_lf.pack(fill=tk.X, padx=14, pady=(2, 2))
+        _tip(q_lf,
+             "先頭に選択した曲線のホバー姿勢に対する IK 解候補（関節配置の\n"
+             "ブランチ）を列挙します（RoboDK の同名機能と同等）。\n"
+             "「候補を計算」→ J1〜J6 [deg] の候補から開始関節を選択します。\n"
+             "選択した関節はルート生成全体の IK シードとなり、そのまま\n"
+             "P[1]/HOME の関節姿勢として LS に出力されます。\n"
+             "未計算・未選択の場合は従来どおり自動選択（レディ姿勢に最近傍）です。")
+        q_row = ttk.Frame(q_lf)
+        q_row.pack(fill=tk.X, padx=6, pady=(3, 1))
+        q_var = tk.StringVar(value="")
+        q_combo = ttk.Combobox(q_row, textvariable=q_var, values=[],
+                               state="readonly", width=34,
+                               font=("Consolas", 8))
+        q_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _tip(q_combo, "J1, J2, J3, J4, J5, J6 [deg] — 上ほどレディ姿勢に近い候補です")
+
+        q_info_var = tk.StringVar(value="未計算（自動選択）")
+        tk.Label(q_lf, textvariable=q_info_var, bg=BG_PANEL, fg=FG_SUB,
+                 font=self._fnt(7, fam=""), anchor="w").pack(
+                     fill=tk.X, padx=6, pady=(0, 3))
+
+        def _compute_branches():
+            if not sel:
+                messagebox.showwarning("曲線未選択",
+                    "先に曲線を選択してください。", parent=win)
+                return
+            if not _validate_offset():
+                pass  # 直前の有効な式で続行
+            self._set_status("スタート関節候補を計算中（IK ブランチ列挙）...")
+            q_info_var.set("計算中...")
+            win.update()
+            try:
+                order = [(gi, bool(rev.get(gi, False))) for gi in sel]
+                T_hover = first_hover_T(
+                    pts, nrm, T_blade, T_contact,
+                    selected_groups=order,
+                    tool_offset=off_state["mat"])
+                branches = enumerate_ik_branches(self.kin, T_hover)
+            except Exception as e:
+                messagebox.showerror("候補計算エラー",
+                                     f"関節候補の計算に失敗しました:\n{e}",
+                                     parent=win)
+                q_info_var.set("計算失敗")
+                return
+            q_branches.clear()
+            q_branches.extend(branches)
+            q_state["key"] = _first_key()
+            vals = [", ".join(f"{np.degrees(v):.1f}" for v in b)
+                    for b in branches]
+            q_combo.config(values=vals)
+            if vals:
+                q_combo.current(0)   # 既定 = レディ姿勢に最近傍
+                q_info_var.set(
+                    f"{len(vals)} 候補（先頭曲線 {names[sel[0]]} のホバー姿勢・"
+                    "上ほどレディ姿勢に近い）")
+                self._set_status(f"✔  スタート関節候補 {len(vals)} 件を計算しました")
+            else:
+                q_info_var.set("到達可能な関節候補が見つかりませんでした")
+                self._set_status("⚠  スタート関節候補が見つかりませんでした")
+
+        ttk.Button(q_row, text="候補を計算",
+                   command=_compute_branches).pack(side=tk.LEFT, padx=(6, 0))
 
         def _generate():
             if not sel:
@@ -3171,17 +3491,26 @@ class MainWindow:
                     "3Dビューで曲線をクリックして選択してください。",
                     parent=win)
                 return
-            order = list(sel)
-            nl = sum(1 for gi in order if sides[gi] == "L")
-            nr = len(order) - nl
+            _validate_offset()   # 不正なら直前の有効な式を使用
+            order = [(gi, bool(rev.get(gi, False))) for gi in sel]
+            n_rev = sum(1 for _, r in order if r)
+            nl = sum(1 for gi in sel if sides[gi] == "L")
+            nr = len(sel) - nl
+            q_start = None
+            qi = q_combo.current()
+            if q_branches and 0 <= qi < len(q_branches):
+                q_start = q_branches[qi]
             self._set_status(
-                f"選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）から研磨ルート生成中 "
-                "— IK計算しています（数十秒かかる場合があります）...")
+                f"選択 {len(order)} 曲線（HaL {nl} / HaR {nr}・逆方向 {n_rev}）"
+                "から研磨ルート生成中 — IK計算しています"
+                "（数十秒かかる場合があります）...")
             self.root.update()
             try:
                 result = generate_kenma_programs(
                     pts, nrm, T_blade, T_contact, self.kin,
-                    selected_groups=order)
+                    selected_groups=order,
+                    tool_offset=off_state["mat"],
+                    q_start=q_start)
             except Exception as e:
                 messagebox.showerror("生成エラー",
                                      f"生成に失敗しました:\n{e}", parent=win)
@@ -3231,6 +3560,14 @@ class MainWindow:
                    command=lambda: _move(-1)).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_row1, text="↓",  width=3,
                    command=lambda: _move(+1)).pack(side=tk.LEFT, padx=3)
+        rev_btn = ttk.Button(btn_row1, text="⇄ 逆方向",
+                             command=_toggle_reverse)
+        rev_btn.pack(side=tk.LEFT, padx=3)
+        _tip(rev_btn,
+             "ハイライト中の曲線の掃引方向を反転します（RoboDK の「逆方向」）。\n"
+             "→ = CSV順（刃元→刃先） / ← = 逆方向\n"
+             "姿勢は順方向と同一のまま接触点の通過順だけが逆になります。\n"
+             "リスト行の右クリックでも切り替えできます。")
 
         btn_row2 = ttk.Frame(win)
         btn_row2.pack(pady=(2, 10))

@@ -34,10 +34,12 @@ class UserFrame:
                    comment="World coordinate frame")
 
     @classmethod
-    def default_stone(cls) -> "UserFrame":
-        """Whetstone user frame: 400mm forward (+X), 200mm up (+Z)."""
-        return cls(number=1, name="STONE", x=400.0, z=200.0,
-                   comment="Whetstone surface")
+    def stone9(cls) -> "UserFrame":
+        """UF9 STONE — 砥石上面の作業フレーム（kenma 生成が使用する既定値）。"""
+        return cls(number=9, name="STONE",
+                   x=550.0, y=-10.0, z=332.0,
+                   rx=0.0, ry=0.0, rz=90.0,
+                   comment="Grinder top surface")
 
     def __repr__(self) -> str:
         return (
