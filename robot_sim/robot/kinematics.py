@@ -337,39 +337,6 @@ class Kinematics:
         return (self._lower[joint_idx] <= angle_rad <= self._upper[joint_idx])
 
     # ------------------------------------------------------------------
-    # Jacobian (numerical)
-    # ------------------------------------------------------------------
-
-    def jacobian(self, q: np.ndarray, delta: float = 1e-6) -> np.ndarray:
-        """
-        Compute 6x6 geometric Jacobian numerically.
-
-        Returns:
-            J : shape (6, 6) where rows 0:3 are linear velocity, 3:6 angular velocity
-        """
-        q = np.asarray(q, dtype=float)
-        T0 = self.forward(q)
-        p0 = T0[:3, 3]
-        R0 = T0[:3, :3]
-
-        J = np.zeros((6, 6))
-        for i in range(6):
-            dq = np.zeros(6)
-            dq[i] = delta
-            T1 = self.forward(q + dq)
-            p1 = T1[:3, 3]
-            R1 = T1[:3, :3]
-
-            J[:3, i] = (p1 - p0) / delta
-            # Angular velocity from skew-symmetric part of dR * R^T
-            dR = (R1 - R0) / delta
-            skew = dR @ R0.T
-            J[3, i] = skew[2, 1]
-            J[4, i] = skew[0, 2]
-            J[5, i] = skew[1, 0]
-        return J
-
-    # ------------------------------------------------------------------
     # Pose utilities
     # ------------------------------------------------------------------
 

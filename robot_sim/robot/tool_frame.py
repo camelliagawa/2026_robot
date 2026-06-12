@@ -1,5 +1,5 @@
 """Tool frame (UTool) definition for FANUC."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import numpy as np
 
 

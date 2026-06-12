@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from enum import Enum
 
 import numpy as np
@@ -70,43 +70,6 @@ class Waypoint:
     def position(self) -> np.ndarray:
         """Return position as (3,) array in mm."""
         return np.array([self.x, self.y, self.z])
-
-    def orientation_deg(self) -> np.ndarray:
-        """Return orientation as (3,) array in degrees."""
-        return np.array([self.rx, self.ry, self.rz])
-
-    def as_dict(self) -> Dict[str, Any]:
-        return {
-            "x": self.x, "y": self.y, "z": self.z,
-            "rx": self.rx, "ry": self.ry, "rz": self.rz,
-            "speed": self.speed,
-            "motion_type": self.motion_type.value,
-            "label": self.label,
-            "id": self.id,
-            "cnt": self.cnt,
-            "joint_speed_pct": self.joint_speed_pct,
-            "call": self.call,
-        }
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "Waypoint":
-        mt = MotionType(d.get("motion_type", "L"))
-        return cls(
-            x=float(d.get("x", 0)),
-            y=float(d.get("y", 0)),
-            z=float(d.get("z", 400)),
-            rx=float(d.get("rx", 180)),
-            ry=float(d.get("ry", 0)),
-            rz=float(d.get("rz", 0)),
-            speed=float(d.get("speed", 50)),
-            motion_type=mt,
-            label=str(d.get("label", "")),
-            id=str(d.get("id", str(uuid.uuid4())[:8])),
-            cnt=(int(d["cnt"]) if d.get("cnt") is not None else None),
-            joint_speed_pct=(int(d["joint_speed_pct"])
-                             if d.get("joint_speed_pct") is not None else None),
-            call=(str(d["call"]) if d.get("call") else None),
-        )
 
     def __str__(self) -> str:
         return (

@@ -85,21 +85,22 @@ def generate_curve_follow(
 
     T_blade_inv = np.linalg.inv(T_blade)
 
-    waypoints: List[Waypoint] = []
     n_unreachable = 0
     q_seed = None
     indices = list(range(0, len(blade_pts), step))
 
     contact_wps: List[Tuple[int, np.ndarray]] = []  # (元index, T_ee)
 
+    # ターゲット基底 {-s, x_stone⊥, cross} は全点で共通（ループ外で1回計算）
+    B_tgt = _orthonormal_basis(-s, x_stone)
+
     for i in indices:
         p = blade_pts[i]
         n_i = _normalize(blade_normals[i])
         t_i = _tangent(blade_pts, i)
 
-        # ソース基底 {n_i, t_i⊥, n×t} → ターゲット基底 {-s, x_stone⊥, cross}
+        # ソース基底 {n_i, t_i⊥, n×t} → ターゲット基底
         B_src = _orthonormal_basis(n_i, t_i)
-        B_tgt = _orthonormal_basis(-s, x_stone)
         R_bw = B_tgt @ B_src.T
 
         # 刃付け角度: ワールド接線軸まわりに傾ける
@@ -150,8 +151,7 @@ def generate_curve_follow(
         T_ret[:3, 3] = T_ret[:3, 3] + approach_mm * s
         out.append(_make_wp(T_ret, "CF_RETRACT", MotionType.LINEAR))
 
-    waypoints = out
-    return waypoints, n_unreachable
+    return out, n_unreachable
 
 
 def _transform_to_pose(kin, T: np.ndarray):

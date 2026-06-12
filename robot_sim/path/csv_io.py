@@ -9,9 +9,8 @@ CSV format:
 from __future__ import annotations
 
 import csv
-import io
 import os
-from typing import List, Optional, TextIO, Union
+from typing import TextIO
 
 from .route import Waypoint, Route, MotionType
 
@@ -68,26 +67,6 @@ class RouteCSVIO:
                 wp.label,
             ])
 
-    @staticmethod
-    def route_to_string(route: Route) -> str:
-        """Return CSV content as string."""
-        buf = io.StringIO()
-        RouteCSVIO.route_to_file(route, buf)
-        return buf.getvalue()
-
-    @staticmethod
-    def waypoints_to_csv(waypoints: List[Waypoint], file_path: str):
-        """Save just a list of waypoints (no route metadata)."""
-        with open(file_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(CSV_FIELDNAMES)
-            for wp in waypoints:
-                writer.writerow([
-                    wp.x, wp.y, wp.z,
-                    wp.rx, wp.ry, wp.rz,
-                    wp.speed, wp.motion_type.value, wp.label
-                ])
-
     # ------------------------------------------------------------------
     # Import
     # ------------------------------------------------------------------
@@ -143,17 +122,6 @@ class RouteCSVIO:
 
         return route
 
-    @staticmethod
-    def waypoints_from_csv(file_path: str) -> List[Waypoint]:
-        """Load a list of waypoints from CSV (no route metadata needed)."""
-        route = RouteCSVIO.route_from_csv(file_path)
-        return route.waypoints
-
-    @staticmethod
-    def waypoints_from_string(content: str) -> List[Waypoint]:
-        """Parse waypoints from CSV string."""
-        return RouteCSVIO.route_from_string(content).waypoints
-
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -195,19 +163,4 @@ class RouteCSVIO:
             speed=speed,
             motion_type=mt,
             label=label,
-        )
-
-    @staticmethod
-    def example_csv_content() -> str:
-        """Return example CSV content string."""
-        return (
-            "# x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg, speed_mmps, motion_type\n"
-            "x_mm,y_mm,z_mm,rx_deg,ry_deg,rz_deg,speed_mmps,motion_type,label\n"
-            "300,0,450,180,0,0,30,J,Home\n"
-            "300,-100,300,180,15,0,50,L,Approach\n"
-            "300,-50,280,180,15,0,30,L,Stroke1\n"
-            "300,0,280,180,15,0,30,L,Stroke2\n"
-            "300,50,280,180,15,0,30,L,Stroke3\n"
-            "300,100,280,180,15,0,30,L,Stroke4\n"
-            "300,0,450,180,0,0,50,L,Retract\n"
         )

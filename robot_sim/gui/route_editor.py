@@ -6,13 +6,8 @@ Shows a list of waypoints with add/remove/edit capabilities.
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-from typing import Optional, Callable, TYPE_CHECKING
-
-import numpy as np
-
-if TYPE_CHECKING:
-    from ..path.route import Route, Waypoint
+from tkinter import ttk, messagebox
+from typing import Optional, Callable
 
 from ..path.route import Waypoint, Route, MotionType
 

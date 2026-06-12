@@ -29,10 +29,9 @@ from typing import Optional
 import numpy as np
 
 from ..robot.kinematics import Kinematics
-from ..robot.dh_params import DHParams
 from ..robot.tool_frame import ToolFrame
 from ..robot.user_frame import UserFrame
-from ..path.route import Route, Waypoint, MotionType
+from ..path.route import Route
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
 from ..path.route_generator import SharpeningParams, generate_sharpening_route
@@ -782,10 +781,8 @@ class MainWindow:
         def _apply():
             if name == "UF9: STONE":
                 # UF9 は専用の同期ヘルパー経由（USER_FRAMES 等も更新）
-                uf9 = UserFrame(number=9, name="STONE",
-                                x=obj.x, y=obj.y, z=obj.z,
-                                rx=obj.rx, ry=obj.ry, rz=obj.rz,
-                                comment="Grinder top surface")
+                uf9 = self._uf9_frame(x=obj.x, y=obj.y, z=obj.z,
+                                      rx=obj.rx, ry=obj.ry, rz=obj.rz)
                 self._sync_uf9(uf9)
             else:
                 self.viewport.remove_ref_frame(name)
@@ -903,6 +900,15 @@ class MainWindow:
                 return uf
         return UserFrame.stone9()
 
+    @staticmethod
+    def _uf9_frame(**overrides) -> UserFrame:
+        """UF9 STONE を生成する（既定値の単一ソース = UserFrame.stone9）。
+
+        number/name/comment と未指定の座標は stone9() の既定値を使う。
+        """
+        from dataclasses import replace
+        return replace(UserFrame.stone9(), **overrides)
+
     def _sync_uf9(self, uf9, status: Optional[str] = None,
                   update_fields: bool = True):
         """UF9 STONE を全箇所へ同期する（単一の同期ヘルパー）。
@@ -969,8 +975,7 @@ class MainWindow:
             self._set_status("⚠  数値を入力してください")
             return
 
-        uf9 = UserFrame(number=9, name="STONE", x=x, y=y, z=z,
-                        rx=rx, ry=ry, rz=rz, comment="Grinder top surface")
+        uf9 = self._uf9_frame(x=x, y=y, z=z, rx=rx, ry=ry, rz=rz)
         self._sync_uf9(
             uf9, update_fields=False,
             status=f"✔  UF9 STONE 更新: X={x:.1f} Y={y:.1f} Z={z:.1f} Rz={rz:.1f}°")
@@ -1074,10 +1079,6 @@ class MainWindow:
         lower, upper = self.kin.dh.get_joint_limits_deg()
         speeds = self.kin.dh.get_joint_max_speeds()
         self._slider_vars = []
-        self._fk_display_var  = tk.StringVar()
-
-        joint_labels = ["J1\n(旋回)", "J2\n(肩)", "J3\n(肘)", "J4\n(前腕)", "J5\n(手首↑↓)", "J6\n(手首回転)"]
-        cart_labels  = ["X\n(前後)", "Y\n(左右)", "Z\n(上下)", "Rx\n(ロール)", "Ry\n(ピッチ)", "Rz\n(ヨー)"]
         self._jog_axis_labels = []
 
         JOINT_TIPS = [
@@ -1140,8 +1141,7 @@ class MainWindow:
         # モード切替でラベルを更新
         def _update_jog_labels(*_):
             mode = self._jog_mode.get()
-            cart = ["X", "Y", "Z", "Rx", "Ry", "Rz"]
-            for idx, (lbl, jname, cname) in enumerate(self._jog_axis_labels):
+            for lbl, jname, cname in self._jog_axis_labels:
                 lbl.config(text=jname if mode == "Joint" else cname)
         self._jog_mode.trace_add("write", _update_jog_labels)
 
@@ -1456,6 +1456,31 @@ class MainWindow:
         ent.bind("<FocusOut>",   _on_commit)
         return ent
 
+    # ── ダイアログ用の共通行ヘルパー（セクション見出し / 数値入力行） ──
+
+    @staticmethod
+    def _dialog_section(frame, text):
+        """ダイアログ内のセクション見出しラベルを追加する。"""
+        tk.Label(frame, text=text, bg=BG_PANEL, fg=ACCENT2,
+                 font=("Yu Gothic UI", 8, "bold")).pack(anchor="w", pady=(8, 2))
+
+    def _dialog_num_row(self, frame, label, default, hint="",
+                        label_width=26, fmt="{:.2f}"):
+        """ラベル + 数値入力欄（_make_num_field）+ ヒントの1行を追加する。
+
+        Returns: 入力値の tk.StringVar。
+        """
+        f = ttk.Frame(frame)
+        f.pack(fill=tk.X, pady=2)
+        tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("", 8), width=label_width, anchor="w").pack(side=tk.LEFT)
+        var = tk.StringVar(value=str(default))
+        self._make_num_field(f, var, width=8, fmt=fmt).pack(side=tk.LEFT)
+        if hint:
+            tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 7)).pack(side=tk.LEFT, padx=4)
+        return var
+
     def _apply_stl_pose(self):
         try:
             vals = [float(v.get()) for v in self._stl_pose_vars]
@@ -1573,12 +1598,6 @@ class MainWindow:
             except Exception as e:
                 messagebox.showerror("読込エラー", f"CSV 読込に失敗しました:\n{e}")
 
-    def _apply_overlay(self, kind: str):
-        if kind == "stl":
-            self._apply_stl_pose()
-        else:
-            self._apply_csv_pose()
-
     # ──────────────────────────────────────────────────────────────────
     # RoboDK風 ツリーパネル
     # ──────────────────────────────────────────────────────────────────
@@ -1652,16 +1671,13 @@ class MainWindow:
                                text=f"🎯 Targets  ({n}点)"
                                     + ("  — 大規模ルート" if big_route else ""),
                                open=True)
+        shown = self.route.waypoints[:5] if big_route else self.route.waypoints
+        for i, wp in enumerate(shown):
+            lbl = wp.label or f"P[{i+1}]"
+            tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
         if big_route:
-            for i, wp in enumerate(self.route.waypoints[:5]):
-                lbl = wp.label or f"P[{i+1}]"
-                tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
             tree.insert(targets, "end", iid="targets_more",
                          text=f"… 他{n - 5}点（大規模ルートのため省略）")
-        else:
-            for i, wp in enumerate(self.route.waypoints):
-                lbl = wp.label or f"P[{i+1}]"
-                tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
 
         # Programs (読み込み済み LS)
         progs = tree.insert(robot, "end", iid="programs",
@@ -1934,8 +1950,7 @@ class MainWindow:
         if route.utool:
             self.route.utool  = route.utool
         self.route_editor.set_route(self.route)
-        self.viewport.set_route(self.route)
-        self.viewport.refresh()
+        self.viewport.set_route(self.route)   # set_route が再描画する
         self._tree_refresh()
         self._invalidate_sim_solutions()
         self._set_status(
@@ -1950,23 +1965,20 @@ class MainWindow:
     # UF9 STONE 自動設定
     # ──────────────────────────────────────────────────────────────────
 
-    def _setup_stone_uframe(self):
-        """STL bbox の Z 最大値を grinder_top_z として UF9 STONE を自動設定する。"""
-        bb = self.viewport.stl_bbox()
-        if bb and self.viewport._stl_verts is not None:
+    def _stl_top_z(self, fallback: float) -> float:
+        """ワールド変換後の STL 上面 Z [mm] を返す（STL 未読込時は fallback）。"""
+        if self.viewport.stl_bbox() and self.viewport._stl_verts is not None:
             R = self.viewport._stl_T[:3, :3]
             t = self.viewport._stl_T[:3, 3]
             all_v = self.viewport._stl_verts.reshape(-1, 3)
             tv = ((R @ all_v.T).T + t)
-            grinder_top_z = float(tv[:, 2].max())
-        else:
-            grinder_top_z = 340.0
+            return float(tv[:, 2].max())
+        return fallback
 
-        uf9 = UserFrame(number=9, name="STONE",
-                        x=600.0, y=25.0, z=grinder_top_z,
-                        rx=0.0,  ry=0.0,  rz=90.0,
-                        comment="Grinder top surface")
-        self._sync_uf9(uf9)
+    def _setup_stone_uframe(self):
+        """STL bbox の Z 最大値を grinder_top_z として UF9 STONE を自動設定する。"""
+        grinder_top_z = self._stl_top_z(UserFrame.stone9().z)
+        self._sync_uf9(self._uf9_frame(z=grinder_top_z))
 
         # UF9 をアクティブ UFrame に切り替え
         idx9 = next(i for i, uf in enumerate(self.USER_FRAMES) if uf.number == 9)
@@ -2006,20 +2018,11 @@ class MainWindow:
         frame.pack(fill=tk.BOTH, expand=True, padx=16)
 
         def section(text):
-            tk.Label(frame, text=text, bg=BG_PANEL, fg=ACCENT2,
-                     font=("Yu Gothic UI", 8, "bold")).pack(anchor="w", pady=(8, 2))
+            self._dialog_section(frame, text)
 
         def row(label, default, hint=""):
-            f = ttk.Frame(frame)
-            f.pack(fill=tk.X, pady=2)
-            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
-                     font=("", 8), width=22, anchor="w").pack(side=tk.LEFT)
-            var = tk.StringVar(value=str(default))
-            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
-            if hint:
-                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
-                         font=("", 7)).pack(side=tk.LEFT, padx=4)
-            return var
+            return self._dialog_num_row(frame, label, default, hint,
+                                        label_width=22)
 
         section("▸ 位置オフセット (mm) — 全点に加算")
         v_dx = row("ΔX:", "0", "前後方向シフト")
@@ -2168,17 +2171,12 @@ class MainWindow:
     def _update_fk_display(self):
         T  = self.kin.forward(self._joint_angles)
         x, y, z, rx, ry, rz = self.kin.transform_to_pose(T)
-        text = (
-            f"  位置 X: {x:8.1f} mm    姿勢 Rx: {rx:7.1f} °\n"
-            f"  位置 Y: {y:8.1f} mm    姿勢 Ry: {ry:7.1f} °\n"
-            f"  位置 Z: {z:8.1f} mm    姿勢 Rz: {rz:7.1f} °"
-        )
-        self._fk_display_var.set(
-            f"Pos: ({x:7.1f}, {y:7.1f}, {z:7.1f}) mm   "
-            f"RPY: ({rx:6.1f}, {ry:6.1f}, {rz:6.1f}) °"
-        )
         if hasattr(self, "_fk_detail_var"):
-            self._fk_detail_var.set(text)
+            self._fk_detail_var.set(
+                f"  位置 X: {x:8.1f} mm    姿勢 Rx: {rx:7.1f} °\n"
+                f"  位置 Y: {y:8.1f} mm    姿勢 Ry: {ry:7.1f} °\n"
+                f"  位置 Z: {z:8.1f} mm    姿勢 Rz: {rz:7.1f} °"
+            )
 
     # ──────────────────────────────────────────────────────────────────
     # Route events
@@ -2215,8 +2213,7 @@ class MainWindow:
             self.route.name      = loaded.name
             self.route.comment   = loaded.comment
             self.route_editor.set_route(self.route)
-            self.viewport.set_route(self.route)
-            self.viewport.refresh()
+            self.viewport.set_route(self.route)   # set_route が再描画する
             self._invalidate_sim_solutions()
             self._set_status(f"✔  読込完了: {len(self.route)} 点 ← {os.path.basename(path)}")
         except Exception as e:
@@ -2256,8 +2253,9 @@ class MainWindow:
                 "「いいえ」: UFRAME_NUM/UTOOL_NUM の設定のみ出力",
                 icon="question")
             if ans:
-                # UF9: X=600,Y=25,Z=340,W=0,P=0,R=90
-                uframe_pos = (600.0, 25.0, 340.0, 0.0, 0.0, 90.0)
+                # UF9: 既定値（UserFrame.stone9 = X=600,Y=25,Z=340,W=0,P=0,R=90）
+                s9 = UserFrame.stone9()
+                uframe_pos = (s9.x, s9.y, s9.z, s9.rx, s9.ry, s9.rz)
                 # UT9: X=0,Y=0,Z=150,W=-90,P=0,R=90
                 utool_pos  = (0.0, 0.0, 150.0, -90.0, 0.0, 90.0)
 
@@ -2629,10 +2627,6 @@ class MainWindow:
         self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
         self._set_status(f"✔  シミュレーション完了（推定再生時間 {elapsed:.1f}s）")
 
-    # ── 後方互換: 旧 _simulation_done を呼ぶコードがあれば動くように ──
-    def _simulation_done(self):
-        self._playback_done()
-
     # ──────────────────────────────────────────────────────────────────
     # IK
     # ──────────────────────────────────────────────────────────────────
@@ -2805,8 +2799,7 @@ class MainWindow:
             if loaded.utool:
                 self.route.utool = loaded.utool
             self.route_editor.set_route(self.route)
-            self.viewport.set_route(self.route)
-            self.viewport.refresh()
+            self.viewport.set_route(self.route)   # set_route が再描画する
             self._invalidate_sim_solutions()
             self._set_status(
                 f"✔  研磨経路読込完了: {len(self.route)} 点 "
@@ -2823,8 +2816,7 @@ class MainWindow:
         self.route.uframe    = self._active_uframe.number
         self.route.utool     = self._active_tool.number
         self.route_editor.set_route(self.route)
-        self.viewport.set_route(self.route)
-        self.viewport.refresh()
+        self.viewport.set_route(self.route)   # set_route が再描画する
         self._invalidate_sim_solutions()
         self._set_status(f"✔  サンプルルート読込完了 — {len(self.route)} 点")
 
@@ -2850,22 +2842,10 @@ class MainWindow:
         if ok:
             self._apply_stl_default_pose()
             # Auto-add UF9 stone top reference frame using actual STL bbox
-            bb = self.viewport.stl_bbox()
-            if bb and self.viewport._stl_verts is not None:
-                R = self.viewport._stl_T[:3, :3]
-                t = self.viewport._stl_T[:3, 3]
-                all_v = self.viewport._stl_verts.reshape(-1, 3)
-                tv = ((R @ all_v.T).T + t)
-                stone_top_z = float(tv[:, 2].max())
-            else:
-                stone_top_z = 266.0
+            stone_top_z = self._stl_top_z(self._STL_DEFAULT_POSE[2])
             # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
             # 参照フレーム / 調整パネルを一括更新）
-            uf9 = UserFrame(number=9, name="STONE",
-                            x=600.0, y=25.0, z=stone_top_z,
-                            rx=0.0, ry=0.0, rz=90.0,
-                            comment="Grinder top surface")
-            self._sync_uf9(uf9)
+            self._sync_uf9(self._uf9_frame(z=stone_top_z))
             self._set_status(
                 f"✔  Tormek T8 STL 読込済（X=740, Y=240, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
         else:
@@ -2904,20 +2884,10 @@ class MainWindow:
         frame.pack(fill=tk.BOTH, expand=True, padx=16)
 
         def section(text):
-            tk.Label(frame, text=text, bg=BG_PANEL, fg=ACCENT2,
-                     font=("Yu Gothic UI", 8, "bold")).pack(anchor="w", pady=(8, 2))
+            self._dialog_section(frame, text)
 
-        def row(label, default, hint=""):
-            f = ttk.Frame(frame)
-            f.pack(fill=tk.X, pady=2)
-            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
-                     font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
-            var = tk.StringVar(value=str(default))
-            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
-            if hint:
-                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
-                         font=("", 7)).pack(side=tk.LEFT, padx=4)
-            return var
+        def row(label, default, hint="", fmt="{:.2f}"):
+            return self._dialog_num_row(frame, label, default, hint, fmt=fmt)
 
         section("▸ 砥石の位置（ロボット基準座標）")
         v_sx = row("砥石 X mm（前方距離）:", 400, "ロボット正面方向")
@@ -2931,7 +2901,7 @@ class MainWindow:
         section("▸ 刃付けパラメータ")
         v_ang  = row("刃の角度 °（砥石面に対する傾き）:", 15, "一般的: 10〜20°")
         v_blen = row("研磨する刃の長さ mm:",              180)
-        v_strk = row("往復ストローク回数:",                5)
+        v_strk = row("往復ストローク回数:",                5, fmt="{:.0f}")
         v_spd  = row("ストローク速度 mm/s:",              30, "推奨: 20〜50")
 
         def on_generate():
@@ -2954,8 +2924,7 @@ class MainWindow:
                 self.route.uframe    = p.uframe
                 self.route.utool     = p.utool
                 self.route_editor.set_route(self.route)
-                self.viewport.set_route(self.route)
-                self.viewport.refresh()
+                self.viewport.set_route(self.route)   # set_route が再描画する
                 self._invalidate_sim_solutions()
                 self._set_status(
                     f"✔  ルート自動生成完了 — {len(self.route)} 点  "
@@ -3004,17 +2973,8 @@ class MainWindow:
         frame = ttk.Frame(win)
         frame.pack(fill=tk.BOTH, expand=True, padx=16)
 
-        def row(label, default, hint=""):
-            f = ttk.Frame(frame)
-            f.pack(fill=tk.X, pady=2)
-            tk.Label(f, text=label, bg=BG_PANEL, fg=FG_PRIMARY,
-                     font=("", 8), width=26, anchor="w").pack(side=tk.LEFT)
-            var = tk.StringVar(value=str(default))
-            ttk.Entry(f, textvariable=var, width=8).pack(side=tk.LEFT)
-            if hint:
-                tk.Label(f, text=hint, bg=BG_PANEL, fg=FG_SUB,
-                         font=("", 7)).pack(side=tk.LEFT, padx=4)
-            return var
+        def row(label, default, hint="", fmt="{:.2f}"):
+            return self._dialog_num_row(frame, label, default, hint, fmt=fmt)
 
         names = [f["name"] for f in frames]
         fr = ttk.Frame(frame)
@@ -3027,7 +2987,8 @@ class MainWindow:
                      state="readonly", width=16).pack(side=tk.LEFT)
 
         v_ang  = row("刃付け角度 °:",        15.0, "一般的: 10〜20°")
-        v_step = row("間引きステップ:",       5,    "N点ごとに1点を使用")
+        v_step = row("間引きステップ:",       5,    "N点ごとに1点を使用",
+                     fmt="{:.0f}")
         v_spd  = row("送り速度 mm/s:",       30.0)
         v_app  = row("アプローチ距離 mm:",    30.0)
 
@@ -3056,8 +3017,7 @@ class MainWindow:
                     return
                 self.route.waypoints.extend(wps)
                 self.route_editor.set_route(self.route)
-                self.viewport.set_route(self.route)
-                self.viewport.refresh()
+                self.viewport.set_route(self.route)   # set_route が再描画する
                 self._invalidate_sim_solutions()
                 self._set_status(
                     f"✔  曲線追従ルートを生成: {len(wps)}点 "
@@ -3112,8 +3072,7 @@ class MainWindow:
                     break
         if T_contact is None:
             # 既定の UF9 STONE（_setup_stone_uframe / stone9 と同じ値）
-            T_contact = Kinematics.pose_to_transform(
-                600.0, 25.0, 340.0, 0.0, 0.0, 90.0)
+            T_contact = UserFrame.stone9().to_transform()
         return pts, nrm, T_blade, T_contact, csv_name
 
     def _generate_kenma(self):
@@ -3589,8 +3548,7 @@ class MainWindow:
         if messagebox.askyesno("確認", "経路点をすべて削除しますか？\nこの操作は元に戻せません。"):
             self.route.clear()
             self.route_editor.set_route(self.route)
-            self.viewport.set_route(self.route)
-            self.viewport.refresh()
+            self.viewport.set_route(self.route)   # set_route が再描画する
             self._invalidate_sim_solutions()
             self._set_status("✔  経路をクリアしました")
 

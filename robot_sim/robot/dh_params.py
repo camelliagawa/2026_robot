@@ -9,7 +9,7 @@ Modified DH convention (Craig notation):
   theta_i : joint angle (variable) + offset (deg)
 """
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Tuple
 
 
@@ -91,10 +91,6 @@ class DHParams:
             DHJoint(a=0,   alpha=90,  d=0,   theta_offset=0, joint_min=-135, joint_max=135,  joint_max_speed=400, name="J5"),
             DHJoint(a=0,   alpha=-90, d=80,  theta_offset=0, joint_min=-360, joint_max=360,  joint_max_speed=600, name="J6"),
         ]
-
-    @property
-    def num_joints(self) -> int:
-        return len(self.joints)
 
     def get_joint_limits(self) -> Tuple[np.ndarray, np.ndarray]:
         """Returns (lower_limits_rad, upper_limits_rad)."""

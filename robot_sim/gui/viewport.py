@@ -28,16 +28,12 @@ def _load_stl_file(path: str) -> Optional[np.ndarray]:
             expected = n_tri * 50
             raw = f.read(expected)
             if len(raw) == expected:
-                tris = []
-                offset = 0
-                for _ in range(n_tri):
-                    offset += 12  # skip normal
-                    v1 = struct.unpack_from("<3f", raw, offset); offset += 12
-                    v2 = struct.unpack_from("<3f", raw, offset); offset += 12
-                    v3 = struct.unpack_from("<3f", raw, offset); offset += 12
-                    offset += 2   # skip attribute
-                    tris.append([v1, v2, v3])
-                return np.array(tris, dtype=np.float32)
+                # 50バイト/三角形（法線12 + 頂点36 + 属性2）を一括デコード
+                rec = np.dtype([("normal", "<f4", (3,)),
+                                ("verts",  "<f4", (3, 3)),
+                                ("attr",   "<u2")])
+                tris = np.frombuffer(raw, dtype=rec, count=n_tri)["verts"]
+                return np.ascontiguousarray(tris, dtype=np.float32)
         # Fallback: ASCII STL
         verts = []
         with open(path, "r", errors="ignore") as f:
@@ -552,9 +548,9 @@ class Viewport3D:
             self.ax.text(tip[0], tip[1], tip[2], name,
                          color=color, fontsize=6, alpha=0.85)
 
-        self._draw_knife(q, T_ee)
+        self._draw_knife(T_ee)
         self._draw_blade_csv(T_ee)
-        self._draw_tcp(q, T_ee)
+        self._draw_tcp(T_ee)
 
     def _blade_axes(self, T_ee: np.ndarray):
         """刃先CSV取付フレームの原点・刃長軸・刃幅軸・刃長を返す。
@@ -575,7 +571,7 @@ class Viewport3D:
             blade_len = KNIFE_BLADE_LEN
         return origin, blade_dir, width_dir, blade_len
 
-    def _draw_knife(self, q: np.ndarray, T_ee: np.ndarray):
+    def _draw_knife(self, T_ee: np.ndarray):
         """Draw simplified knife model aligned with the blade-CSV axis.
 
         包丁は刃先CSVの取付オフセット（_blade_T）に追従し、刃渡り方向（局所Y）に
@@ -607,7 +603,7 @@ class Viewport3D:
                                 edgecolor="#666666", linewidth=0.5)
         self.ax.add_collection3d(poly)
 
-    def _draw_tcp(self, q: np.ndarray, T_ee: np.ndarray):
+    def _draw_tcp(self, T_ee: np.ndarray):
         """Draw TCP marker. 刃先CSVがあれば刃先端へ、無ければツールフレームへ。"""
         flange = T_ee[:3, 3]
         if self._blade_pts is not None and len(self._blade_pts):
@@ -847,13 +843,6 @@ class Viewport3D:
         self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
         self._redraw()
 
-    def set_overlay_pose(self, x, y, z, rx, ry, rz):
-        """Legacy: applies to whichever overlay is loaded (STL priority)."""
-        if self._stl_verts is not None:
-            self.set_stl_pose(x, y, z, rx, ry, rz)
-        else:
-            self.set_csv_pose(x, y, z, rx, ry, rz)
-
     def clear_stl(self):
         self._stl_verts = None
         self._stl_name = ""
@@ -865,10 +854,6 @@ class Viewport3D:
         self._csv_name = ""
         self._csv_T = np.eye(4)
         self._redraw()
-
-    def clear_overlay(self):
-        self.clear_stl()
-        self.clear_csv()
 
     def _draw_overlay(self):
         if self._stl_verts is not None:

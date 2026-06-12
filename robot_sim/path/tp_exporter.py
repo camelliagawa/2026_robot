@@ -438,7 +438,3 @@ class TPExporter:
             for c in name
         )
         return sanitized[:max_len] if sanitized else "KNIFE_ROUTE"
-
-    def preview(self, route: Route) -> str:
-        """Return generated TP content as string (same as generate)."""
-        return self.generate(route)
