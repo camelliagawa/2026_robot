@@ -1335,11 +1335,38 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
 
     def _build_joint_jog_panel(self, parent=None):
-        """関節角度スライダーとジョグ操作を1パネルに統合。"""
+        """関節角度スライダーとジョグ操作を1パネルに統合（折りたたみ可）。"""
         if parent is None:
             parent = self.root
-        outer = ttk.Frame(parent)
-        outer.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(4, 0))
+
+        # 折りたたみコンテナ（更新履歴と同様の構造）
+        container = ttk.Frame(parent)
+        container.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 0))
+
+        self._jog_expanded = tk.BooleanVar(value=True)
+        jog_hdr = tk.Frame(container, bg=BG_WIDGET, cursor="hand2")
+        jog_hdr.pack(fill=tk.X)
+        self._jog_toggle_lbl = tk.Label(
+            jog_hdr, text="▼  関節角度 / ジョグ操作",
+            bg=BG_WIDGET, fg=ACCENT2,
+            font=("", 9, "bold"), anchor="w", padx=6, pady=3)
+        self._jog_toggle_lbl.pack(fill=tk.X)
+
+        outer = ttk.Frame(container)
+        outer.pack(fill=tk.X)  # 初期状態: 展開
+
+        def _toggle_jog(event=None):
+            if self._jog_expanded.get():
+                outer.pack_forget()
+                self._jog_expanded.set(False)
+                self._jog_toggle_lbl.config(text="▶  関節角度 / ジョグ操作")
+            else:
+                outer.pack(fill=tk.X)
+                self._jog_expanded.set(True)
+                self._jog_toggle_lbl.config(text="▼  関節角度 / ジョグ操作")
+
+        jog_hdr.bind("<Button-1>", _toggle_jog)
+        self._jog_toggle_lbl.bind("<Button-1>", _toggle_jog)
 
         # ---- 関節スライダー + ジョグボタン（統合パネル） ----
         slider_lf = ttk.LabelFrame(outer, text="  関節角度 / ジョグ操作")
@@ -1599,7 +1626,7 @@ class MainWindow:
              "UFrame（ユーザーフレーム）:\n"
              "作業対象（砥石など）の座標系定義です。\n"
              "・UF0 WORLD: ロボット基準座標（デフォルト）\n"
-             "・UF9 STONE: 砥石座標系（X=600, Y=25, Z=340mm, Rz=90°）\n"
+             "・UF9 STONE: 砥石座標系（X=600, Y=25, Z=360mm, Rz=90°）\n"
              "  kenma 生成の砥石接触座標としても使われます。\n"
              "3Dビューの紫色の座標軸で位置を確認できます。\n"
              "ロボット メニューや UF9 STONE 位置調整パネルから編集できます。")

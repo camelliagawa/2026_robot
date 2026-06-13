@@ -305,11 +305,16 @@ class Viewport3D:
         return self._BOX_ZOOM * max(fig_w, 1.0) / (2.0 * lim)
 
     def _center_disp(self):
-        """注視点 (pan_cx, pan_cy, pan_cz) の画面ピクセル座標。"""
-        from mpl_toolkits.mplot3d import proj3d
-        xs, ys, _ = proj3d.proj_transform(
-            self._pan_cx, self._pan_cy, self._pan_cz, self.ax.get_proj())
-        return self.ax.transData.transform((xs, ys))
+        """3D ビューの画面中心ピクセル座標（axes bbox の中心を使用）。
+
+        matplotlib 3D の proj3d + transData 経由の逆投影は環境依存で失敗
+        することがあるため、axes の position bbox から直接計算する。
+        pan_cx/cy/cz の注視点は常に画面中央に描画されるため、这の近似は正確。
+        """
+        bbox = self.ax.get_position()
+        fw = self.fig.get_figwidth() * self.fig.dpi
+        fh = self.fig.get_figheight() * self.fig.dpi
+        return (bbox.x0 + bbox.x1) * 0.5 * fw, (bbox.y0 + bbox.y1) * 0.5 * fh
 
     def _world_under_cursor(self, px, py):
         """カーソル位置を、注視点を通る画面平行面上のワールド点に逆投影する。"""
