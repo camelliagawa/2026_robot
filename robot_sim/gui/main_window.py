@@ -3368,6 +3368,24 @@ class MainWindow:
             if ext == ".gif":
                 self._save_as_gif(path, fps)
             else:
+                # imageio の有無を先に確認し、なければ GIF フォールバックを提案
+                try:
+                    import imageio as _imageio_check  # noqa: F401
+                except ImportError:
+                    gif_path = os.path.splitext(path)[0] + ".gif"
+                    if messagebox.askyesno(
+                        "imageio が見つかりません",
+                        "MP4 保存には imageio[ffmpeg] が必要です。\n"
+                        "インストールするには:\n"
+                        "  pip install imageio[ffmpeg]\n\n"
+                        f"代わりに GIF として保存しますか？\n{gif_path}",
+                    ):
+                        path = gif_path
+                        self._save_as_gif(path, fps)
+                        self._set_status(f"✔  GIF を保存しました: {path}")
+                    else:
+                        self._set_status("動画の保存をキャンセルしました")
+                    return
                 self._save_as_mp4(path, fps)
             self._set_status(f"✔  動画を保存しました: {path}")
         except Exception as e:
