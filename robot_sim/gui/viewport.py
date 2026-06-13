@@ -161,6 +161,11 @@ def _disk(ax, center, normal, radius: float, color: str,
 class Viewport3D:
     """Embedded 3D matplotlib viewport inside a tkinter frame."""
 
+    # 立方体データボックスを subplot 矩形より一回り小さく描画する係数。
+    # 1.0 だと回転・パン時にボックス隅が矩形外へはみ出して STL 等が
+    # 見切れる。< 1.0 で余白を確保し端の見切れを防ぐ。
+    _BOX_ZOOM = 0.78
+
     def __init__(self, parent: tk.Widget, kinematics: "Kinematics"):
         self.kin = kinematics
         self._route: Optional["Route"]      = None
@@ -294,7 +299,9 @@ class Viewport3D:
         """ワールド1mmあたりの画面ピクセル数（おおよそ）。"""
         lim = 700.0 * self._zoom_scale
         fig_w = self.fig.get_figwidth() * self.fig.dpi
-        return max(fig_w, 1.0) / (2.0 * lim)
+        # set_box_aspect(zoom=_BOX_ZOOM) で内容が縮小される分を反映する
+        # （カーソル追従ズームのスケール整合のため）。
+        return self._BOX_ZOOM * max(fig_w, 1.0) / (2.0 * lim)
 
     def _center_disp(self):
         """注視点 (pan_cx, pan_cy, pan_cz) の画面ピクセル座標。"""
@@ -403,7 +410,14 @@ class Viewport3D:
         ax.set_ylim(self._pan_cy - lim, self._pan_cy + lim)
         ax.set_zlim(self._pan_cz - zhalf, self._pan_cz + zhalf)
         try:
-            ax.set_box_aspect((1, 1, 1))
+            # zoom<1 で 3D 内容を subplot 矩形内へ収め、端の見切れを防ぐ。
+            ax.set_box_aspect((1, 1, 1), zoom=self._BOX_ZOOM)
+        except TypeError:
+            # 旧 matplotlib（zoom 非対応）フォールバック
+            try:
+                ax.set_box_aspect((1, 1, 1))
+            except Exception:
+                pass
         except Exception:
             pass
 
