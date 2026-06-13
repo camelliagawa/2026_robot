@@ -2,10 +2,15 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.17.3"
+APP_VERSION = "0.17.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.17.4", "2026-06-13", "21:00 JST", [
+        "参照フレーム（UF9 STONE 等）とアクティブ UFrame の XYZ 軸トライアドを"
+        "常に手前に表示: 高 zorder を設定し、砥石 STL やロボットメッシュの裏に"
+        "隠れても軸・原点マーカー・ラベルが常に見えるようにした",
+    ]),
     ("0.17.3", "2026-06-13", "20:30 JST", [
         "3Dビューポート左下に「向きインジケータ（XYZ軸ギズモ）」を常時表示: "
         "X=赤 / Y=緑 / Z=青 の小さな三軸が画面隅に固定表示され、ビューを"

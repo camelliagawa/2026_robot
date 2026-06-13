@@ -817,34 +817,42 @@ class Viewport3D:
 
     def _draw_frame_triad(self, T: np.ndarray, scale: float,
                           axis_colors, axis_labels=None,
-                          lw: float = 2.0, alpha: float = 0.85):
-        """座標フレームの XYZ 軸トライアドを描画する共通ヘルパー。"""
+                          lw: float = 2.0, alpha: float = 0.85,
+                          zorder: Optional[float] = None):
+        """座標フレームの XYZ 軸トライアドを描画する共通ヘルパー。
+
+        zorder を指定すると（高い値で）STL 等のメッシュに隠れず常に手前に描画する。
+        """
         origin = T[:3, 3]
         R      = T[:3, :3]
         for col in range(3):
             tip = origin + scale * R[:, col]
             self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
                          [origin[2], tip[2]],
-                         color=axis_colors[col], lw=lw, alpha=alpha)
+                         color=axis_colors[col], lw=lw, alpha=alpha,
+                         zorder=zorder)
             if axis_labels:
                 self.ax.text(tip[0], tip[1], tip[2],
-                             axis_labels[col], color=axis_colors[col], fontsize=7)
+                             axis_labels[col], color=axis_colors[col],
+                             fontsize=7, zorder=zorder)
         return origin
 
     def _draw_user_frame(self):
         """Draw user frame coordinate axes."""
         if self._user_frame is None:
             return
+        ZTOP = 1000  # STL 等のメッシュに隠れず常に手前へ
         origin = self._draw_frame_triad(
             self._user_frame.to_transform(), 120,
-            ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])
+            ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"], zorder=ZTOP)
 
         self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
-                        c=UFRAME_COLOR, s=60, zorder=7,
+                        c=UFRAME_COLOR, s=60, zorder=ZTOP,
                         depthshade=False, marker="D")
         name = getattr(self._user_frame, "name", "UF")
         self.ax.text(origin[0] + 15, origin[1] + 15, origin[2] + 15,
-                     f"[{name}]", color=UFRAME_COLOR, fontsize=7, alpha=0.85)
+                     f"[{name}]", color=UFRAME_COLOR, fontsize=7,
+                     alpha=0.85, zorder=ZTOP)
 
     def _draw_jog_target(self):
         """Draw jog target crosshair."""
@@ -1261,15 +1269,19 @@ class Viewport3D:
 
     def _draw_ref_frames(self):
         """Draw all named reference frames as XYZ axis triads with labels."""
+        # 参照フレーム（UF9 STONE 等）は STL・砥石メッシュに隠れず常に手前に表示。
+        ZTOP = 1000
         for rf in self._ref_frames:
             base_color = rf.get("color", "#FF88FF")
             origin = self._draw_frame_triad(
                 rf["T"], 80, ["#FF4444", "#44FF44", "#4444FF"],
-                axis_labels=["X", "Y", "Z"], lw=2.5, alpha=0.9)
+                axis_labels=["X", "Y", "Z"], lw=2.5, alpha=0.9, zorder=ZTOP)
             self.ax.scatter([origin[0]], [origin[1]], [origin[2]],
-                            c=base_color, s=80, zorder=8, depthshade=False, marker="D")
+                            c=base_color, s=80, zorder=ZTOP,
+                            depthshade=False, marker="D")
             self.ax.text(origin[0]+12, origin[1]+12, origin[2]+12,
-                         rf["name"], color=base_color, fontsize=7, fontweight="bold")
+                         rf["name"], color=base_color, fontsize=7,
+                         fontweight="bold", zorder=ZTOP)
 
     # ── Cleanup ────────────────────────────────────────────────────────
 
