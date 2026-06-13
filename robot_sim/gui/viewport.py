@@ -885,32 +885,34 @@ class Viewport3D:
 
         positions = self._route.positions_array()
         n = len(positions)
+        ZTOP = 1000
         self.ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
-                     color=ROUTE_COLOR, lw=1.5, alpha=0.7, zorder=3)
+                     color=ROUTE_COLOR, lw=1.5, alpha=0.7, zorder=ZTOP)
 
         if n > self.ROUTE_BIG_N:
             # 軽量モード: 始点(緑)・終点(赤)と選択中の1点のみマーカー表示
             p0, p1 = positions[0], positions[-1]
             self.ax.scatter([p0[0]], [p0[1]], [p0[2]],
-                            c=WP_ACTIVE, s=60, zorder=7,
+                            c=WP_ACTIVE, s=60, zorder=ZTOP,
                             depthshade=False, marker="o")
             self.ax.scatter([p1[0]], [p1[1]], [p1[2]],
-                            c=WP_COLOR, s=60, zorder=7,
+                            c=WP_COLOR, s=60, zorder=ZTOP,
                             depthshade=False, marker="s")
             self.ax.text(p0[0] + 10, p0[1] + 10, p0[2] + 10,
                          f"START ({n}点)", color=WP_ACTIVE,
-                         fontsize=6, alpha=0.85)
+                         fontsize=6, alpha=0.85, zorder=ZTOP)
             self.ax.text(p1[0] + 10, p1[1] + 10, p1[2] + 10,
-                         "END", color=WP_COLOR, fontsize=6, alpha=0.85)
+                         "END", color=WP_COLOR, fontsize=6, alpha=0.85, zorder=ZTOP)
             sel = self._selected_wp_idx
             if sel is not None and 0 <= sel < n:
                 wp = self._route.waypoints[sel]
                 self.ax.scatter([wp.x], [wp.y], [wp.z],
-                                c=WP_ACTIVE, s=100, zorder=8,
+                                c=WP_ACTIVE, s=100, zorder=ZTOP,
                                 depthshade=False, marker="*")
                 label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
                 self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                             label_text, color="white", fontsize=6, alpha=0.9)
+                             label_text, color="white", fontsize=6, alpha=0.9,
+                             zorder=ZTOP)
             return
 
         for i, wp in enumerate(self._route.waypoints):
@@ -919,12 +921,12 @@ class Viewport3D:
             size     = 100 if selected else 45
             marker   = "*" if selected else "o"
             self.ax.scatter([wp.x], [wp.y], [wp.z],
-                            c=color, s=size, zorder=7,
+                            c=color, s=size, zorder=ZTOP,
                             depthshade=False, marker=marker)
             label_text = f"{i+1}:{wp.label}" if wp.label else f"P[{i+1}]"
             fg = "white" if selected else "#AAAAAA"
             self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                         label_text, color=fg, fontsize=6, alpha=0.85)
+                         label_text, color=fg, fontsize=6, alpha=0.85, zorder=ZTOP)
 
     # ── Overlay ────────────────────────────────────────────────────────
 
