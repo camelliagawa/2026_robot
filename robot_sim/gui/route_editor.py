@@ -110,6 +110,7 @@ class RouteEditor(ttk.Frame):
         route: Route,
         on_change: Optional[Callable] = None,
         on_select: Optional[Callable[[int], None]] = None,
+        on_before_change: Optional[Callable[[str], None]] = None,
         listbox_height: int = 20,
         **kwargs,
     ):
@@ -119,11 +120,14 @@ class RouteEditor(ttk.Frame):
             route     : The Route being edited (mutable).
             on_change : Called after any route modification.
             on_select : Called with waypoint index when selection changes.
+            on_before_change : Called with an action label BEFORE any route
+                               modification (Undo snapshot hook).
         """
         super().__init__(parent, **kwargs)
         self.route = route
         self.on_change = on_change
         self.on_select = on_select
+        self.on_before_change = on_before_change
         self._listbox_height = listbox_height
 
         self._build_ui()
@@ -274,6 +278,7 @@ class RouteEditor(ttk.Frame):
             )
         dlg = WaypointDialog(self.winfo_toplevel(), template, title="Add Waypoint")
         if dlg.result is not None:
+            self._before_change("経路点追加")
             self.route.add_waypoint(dlg.result)
             self._notify_change()
 
@@ -288,6 +293,7 @@ class RouteEditor(ttk.Frame):
         if dlg.result is not None:
             # Preserve original ID
             dlg.result.id = wp.id
+            self._before_change("経路点編集")
             self.route.waypoints[idx] = dlg.result
             self._notify_change()
 
@@ -300,12 +306,14 @@ class RouteEditor(ttk.Frame):
         wp = self.route.waypoints[idx]
         label = wp.label or f"P[{idx+1}]"
         if messagebox.askyesno("Confirm", f"Delete waypoint '{label}'?"):
+            self._before_change("経路点削除")
             self.route.remove_waypoint(idx)
             self._notify_change()
 
     def _move_up(self):
         idx = self._get_selection()
         if idx is not None and idx > 0:
+            self._before_change("経路点並べ替え")
             self.route.move_waypoint(idx, idx - 1)
             self._listbox.selection_clear(0, tk.END)
             self._listbox.selection_set(idx - 1)
@@ -314,6 +322,7 @@ class RouteEditor(ttk.Frame):
     def _move_down(self):
         idx = self._get_selection()
         if idx is not None and idx < len(self.route.waypoints) - 1:
+            self._before_change("経路点並べ替え")
             self.route.move_waypoint(idx, idx + 1)
             self._listbox.selection_clear(0, tk.END)
             self._listbox.selection_set(idx + 1)
@@ -322,6 +331,7 @@ class RouteEditor(ttk.Frame):
     def _clear_route(self):
         if self.route.waypoints:
             if messagebox.askyesno("Confirm", "Clear all waypoints?"):
+                self._before_change("経路点クリア")
                 self.route.clear()
                 self._notify_change()
 
@@ -330,6 +340,7 @@ class RouteEditor(ttk.Frame):
         if self.route.waypoints:
             if not messagebox.askyesno("Confirm", "Replace current route with sample?"):
                 return
+        self._before_change("サンプルルート読込")
         sample = Route.default_sharpening_route()
         self.route.waypoints = sample.waypoints
         self.route.name = sample.name
@@ -339,6 +350,11 @@ class RouteEditor(ttk.Frame):
     # ------------------------------------------------------------------
     # Notification
     # ------------------------------------------------------------------
+
+    def _before_change(self, label: str):
+        """Undo スナップショット用フック（変更直前に呼ぶ）。"""
+        if self.on_before_change:
+            self.on_before_change(label)
 
     def _notify_change(self):
         """Refresh list and call on_change callback."""
