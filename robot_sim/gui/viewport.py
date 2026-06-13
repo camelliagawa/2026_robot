@@ -323,6 +323,78 @@ class Viewport3D:
         c = np.array([self._pan_cx, self._pan_cy, self._pan_cz], float)
         return c + (px - cpx) * s * right + (py - cpy) * s * up
 
+    def _scene_bounds(self):
+        """表示中の全ジオメトリ（ロボット・STL・CSV・刃先・経路・参照
+        フレーム・マーカー）を包む軸平行境界 (lo, hi) を返す。
+
+        作業領域（リーチ円）など装飾は含めない。何も無ければ None。
+        """
+        chunks: List[np.ndarray] = []
+
+        # ロボット関節位置（ベース〜フランジ）
+        try:
+            chunks.append(self.kin.get_joint_positions(self._joint_angles))
+        except Exception:
+            pass
+        T_ee = None
+        try:
+            T_ee = self.kin.forward(self._joint_angles)
+        except Exception:
+            pass
+
+        # STL
+        if self._stl_verts is not None and len(self._stl_verts):
+            R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
+            chunks.append((R @ self._stl_verts.reshape(-1, 3).T).T + t)
+        # CSV 点群
+        if self._csv_points is not None and len(self._csv_points):
+            R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
+            chunks.append((R @ self._csv_points.T).T + t)
+        # 刃先CSV（フランジ追従）
+        if (self._blade_pts is not None and len(self._blade_pts)
+                and T_ee is not None):
+            T = T_ee @ self._blade_T
+            R, t = T[:3, :3], T[:3, 3]
+            chunks.append((R @ self._blade_pts.T).T + t)
+        # 経路点
+        if self._route is not None and len(self._route):
+            chunks.append(self._route.positions_array())
+        # 参照フレーム原点
+        if self._ref_frames:
+            chunks.append(np.array([rf["T"][:3, 3] for rf in self._ref_frames]))
+        # マーカー
+        mks = [m["pos"] for m in self._tcp_markers] \
+            + [m["pos"] for m in self._target_markers]
+        if mks:
+            chunks.append(np.asarray(mks, dtype=float))
+
+        chunks = [c for c in chunks if c is not None and len(c)]
+        if not chunks:
+            return None
+        allpts = np.vstack(chunks)
+        return allpts.min(axis=0), allpts.max(axis=0)
+
+    def fit_view(self):
+        """全ジオメトリが収まるよう注視点とズームを自動調整する（RoboDK の
+        「Fit」相当）。何も無ければ既定ビューへ戻す。"""
+        bounds = self._scene_bounds()
+        if bounds is None:
+            self._pan_cx, self._pan_cy, self._pan_cz = 0.0, 0.0, 300.0
+            self._zoom_scale = 1.0
+            self._redraw()
+            return
+        lo, hi = bounds
+        center = (lo + hi) / 2.0
+        half_extent = float(np.max(hi - lo)) / 2.0
+        if half_extent < 1.0:
+            half_extent = 200.0  # 単一点等の縮退時の既定
+        self._pan_cx = float(np.clip(center[0], -3000, 3000))
+        self._pan_cy = float(np.clip(center[1], -3000, 3000))
+        self._pan_cz = float(np.clip(center[2], -2000, 4000))
+        # lim = 700 * zoom_scale が half_extent を覆うよう設定（余白 1.15 倍）。
+        self._zoom_scale = float(np.clip(half_extent * 1.15 / 700.0, 0.05, 5.0))
+        self._redraw()
+
     def _on_scroll(self, event):
         old = self._zoom_scale
         factor = 0.85 if event.button == "up" else 1.18
