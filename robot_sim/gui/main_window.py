@@ -3346,12 +3346,10 @@ class MainWindow:
                 names.append(f"R{n_right:02d}")
                 sides.append("R")
 
-        # ブレードローカル → ワールド変換（刃先CSVオーバーレイと同じ math:
-        # T = T_ee @ T_blade — 包丁の現在姿勢に追従）
-        T_ee = self.kin.forward(self._joint_angles)
-        T = T_ee @ T_blade
-        Rw, tw = T[:3, :3], T[:3, 3]
-        world_curves = [(Rw @ g.pts.T).T + tw for g in groups]
+        # 曲線は刃先CSVローカル座標のまま渡す。ビューポートが描画のたびに
+        # 現在のフランジ姿勢 (T_ee @ _blade_T) でワールドへ変換するため、
+        # ジョグ・シミュレーション再生中も包丁（刃先オーバーレイ）に追従する。
+        local_curves = [g.pts for g in groups]
 
         # 前回のダイアログ状態（選択順・逆方向・オフセット式）を復元する。
         # 曲線名で照合するため、同じ刃先CSVなら選択がそのまま戻る。
@@ -3735,7 +3733,7 @@ class MainWindow:
         win.protocol("WM_DELETE_WINDOW", _close)
 
         # ビューポートへ曲線を登録（クリックで _on_pick が呼ばれる）
-        self.viewport.set_pick_curves(world_curves, _on_pick)
+        self.viewport.set_pick_curves(local_curves, _on_pick, blade_local=True)
         _refresh()
         self._set_status(
             f"曲線選択モード: {len(groups)} 曲線（左{n_left}/右{n_right}）を表示中 — "

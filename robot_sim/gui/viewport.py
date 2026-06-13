@@ -199,8 +199,9 @@ class Viewport3D:
         self._blade_path: str = ""
         self._blade_T: np.ndarray = np.eye(4)             # local offset from flange
 
-        # 選択可能曲線（RoboDK風 曲線選択ダイアログ用・ワールド座標）
-        self._pick_curves: List[np.ndarray] = []      # [(M,3) world pts]
+        # 選択可能曲線（RoboDK風 曲線選択ダイアログ用）
+        self._pick_curves: List[np.ndarray] = []      # [(M,3) pts]
+        self._pick_curves_local = False               # True=刃先ローカル(包丁追従)
         self._pick_orders: List[Optional[int]] = []   # 選択順 (1始まり) / None=未選択
         self._pick_callback = None                    # callback(curve_idx)
         self._pick_artist_map: dict = {}              # id(artist) -> curve_idx
@@ -1053,14 +1054,20 @@ class Viewport3D:
 
     # ── 選択可能曲線（RoboDK風 曲線選択） ──────────────────────────────
 
-    def set_pick_curves(self, curves: List[np.ndarray], callback):
-        """クリック選択可能な曲線（ワールド座標のポリライン群）を設定する。
+    def set_pick_curves(self, curves: List[np.ndarray], callback,
+                        *, blade_local: bool = False):
+        """クリック選択可能な曲線（ポリライン群）を設定する。
 
         Args:
-            curves   : [(M,3) ndarray] ワールド座標の曲線点列リスト
+            curves   : [(M,3) ndarray] 曲線点列リスト
             callback : callback(curve_idx) — クリック（ドラッグなし）で呼ばれる
+            blade_local : True の場合、curves を刃先CSVローカル座標として扱い、
+                          描画のたびに現在のフランジ姿勢 (T_ee @ _blade_T) で
+                          ワールドへ変換する（包丁＝刃先オーバーレイに追従）。
+                          False（既定）は従来どおりワールド座標に固定。
         """
         self._pick_curves = [np.asarray(c, dtype=float) for c in curves]
+        self._pick_curves_local = blade_local
         self._pick_orders = [None] * len(self._pick_curves)
         self._pick_callback = callback
         self._redraw()
@@ -1075,6 +1082,7 @@ class Viewport3D:
         if not self._pick_curves and self._pick_callback is None:
             return
         self._pick_curves = []
+        self._pick_curves_local = False
         self._pick_orders = []
         self._pick_callback = None
         self._pick_artist_map = {}
@@ -1095,7 +1103,14 @@ class Viewport3D:
         self._pick_artist_map = {}
         if not self._pick_curves:
             return
-        for i, pts in enumerate(self._pick_curves):
+        # 刃先ローカル指定なら現在のフランジ姿勢でワールドへ変換（包丁追従）。
+        if self._pick_curves_local:
+            T = self.kin.forward(self._joint_angles) @ self._blade_T
+            Rw, tw = T[:3, :3], T[:3, 3]
+            curves = [(Rw @ c.T).T + tw for c in self._pick_curves]
+        else:
+            curves = self._pick_curves
+        for i, pts in enumerate(curves):
             order = (self._pick_orders[i]
                      if i < len(self._pick_orders) else None)
             if order is not None:
