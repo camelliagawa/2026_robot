@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.17.1"
+APP_VERSION = "0.17.2"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.17.2", "2026-06-13", "20:00 JST", [
+        "砥石STL（Tormek T8）を起動時・CSV読込時に自動で床（Z=0）に配置: "
+        "底面が Z=0 になるよう STL ポーズ Z を自動調整し、UF9 STONE Z を "
+        "砥石上面（bbox 最大Z）に設定する（従来は Z=266 固定で上面が 331.5mm だった）",
+        "「UF9 STONE 自動設定」ボタンも同様に床合わせを実行: STL が読み込まれ"
+        "ている場合に底面 Z=0 を行ってから UF9 Z を上面に合わせる",
+    ]),
     ("0.17.1", "2026-06-13", "19:30 JST", [
         "3DビューポートのズームをカーソルOK起点に確実に修正: axes bbox の中心を使って"
         "画面ピクセル座標を安定計算するよう変更（proj3d 経由の逆投影は環境依存で"

@@ -1626,7 +1626,7 @@ class MainWindow:
              "UFrame（ユーザーフレーム）:\n"
              "作業対象（砥石など）の座標系定義です。\n"
              "・UF0 WORLD: ロボット基準座標（デフォルト）\n"
-             "・UF9 STONE: 砥石座標系（X=600, Y=25, Z=360mm, Rz=90°）\n"
+             "・UF9 STONE: 砥石座標系（X=600, Y=25, Z=砥石上面mm, Rz=90°）\n"
              "  kenma 生成の砥石接触座標としても使われます。\n"
              "3Dビューの紫色の座標軸で位置を確認できます。\n"
              "ロボット メニューや UF9 STONE 位置調整パネルから編集できます。")
@@ -2347,9 +2347,31 @@ class MainWindow:
             return float(tv[:, 2].max())
         return fallback
 
+    def _stl_bottom_z(self, fallback: float) -> float:
+        """ワールド変換後の STL 下面 Z [mm] を返す（STL 未読込時は fallback）。"""
+        if self.viewport.stl_bbox() and self.viewport._stl_verts is not None:
+            R = self.viewport._stl_T[:3, :3]
+            t = self.viewport._stl_T[:3, 3]
+            all_v = self.viewport._stl_verts.reshape(-1, 3)
+            tv = ((R @ all_v.T).T + t)
+            return float(tv[:, 2].min())
+        return fallback
+
     def _setup_stone_uframe(self):
-        """STL bbox の Z 最大値を grinder_top_z として UF9 STONE を自動設定する。"""
+        """STL を床 (Z=0) に置き、上面を UF9 STONE Z として自動設定する。"""
         self._push_undo("UF9 STONE 自動設定")
+        if self.viewport._stl_verts is not None:
+            # 砥石を床に置く（底面 Z=0 に調整）
+            stone_bottom_z = self._stl_bottom_z(0.0)
+            if abs(stone_bottom_z) > 0.5:
+                vals = [float(v.get() or 0) for v in self._stl_pose_vars]
+                new_z = vals[2] - stone_bottom_z
+                self.viewport.set_stl_pose(vals[0], vals[1], new_z,
+                                           vals[3], vals[4], vals[5])
+                for var, val in zip(self._stl_pose_vars,
+                                    [vals[0], vals[1], new_z,
+                                     vals[3], vals[4], vals[5]]):
+                    var.set(f"{val:.2f}")
         grinder_top_z = self._stl_top_z(UserFrame.stone9().z)
         self._sync_uf9(self._uf9_frame(z=grinder_top_z))
 
@@ -3487,13 +3509,20 @@ class MainWindow:
             ok = self.viewport.load_stl(stl_path)
             if ok:
                 self._apply_stl_default_pose()
-                # Auto-add UF9 stone top reference frame using actual STL bbox
-                stone_top_z = self._stl_top_z(self._STL_DEFAULT_POSE[2])
+                # 砥石を床（Z=0）に置く: 下面が Z=0 になるよう pose Z を自動調整
+                stone_bottom_z = self._stl_bottom_z(0.0)
+                ix, iy, iz, irx, iry, irz = self._STL_DEFAULT_POSE
+                adjusted_z = iz - stone_bottom_z  # bottom=0 となる Z
+                self.viewport.set_stl_pose(ix, iy, adjusted_z, irx, iry, irz)
+                for var, val in zip(self._stl_pose_vars,
+                                    [ix, iy, adjusted_z, irx, iry, irz]):
+                    var.set(f"{val:.2f}")
                 # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
                 # 参照フレーム / 調整パネルを一括更新）
+                stone_top_z = self._stl_top_z(UserFrame.stone9().z)
                 self._sync_uf9(self._uf9_frame(z=stone_top_z))
                 self._set_status(
-                    f"✔  Tormek T8 STL 読込済（X=740, Y=240, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
+                    f"✔  Tormek T8 STL 読込済（底面=床 Z=0, 上面=UF9 z={stone_top_z:.0f}mm, Rz=-90°）")
             else:
                 self._set_status("⚠  STL 読込失敗")
 

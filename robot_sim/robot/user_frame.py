@@ -37,7 +37,7 @@ class UserFrame:
     def stone9(cls) -> "UserFrame":
         """UF9 STONE — 砥石上面の作業フレーム（kenma 生成が使用する既定値）。"""
         return cls(number=9, name="STONE",
-                   x=600.0, y=25.0, z=360.0,
+                   x=600.0, y=25.0, z=340.0,
                    rx=0.0, ry=0.0, rz=90.0,
                    comment="Grinder top surface")
 
