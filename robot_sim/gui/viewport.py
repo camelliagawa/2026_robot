@@ -223,6 +223,13 @@ class Viewport3D:
         self.ax: Axes3D = self.fig.add_subplot(111, projection="3d")
         self._setup_axes()
 
+        # 向きインジケータ（XYZ軸ギズモ）— 画面左下隅に固定表示。
+        # 本体ビューの回転（elev/azim）に追従し、回転しても常に X/Y/Z が見える。
+        self._gizmo_ax = self.fig.add_axes(
+            (0.012, 0.012, 0.15, 0.15), projection="3d")
+        self._gizmo_ax.set_navigate(False)
+        self._gizmo_ax.patch.set_alpha(0.0)
+
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
@@ -405,6 +412,36 @@ class Viewport3D:
         self._draw_route()
         self._draw_pick_curves()
         self._draw_jog_target()
+        self._draw_gizmo()
+
+    def _draw_gizmo(self):
+        """左下隅の向きインジケータ（X=赤 / Y=緑 / Z=青）を本体ビューに同期描画。
+
+        本体ビューの elev/azim に追従するだけで、パン・ズームには影響されない。
+        回転しても常に画面隅に XYZ 軸が表示され続ける。
+        """
+        g = self._gizmo_ax
+        g.cla()
+        g.set_navigate(False)
+        g.patch.set_alpha(0.0)
+        L = 1.0
+        # 原点からの3軸（R/G/B）
+        axes = (((L, 0, 0), "#FF4D4D", "X"),
+                ((0, L, 0), "#4DFF77", "Y"),
+                ((0, 0, L), "#5599FF", "Z"))
+        for (vx, vy, vz), col, name in axes:
+            g.plot([0, vx], [0, vy], [0, vz], color=col, lw=2.2)
+            g.text(vx * 1.35, vy * 1.35, vz * 1.35, name,
+                   color=col, fontsize=8, fontweight="bold",
+                   ha="center", va="center")
+        g.set_xlim(-L, L); g.set_ylim(-L, L); g.set_zlim(-L, L)
+        try:
+            g.set_box_aspect((1, 1, 1))
+        except Exception:
+            pass
+        g.view_init(elev=self._elev, azim=self._azim)
+        # 軸装飾をすべて消して矢印だけ見せる
+        g.set_axis_off()
 
     def _redraw(self):
         # 事前描画再生中は 3D シーンを触らない（figimage を表示し続ける）
@@ -433,6 +470,7 @@ class Viewport3D:
         if self._pre_img is not None:
             self.end_prerendered_playback()
         self.ax.set_visible(False)
+        self._gizmo_ax.set_visible(False)  # ギズモはフレーム画像側に焼き込み済み
         self._pre_img = self.fig.figimage(
             first_frame, xo=0, yo=0, origin="upper", zorder=10)
         self.canvas.draw()
@@ -454,6 +492,7 @@ class Viewport3D:
             pass
         self._pre_img = None
         self.ax.set_visible(True)
+        self._gizmo_ax.set_visible(True)
         self._redraw()
 
     def _setup_axes(self):
