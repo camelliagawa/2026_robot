@@ -99,6 +99,7 @@ def collect_settings(mw) -> dict:
         },
         "speed_override": int(mw._speed_override.get()),
         "fast_mode": bool(mw._fast_mode_var.get()),
+        "auto_fast_playback": bool(mw._auto_fast_var.get()),
         "kenma_tool_offset": mw._kenma_dlg_state.get(
             "offset", "rotx(0)*roty(0)*rotz(0)"),
     }
@@ -247,6 +248,8 @@ def apply_settings(mw, data: dict) -> list:
     if "fast_mode" in data:
         mw._fast_mode_var.set(bool(data["fast_mode"]))
         vp.set_fast_mode(bool(data["fast_mode"]))
+    if "auto_fast_playback" in data:
+        mw._auto_fast_var.set(bool(data["auto_fast_playback"]))
     if "kenma_tool_offset" in data:
         mw._kenma_dlg_state["offset"] = str(data["kenma_tool_offset"])
 
