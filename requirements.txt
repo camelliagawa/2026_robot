@@ -3,3 +3,5 @@ scipy>=1.10.0
 matplotlib>=3.7.0
 numpy-stl>=3.0.0
 tkinterdnd2>=0.3.0
+Pillow>=9.0.0
+imageio[ffmpeg]>=2.30.0
