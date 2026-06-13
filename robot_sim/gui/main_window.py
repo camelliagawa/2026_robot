@@ -709,14 +709,11 @@ class MainWindow:
         right_canvas.bind("<Configure>", _on_canvas_config)
         self._bind_right_mousewheel(right_canvas)
 
-        # 左コンテナ：ビューポート＋ジョグパネルをまとめて右パネルと同幅に
+        # 左コンテナ：ビューポートをまとめて（ジョグパネルは右パネルへ移動）
         left_container = ttk.Frame(self.root)
         left_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(4, 0))
 
-        # ジョグパネルを左コンテナ下部に（先にpackしてスペース確保）
-        self._build_joint_jog_panel(left_container)
-
-        # シークバー（タイムラインスクラバー）— ジョグの上・ビューポートの下
+        # シークバー（タイムラインスクラバー）— ビューポートの下
         self._build_seek_bar(left_container)
 
         # ワークフローバー（ジョグの上・ビューポートの下）
@@ -744,6 +741,9 @@ class MainWindow:
         self.route_editor.pack(fill=tk.X, padx=4, pady=4)
 
         self._build_overlay_panel(right)
+
+        # 関節角度 / ジョグ操作パネル（右パネル最下部・縦積みレイアウト）
+        self._build_joint_jog_panel(right, vertical=True)
 
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
@@ -1335,14 +1335,27 @@ class MainWindow:
     # 関節角度スライダー + 速度オーバーライド + UTool / UFrame
     # ──────────────────────────────────────────────────────────────────
 
-    def _build_joint_jog_panel(self, parent=None):
-        """関節角度スライダーとジョグ操作を1パネルに統合（折りたたみ可）。"""
+    def _build_joint_jog_panel(self, parent=None, vertical=False):
+        """関節角度スライダーとジョグ操作を1パネルに統合（折りたたみ可）。
+
+        vertical=True のときは右パネル（幅~430px）向けに3列を縦積みし、
+        スライダー長も短くして横幅に収める。
+        """
         if parent is None:
             parent = self.root
 
+        # 縦積み時の各列の pack 引数（右パネルに収める）
+        self._jog_vertical = vertical
+        col_pack = (dict(side=tk.TOP, fill=tk.X, pady=(4, 0))
+                    if vertical else dict(side=tk.LEFT, fill=tk.Y))
+        slider_len = 150 if vertical else 240
+
         # 折りたたみコンテナ（更新履歴と同様の構造）
         container = ttk.Frame(parent)
-        container.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 0))
+        if vertical:
+            container.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(4, 2))
+        else:
+            container.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(2, 0))
 
         self._jog_expanded = tk.BooleanVar(value=True)
         jog_hdr = tk.Frame(container, bg=BG_WIDGET, cursor="hand2")
@@ -1371,7 +1384,7 @@ class MainWindow:
 
         # ---- 関節スライダー + ジョグボタン（統合パネル） ----
         slider_lf = ttk.LabelFrame(outer, text="  関節角度 / ジョグ操作")
-        slider_lf.pack(side=tk.LEFT, fill=tk.Y)
+        slider_lf.pack(**col_pack)
 
         # モード選択 + ステップ幅（ヘッダー行）
         header = ttk.Frame(slider_lf)
@@ -1423,7 +1436,7 @@ class MainWindow:
 
             # 水平スライダー
             sc = ttk.Scale(row, from_=lower[i], to=upper[i],
-                           variable=var, orient=tk.HORIZONTAL, length=240,
+                           variable=var, orient=tk.HORIZONTAL, length=slider_len,
                            command=lambda val, idx=i: self._on_slider_change(idx, float(val)))
             sc.pack(side=tk.LEFT)
             _tip(sc, JOINT_TIPS[i])
@@ -1462,7 +1475,7 @@ class MainWindow:
 
         # ---- 中間列：ファイル I/O + シミュレーション + IK ----
         mid_col = ttk.Frame(outer)
-        mid_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+        mid_col.pack(**col_pack)
 
         # ファイル I/O
         io_lf = ttk.LabelFrame(mid_col, text="  ファイル (File I/O)")
@@ -1587,7 +1600,7 @@ class MainWindow:
 
         # ---- 右列：速度OVR + UTool + UFrame ----
         right_col = ttk.Frame(outer)
-        right_col.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+        right_col.pack(**col_pack)
 
         # 速度オーバーライド
         spd_lf = ttk.LabelFrame(right_col, text="  速度オーバーライド")
