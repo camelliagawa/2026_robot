@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple, Union
 
@@ -35,6 +36,10 @@ import numpy as np
 
 from .route import Route, Waypoint, MotionType
 from .curve_follow import _normalize, _orthonormal_basis, _rotation_about_axis
+
+class GenerationCancelled(Exception):
+    """キャンセルイベントが set された場合に raise される。"""
+
 
 # ── 定数（reference/HaL.LS に準拠） ───────────────────────────────
 HOVER_MM       = 10.0    # ホバー / リトラクトの離隔距離 [mm]
@@ -287,13 +292,16 @@ def _collect_ik_candidates(kin, T: np.ndarray, ref: np.ndarray,
                            rng: np.random.Generator,
                            pos_tol: float, rot_tol: float,
                            max_restarts: int, n_candidates: int,
-                           dedupe: bool = False) -> List[np.ndarray]:
+                           dedupe: bool = False,
+                           cancel_event: Optional[threading.Event] = None,
+                           ) -> List[np.ndarray]:
     """多点リスタート L-BFGS-B で品質ゲート済みIK候補を収集する。
 
     kin.inverse は1回あたり多数の内部リスタートを行い重いので、
     ここでは1スタートずつの L-BFGS-B を直接回す。
     dedupe=True のとき、±360°折り返し後 1° 丸めで同一視できる
     候補（同一ブランチ）を除外する。
+    cancel_event が set されると次のリスタート前に GenerationCancelled を raise する。
     """
     from scipy.optimize import minimize
     lo, up = kin.dh.get_joint_limits()
@@ -308,6 +316,8 @@ def _collect_ik_candidates(kin, T: np.ndarray, ref: np.ndarray,
     candidates: List[np.ndarray] = []
     seen: set = set()
     for _ in range(max_restarts):
+        if cancel_event is not None and cancel_event.is_set():
+            raise GenerationCancelled()
         q0 = rng.uniform(lo, up)
         res = minimize(cost, q0, method="L-BFGS-B", bounds=bounds,
                        options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-8})
@@ -328,7 +338,8 @@ def _collect_ik_candidates(kin, T: np.ndarray, ref: np.ndarray,
 def _robust_ik(kin, T: np.ndarray, q_seed: Optional[np.ndarray],
                rng: np.random.Generator,
                pos_tol: float = 0.5, rot_tol: float = 1e-2,
-               max_restarts: int = 150, n_candidates: int = 6
+               max_restarts: int = 150, n_candidates: int = 6,
+               cancel_event: Optional[threading.Event] = None,
                ) -> Tuple[Optional[np.ndarray], bool]:
     """品質ゲート付きIK。シード解で追跡し、外れたら多点リスタートで探索する。
 
@@ -353,7 +364,8 @@ def _robust_ik(kin, T: np.ndarray, q_seed: Optional[np.ndarray],
     ref = q_seed if q_seed is not None else kin.dh.ready_position()
     candidates = _collect_ik_candidates(kin, T, ref, rng,
                                         pos_tol, rot_tol,
-                                        max_restarts, n_candidates)
+                                        max_restarts, n_candidates,
+                                        cancel_event=cancel_event)
     if not candidates:
         return None, False
     best = min(candidates,
@@ -632,6 +644,7 @@ def generate_kenma_programs(
     reversed_flags: Optional[Sequence[bool]] = None,
     tool_offset: Optional[np.ndarray] = None,
     q_start: Optional[np.ndarray] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> KenmaPrograms:
     """刃先CSV点列から kenma 形式 3 プログラム（HaL/HaR/kenma）を生成する。
 
@@ -696,7 +709,10 @@ def generate_kenma_programs(
             q_seed = (np.asarray(q_start, dtype=float).copy()
                       if q_start is not None else None)
             for i, wp in enumerate(side_wps):
-                q, ok = _robust_ik(kin, wp.to_transform(), q_seed, rng)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise GenerationCancelled()
+                q, ok = _robust_ik(kin, wp.to_transform(), q_seed, rng,
+                                   cancel_event=cancel_event)
                 if ok and q is not None:
                     q_seed = q
                     if i == 0:

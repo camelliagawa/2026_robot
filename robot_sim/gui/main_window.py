@@ -40,6 +40,7 @@ from ..path.tp_exporter import TPExporter
 from ..path.kenma_export import (
     generate_kenma_programs, export_kenma_ls, build_playback_sequence,
     parse_pose_expression, first_hover_T, enumerate_ik_branches,
+    GenerationCancelled,
     load_blade_csv as load_blade_csv_file)
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
@@ -3627,6 +3628,8 @@ class MainWindow:
         ttk.Button(q_row, text="候補を計算",
                    command=_compute_branches).pack(side=tk.LEFT, padx=(6, 0))
 
+        _gen_cancel_event: list = []   # [threading.Event] — 実行中だけ存在
+
         def _generate():
             if not sel:
                 messagebox.showwarning("曲線未選択",
@@ -3643,61 +3646,125 @@ class MainWindow:
             qi = q_combo.current()
             if q_branches and 0 <= qi < len(q_branches):
                 q_start = q_branches[qi]
+
+            cancel_event = threading.Event()
+            _gen_cancel_event.clear()
+            _gen_cancel_event.append(cancel_event)
+
+            gen_btn.config(state="disabled")
+            cancel_btn = ttk.Button(btn_row2, text="⏹ キャンセル",
+                                    command=lambda: cancel_event.set())
+            cancel_btn.pack(side=tk.LEFT, padx=4)
             self._set_status(
                 f"選択 {len(order)} 曲線（HaL {nl} / HaR {nr}・逆方向 {n_rev}）"
                 "から研磨ルート生成中 — IK計算しています"
                 "（数十秒かかる場合があります）...")
-            self.root.update()
-            try:
-                result = generate_kenma_programs(
-                    pts, nrm, T_blade, T_contact, self.kin,
-                    selected_groups=order,
-                    tool_offset=off_state["mat"],
-                    q_start=q_start)
-            except Exception as e:
-                messagebox.showerror("生成エラー",
-                                     f"生成に失敗しました:\n{e}", parent=win)
-                self._set_status("⚠  曲線選択ルートの生成に失敗しました")
-                return
-            _save_dlg_state()   # オフセット式・選択順を保持（次回/再生成用）
 
-            ans = messagebox.askyesnocancel(
-                "曲線選択ルート生成",
-                f"選択 {len(order)} 曲線から生成しました。\n"
-                f"  HaL（左側面）: {nl} 曲線\n"
-                f"  HaR（右側面）: {nr} 曲線\n"
-                f"  IK到達不能: {result.n_unreachable} 点\n\n"
-                "「はい」: kenma形式LS（3ファイル1組）を出力して経路点リストへ展開\n"
-                "「いいえ」: 経路点リストへ展開のみ（シミュ再生用）\n"
-                "「キャンセル」: 何もしない\n\n"
-                "※ この画面は開いたままです。オフセット等を変更して\n"
-                "　「ルート生成」を押せば何度でもやり直せます（Ctrl+Z でも戻せます）。",
-                icon="question", parent=win)
-            if ans is None:
-                self._set_status("曲線選択ルート: 生成結果を破棄しました"
-                                 "（条件を変えて再生成できます）")
-                return
-            if ans:
-                out_dir = filedialog.askdirectory(
-                    title="kenma形式LS（選択曲線）の出力先フォルダを選択",
-                    parent=win)
-                if out_dir:
-                    try:
-                        paths = export_kenma_ls(result, out_dir, self.kin,
-                                                mn_comments=[csv_name])
-                        names_str = " / ".join(
-                            os.path.basename(p) for p in paths)
-                        self._set_status(
-                            f"✔  選択曲線LS出力完了: {names_str} → {out_dir}")
-                    except Exception as e:
-                        messagebox.showerror("LS出力エラー",
-                                             f"出力に失敗しました:\n{e}",
-                                             parent=win)
-            self._apply_kenma_sequence(result)
-            self._set_status(
-                f"✔  選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）の研磨ルートを"
-                f"経路点リストへ展開: {len(self.route)} 点 — "
-                "オフセットを変えて再生成も可能（Ctrl+Z で戻せます）")
+            result_box: list = []   # [("ok", result) | ("cancelled",) | ("error", e)]
+
+            def _worker():
+                try:
+                    r = generate_kenma_programs(
+                        pts, nrm, T_blade, T_contact, self.kin,
+                        selected_groups=order,
+                        tool_offset=off_state["mat"],
+                        q_start=q_start,
+                        cancel_event=cancel_event)
+                    result_box.append(("ok", r))
+                except GenerationCancelled:
+                    result_box.append(("cancelled",))
+                except Exception as e:
+                    result_box.append(("error", e))
+
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start()
+
+            def _poll():
+                if t.is_alive():
+                    self.root.after(150, _poll)
+                    return
+                # スレッド完了 — UI を復元
+                _gen_cancel_event.clear()
+                try:
+                    cancel_btn.destroy()
+                except tk.TclError:
+                    pass
+                gen_btn.config(state="normal")
+
+                if not result_box:
+                    return
+                kind = result_box[0][0]
+
+                if kind == "cancelled":
+                    self._set_status("曲線選択ルート: キャンセルしました")
+                    return
+
+                if kind == "error":
+                    e = result_box[0][1]
+                    messagebox.showerror("生成エラー",
+                                         f"生成に失敗しました:\n{e}", parent=win)
+                    self._set_status("⚠  曲線選択ルートの生成に失敗しました")
+                    return
+
+                result = result_box[0][1]
+
+                # IK 到達不能が全点なら早期に警告して終了
+                total_wps = (len(result.route_left.waypoints)
+                             + len(result.route_right.waypoints))
+                if total_wps > 0 and result.n_unreachable >= total_wps:
+                    messagebox.showwarning(
+                        "ルート生成失敗",
+                        "選択した曲線の全接触点が IK 到達不能でした。\n\n"
+                        "考えられる原因:\n"
+                        "  ・「パスからツールへのオフセット」の角度が大きすぎる\n"
+                        "  ・UF9 STONE の位置が可動範囲外にある\n"
+                        "  ・選択した曲線のグループが可動範囲外\n\n"
+                        "オフセット式や砥石位置を修正してから再試行してください。",
+                        parent=win)
+                    self._set_status("⚠  IK 到達不能: ルートを生成できませんでした")
+                    return
+
+                _save_dlg_state()   # オフセット式・選択順を保持（次回/再生成用）
+
+                ans = messagebox.askyesnocancel(
+                    "曲線選択ルート生成",
+                    f"選択 {len(order)} 曲線から生成しました。\n"
+                    f"  HaL（左側面）: {nl} 曲線\n"
+                    f"  HaR（右側面）: {nr} 曲線\n"
+                    f"  IK到達不能: {result.n_unreachable} 点\n\n"
+                    "「はい」: kenma形式LS（3ファイル1組）を出力して経路点リストへ展開\n"
+                    "「いいえ」: 経路点リストへ展開のみ（シミュ再生用）\n"
+                    "「キャンセル」: 何もしない\n\n"
+                    "※ この画面は開いたままです。オフセット等を変更して\n"
+                    "　「ルート生成」を押せば何度でもやり直せます（Ctrl+Z でも戻せます）。",
+                    icon="question", parent=win)
+                if ans is None:
+                    self._set_status("曲線選択ルート: 生成結果を破棄しました"
+                                     "（条件を変えて再生成できます）")
+                    return
+                if ans:
+                    out_dir = filedialog.askdirectory(
+                        title="kenma形式LS（選択曲線）の出力先フォルダを選択",
+                        parent=win)
+                    if out_dir:
+                        try:
+                            paths = export_kenma_ls(result, out_dir, self.kin,
+                                                    mn_comments=[csv_name])
+                            names_str = " / ".join(
+                                os.path.basename(p) for p in paths)
+                            self._set_status(
+                                f"✔  選択曲線LS出力完了: {names_str} → {out_dir}")
+                        except Exception as e:
+                            messagebox.showerror("LS出力エラー",
+                                                 f"出力に失敗しました:\n{e}",
+                                                 parent=win)
+                self._apply_kenma_sequence(result)
+                self._set_status(
+                    f"✔  選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）の研磨ルートを"
+                    f"経路点リストへ展開: {len(self.route)} 点 — "
+                    "オフセットを変えて再生成も可能（Ctrl+Z で戻せます）")
+
+            self.root.after(150, _poll)
 
         btn_row1 = ttk.Frame(win)
         btn_row1.pack(pady=(6, 2))
