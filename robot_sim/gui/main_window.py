@@ -426,6 +426,9 @@ class MainWindow:
 
         # 表示
         v = menu("  表示 (View)  ")
+        v.add_command(label="  ⊡  全体表示にフィット          F",
+                      command=self._fit_view)
+        v.add_separator()
         self._font_size_var = tk.StringVar(value="中")
         for lbl, sc in [("小", 1.1), ("中", 1.3), ("大", 1.6)]:
             v.add_radiobutton(
@@ -446,6 +449,8 @@ class MainWindow:
         self.root.bind("<Control-z>", lambda e: self._undo())
         self.root.bind("<Control-y>", lambda e: self._redo())
         self.root.bind("<Control-Z>", lambda e: self._redo())   # Ctrl+Shift+Z
+        self.root.bind("<f>", self._on_fit_key)
+        self.root.bind("<F>", self._on_fit_key)
 
     # ──────────────────────────────────────────────────────────────────
     # Undo / Redo（スナップショット方式 — 全機能やり直し対応）
@@ -489,6 +494,20 @@ class MainWindow:
             self._set_status(f"↪  やり直す: {label}")
         else:
             self._set_status("やり直せる操作はありません")
+        return "break"
+
+    def _fit_view(self):
+        """3Dビューを全ジオメトリが収まるよう自動調整する（メニュー/ボタン/F）。"""
+        self.viewport.fit_view()
+        self._set_status("⊡  全体表示にフィットしました")
+
+    def _on_fit_key(self, event=None):
+        """F キー: 入力欄にフォーカスがある時は通常入力を優先し、それ以外で
+        全体表示にフィットする。"""
+        w = self.root.focus_get()
+        if isinstance(w, (tk.Entry, ttk.Entry, tk.Text, ttk.Combobox, tk.Spinbox)):
+            return  # テキスト入力中は通常の文字入力として扱う
+        self._fit_view()
         return "break"
 
     def _update_edit_menu(self):
@@ -699,6 +718,13 @@ class MainWindow:
         # 3D ビューポートは残りの全スペースを使う
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        vp_bar = ttk.Frame(left)
+        vp_bar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
+        fit_btn = ttk.Button(vp_bar, text="⊡  全体表示にフィット (F)",
+                             command=self._fit_view)
+        fit_btn.pack(side=tk.LEFT)
+        _tip(fit_btn, "ロボット・STL・砥石・経路など全体が画面に収まるよう\n"
+                      "視点とズームを自動調整します（F キーでも実行）。")
         self.viewport = Viewport3D(left, self.kin)
 
         self._build_markers_panel(right)
