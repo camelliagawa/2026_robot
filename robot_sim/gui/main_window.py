@@ -171,6 +171,8 @@ class MainWindow:
         # ── シークバー / IK 事前計算状態 ──
         self._sim_solutions: list = []        # List[np.ndarray] 各経路点の関節解
         self._sim_solutions_ready = False     # 事前計算完了フラグ
+        self._pre_frames = None               # 案1: 事前描画フレーム（RGBA画像）
+        self._pre_idxs = None                 # 各フレームの分数インデックス
         self._sim_precompute_thread: Optional[threading.Thread] = None
         self._sim_precompute_token = 0        # ルート変更ごとに増分（古い結果を破棄）
         self._seek_dragging = False           # スクラブ中フラグ
@@ -1476,6 +1478,15 @@ class MainWindow:
         ttk.Button(sim_inner, text="■  停止",
                    style="Danger.TButton",
                    command=self._stop_simulation).pack(pady=1, fill=tk.X)
+        self._smooth_btn = ttk.Button(
+            sim_inner, text="🎬  滑らか再生（事前描画）",
+            command=self._smooth_play)
+        self._smooth_btn.pack(pady=1, fill=tk.X)
+        _tip(self._smooth_btn,
+             "案1: 再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
+             "再描画をやめて画像を差し替えるだけにします（最も滑らか・高品質）。\n"
+             "・再生開始まで「描画中…」の待ち時間が発生します（キャンセル可）\n"
+             "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
         self._sim_progress_var = tk.StringVar(value="待機中")
         tk.Label(sim_inner, textvariable=self._sim_progress_var,
                  bg=BG_PANEL, fg=FG_SUB, font=("", 7)).pack()
@@ -3038,6 +3049,198 @@ class MainWindow:
         self._sim_progress_var.set("完了" if was_running else "一時停止")
         self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
         self._set_status(f"✔  シミュレーション完了（推定再生時間 {elapsed:.1f}s）")
+
+    # ── 案1: 事前描画（プリレンダリング）再生 ──────────────────────────
+
+    def _smooth_play(self):
+        """全フレームを事前に画像へ描画してから滑らかに再生する。
+
+        再生前に各フレームを通常品質でオフスクリーン描画し RGBA 画像として
+        ためておき、再生中は重い 3D 再描画をやめて画像を差し替えるだけにする。
+        実機メッシュのまま滑らかに再生できる（案2 の軽量表示が不要になる）。
+        """
+        n_wp = len(self.route.waypoints)
+        if n_wp < 2:
+            messagebox.showwarning("経路点なし", "経路点が2つ以上必要です。")
+            return
+        if not self._sim_solutions_ready or not self._sim_solutions:
+            self._set_status("⌛  IK事前計算中です。完了までお待ちください...")
+            return
+        if self._sim_playing or (self._sim_thread and self._sim_thread.is_alive()):
+            return
+
+        sols = self._sim_solutions
+        ns = len(sols)
+        cum, total = self._segment_times()
+        if total <= 1e-6:
+            messagebox.showinfo(
+                "再生不可", "総再生時間が 0 秒です。経路点の速度を確認してください。")
+            return
+
+        # ── フレーム枚数（時間等間隔・メモリ上限でクランプ） ──
+        fig = self.viewport.fig
+        w = max(int(fig.get_figwidth() * fig.dpi), 1)
+        h = max(int(fig.get_figheight() * fig.dpi), 1)
+        frame_bytes = max(w * h * 4, 1)
+        budget = 400 * 1024 * 1024  # 約400MB を上限にフレーム数を抑制
+        fps = 20.0
+        n_frames = int(round(total * fps)) + 1
+        n_frames = max(2, min(n_frames, 240, max(2, int(budget // frame_bytes))))
+        times = np.linspace(0.0, total, n_frames)
+
+        def time_to_idx(t):
+            if t <= 0:
+                return 0.0
+            if t >= total:
+                return float(ns - 1)
+            for i in range(1, ns):
+                if cum[i] >= t:
+                    seg = cum[i] - cum[i - 1]
+                    if seg <= 1e-9:
+                        return float(i)
+                    return (i - 1) + (t - cum[i - 1]) / seg
+            return float(ns - 1)
+
+        def idx_to_q(idx_f):
+            idx_f = max(0.0, min(float(ns - 1), idx_f))
+            i0 = int(np.floor(idx_f))
+            i1 = min(i0 + 1, ns - 1)
+            a = idx_f - i0
+            return sols[i0] + a * (sols[i1] - sols[i0])
+
+        idxs = [time_to_idx(t) for t in times]
+
+        # ── 進捗ダイアログ（キャンセル可） ──
+        dlg = tk.Toplevel(self.root)
+        dlg.title("事前描画中…")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG_PANEL)
+        tk.Label(dlg, text="🎬 全フレームを描画しています…",
+                 bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("", 10, "bold")).pack(padx=16, pady=(14, 6))
+        pbar = ttk.Progressbar(dlg, length=320, mode="determinate",
+                               maximum=n_frames)
+        pbar.pack(padx=16, pady=4)
+        pct_var = tk.StringVar(value=f"0 / {n_frames}")
+        tk.Label(dlg, textvariable=pct_var, bg=BG_PANEL, fg=FG_SUB,
+                 font=("", 8)).pack(pady=(0, 4))
+        cancel = {"flag": False}
+        ttk.Button(dlg, text="キャンセル",
+                   command=lambda: cancel.update(flag=True)).pack(pady=(0, 12))
+        dlg.protocol("WM_DELETE_WINDOW", lambda: cancel.update(flag=True))
+        dlg.update_idletasks()
+        try:
+            x = (self.root.winfo_rootx()
+                 + (self.root.winfo_width() - dlg.winfo_width()) // 2)
+            y = (self.root.winfo_rooty()
+                 + (self.root.winfo_height() - dlg.winfo_height()) // 2)
+            dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            pass
+        dlg.grab_set()
+
+        # ── 同期レンダリング（matplotlib はメインスレッド限定） ──
+        frames = []
+        saved_pose = self._joint_angles.copy()
+        self._set_status("🎬  事前描画中…")
+        for k, idx_f in enumerate(idxs):
+            if cancel["flag"]:
+                break
+            try:
+                frames.append(self.viewport.render_frame(idx_to_q(idx_f)))
+            except Exception as e:  # 描画失敗時は中断して原状復帰
+                dlg.grab_release()
+                dlg.destroy()
+                self.viewport.update_robot(saved_pose)
+                messagebox.showerror("事前描画エラー", f"描画に失敗しました:\n{e}")
+                self._set_status("✖  事前描画に失敗しました")
+                return
+            pbar["value"] = k + 1
+            pct_var.set(f"{k + 1} / {n_frames}")
+            if (k % 2) == 0 or k == n_frames - 1:
+                dlg.update()
+
+        cancelled = cancel["flag"]
+        dlg.grab_release()
+        dlg.destroy()
+
+        if cancelled or len(frames) < 2:
+            self.viewport.update_robot(saved_pose)  # 元の姿勢へ戻す
+            self._set_status("⏹  事前描画をキャンセルしました")
+            return
+
+        n_frames = len(frames)          # 中断で減った場合に合わせる
+        idxs = idxs[:n_frames]
+
+        # ── 事前描画フレームで滑らか再生 ──
+        self._pre_frames = frames
+        self._pre_idxs = idxs
+        self.viewport.begin_prerendered_playback(frames[0])
+        self._sim_playing = True
+        self._sim_running = True
+        self._play_btn_var.set("⏸")
+        self._sim_btn.config(state="disabled")
+        self._smooth_btn.config(state="disabled")
+        self._sim_start_time = time.time()
+        self._sim_total_est = total
+        self._sim_play_t0 = 0.0
+
+        def run():
+            while self._sim_running:
+                wall = time.time() - self._sim_start_time
+                fi = int(round(wall * fps))
+                if fi >= n_frames:
+                    fi = n_frames - 1
+
+                def _update(fi=fi):
+                    if not self._sim_running or self.viewport._pre_img is None:
+                        return
+                    self.viewport.show_prerendered_frame(self._pre_frames[fi])
+                    idx = self._pre_idxs[fi]
+                    self._seek_updating = True
+                    try:
+                        self._seek_var.set(idx)
+                    finally:
+                        self._seek_updating = False
+                    pct = int(idx / max(ns - 1, 1) * 100)
+                    self._sim_progress_var.set(f"P[{int(idx)+1}]/{ns}  {pct}%")
+                self.root.after(0, _update)
+
+                if wall >= total:
+                    break
+                time.sleep(1.0 / fps)
+            self.root.after(0, self._smooth_playback_done)
+
+        self._sim_thread = threading.Thread(target=run, daemon=True)
+        self._sim_thread.start()
+        self._sim_tick()
+
+    def _smooth_playback_done(self):
+        """事前描画再生が末尾に到達した／停止された後の後処理。"""
+        was_running = self._sim_running
+        self._sim_playing = False
+        self._sim_running = False
+        self._play_btn_var.set("▶")
+        self._sim_btn.config(state="normal")
+        self._smooth_btn.config(state="normal")
+        n_done = len(self._pre_frames) if self._pre_frames else 0
+        self.viewport.end_prerendered_playback()  # 3D 描画へ復帰
+        n = len(self.route.waypoints)
+        if was_running and n:
+            self._seek_updating = True
+            try:
+                self._seek_var.set(float(n - 1))
+            finally:
+                self._seek_updating = False
+            self._seek_to_fraction(float(n - 1))
+        elapsed = self._sim_total_est
+        self._sim_progress_var.set("完了" if was_running else "一時停止")
+        self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
+        self._set_status(
+            f"✔  滑らか再生完了（事前描画 {n_done} フレーム）")
+        self._pre_frames = None   # メモリ解放
+        self._pre_idxs = None
 
     # ──────────────────────────────────────────────────────────────────
     # IK

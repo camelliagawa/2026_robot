@@ -215,6 +215,7 @@ class Viewport3D:
         # 実機メッシュ（assets/robot/*.stl）— 読込失敗時は円柱フォールバック
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
         self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
+        self._pre_img = None           # 事前描画再生中の figimage（None=通常描画）
         self._load_robot_meshes()
 
         self.fig = plt.figure(facecolor="#161B22")
@@ -385,7 +386,8 @@ class Viewport3D:
             self._pan_cz = float(np.clip(self._pan_start[4] - delta[2], -2000, 4000))
             self._redraw()
 
-    def _redraw(self):
+    def _draw_scene(self):
+        """現在の状態で 3D シーンを完全に再構築する（canvas へは描画しない）。"""
         self.ax.cla()
         self._setup_axes()
         self.ax.view_init(elev=self._elev, azim=self._azim)
@@ -398,7 +400,56 @@ class Viewport3D:
         self._draw_route()
         self._draw_pick_curves()
         self._draw_jog_target()
+
+    def _redraw(self):
+        # 事前描画再生中は 3D シーンを触らない（figimage を表示し続ける）
+        if self._pre_img is not None:
+            return
+        self._draw_scene()
         self.canvas.draw_idle()
+
+    # ── 事前描画（プリレンダリング）再生 ──────────────────────────────
+    # 案1: 再生前に全フレームをオフスクリーン描画して RGBA 画像として保持し、
+    # 再生中は重い 3D 再描画をやめて画像を差し替えるだけにする。
+
+    def render_frame(self, joint_angles) -> np.ndarray:
+        """与えた関節角でシーンを完全描画し RGBA 画像 (H,W,4 uint8) を返す。
+
+        通常品質（実機メッシュ等、現在の表示設定）でレンダリングする。
+        コストはここで一度だけ払い、再生は画像差し替えのみで滑らかになる。
+        """
+        self._joint_angles = np.asarray(joint_angles)
+        self._draw_scene()
+        self.canvas.draw()
+        return np.asarray(self.canvas.buffer_rgba()).copy()
+
+    def begin_prerendered_playback(self, first_frame: np.ndarray):
+        """事前描画再生を開始: 3D 軸を隠し figimage を 1 枚用意する。"""
+        if self._pre_img is not None:
+            self.end_prerendered_playback()
+        self.ax.set_visible(False)
+        self._pre_img = self.fig.figimage(
+            first_frame, xo=0, yo=0, origin="upper", zorder=10)
+        self.canvas.draw()
+
+    def show_prerendered_frame(self, frame: np.ndarray):
+        """事前描画フレームを表示（3D 再描画なし・画像差し替えのみ）。"""
+        if self._pre_img is None:
+            return
+        self._pre_img.set_data(frame)
+        self.canvas.draw()
+
+    def end_prerendered_playback(self):
+        """事前描画再生を終了し通常の 3D 描画へ戻す。"""
+        if self._pre_img is None:
+            return
+        try:
+            self._pre_img.remove()
+        except Exception:
+            pass
+        self._pre_img = None
+        self.ax.set_visible(True)
+        self._redraw()
 
     def _setup_axes(self):
         ax = self.ax
