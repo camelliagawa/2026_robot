@@ -1496,6 +1496,18 @@ class MainWindow:
              "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
              "OFF: 実機メッシュで描画（高品質）。\n"
              "停止中・再生中いずれもチェックで即座に切り替わります。")
+        # 案2: 再生中は自動で軽量表示へ切り替え（停止時に元へ戻す）
+        self._auto_fast_var = tk.BooleanVar(value=True)
+        af_cb = tk.Checkbutton(
+            sim_inner, text="再生中は自動で軽量表示",
+            variable=self._auto_fast_var,
+            bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
+            selectcolor=BG_WIDGET, font=("", 8))
+        af_cb.pack(anchor="w", pady=(0, 0))
+        _tip(af_cb,
+             "ON: シミュレーション再生の間だけ自動で軽量表示（円柱）に切り替え、\n"
+             "    停止すると実機メッシュ表示へ戻します。滑らかな再生向け。\n"
+             "OFF: 再生中も上の「軽量表示」設定のまま描画します。")
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -2876,6 +2888,8 @@ class MainWindow:
 
     def _toggle_fast_mode(self):
         """軽量表示チェックボックス: 停止中・再生中いずれも即座に反映する。"""
+        # 手動操作が入ったら自動切替の一時状態を解除し、手動設定を優先する。
+        self._auto_fast_active = False
         self.viewport.set_fast_mode(self._fast_mode_var.get())
 
     def _pause_play(self):
@@ -2916,6 +2930,13 @@ class MainWindow:
         self._sim_running = True
         self._play_btn_var.set("⏸")
         self._sim_btn.config(state="disabled")
+
+        # 案2: 再生中は自動で軽量表示へ切替（手動でONでない場合のみ）。
+        # 停止時に _playback_done で元の表示へ戻す。
+        self._auto_fast_active = False
+        if self._auto_fast_var.get() and not self._fast_mode_var.get():
+            self._auto_fast_active = True
+            self.viewport.set_fast_mode(True)
 
         cum, total = self._segment_times()
         start_idx = float(self._seek_var.get())
@@ -3000,6 +3021,10 @@ class MainWindow:
         self._sim_running = False
         self._play_btn_var.set("▶")
         self._sim_btn.config(state="normal")
+        # 案2: 自動軽量表示を解除し、手動設定の表示モードへ戻す
+        if getattr(self, "_auto_fast_active", False):
+            self._auto_fast_active = False
+            self.viewport.set_fast_mode(self._fast_mode_var.get())
         n = len(self.route.waypoints)
         if was_running and n:
             # 末尾まで再生し切った場合は末尾に合わせる
