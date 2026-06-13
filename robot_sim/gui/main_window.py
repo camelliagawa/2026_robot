@@ -19,10 +19,13 @@ Layout:
 """
 from __future__ import annotations
 
+import copy
 import os
 import time
 import threading
 import tkinter as tk
+from contextlib import contextmanager
+from dataclasses import replace
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import Optional
 
@@ -41,6 +44,8 @@ from ..path.kenma_export import (
 from .viewport import Viewport3D
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION, CHANGELOG
+from .undo import UndoManager
+from . import settings_io
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD as _TkDnD
@@ -153,6 +158,15 @@ class MainWindow:
         self._tree_programs: list = []   # [(prog_name, Route)]
         self._blade_csv_path: Optional[str] = None
 
+        # ── Undo/Redo（全機能やり直し対応） ──
+        self._suppress_undo = False   # 再生・復元中の自動更新は記録しない
+        self._undo_mgr = UndoManager(self._capture_state, self._restore_state)
+
+        # 曲線選択ダイアログの保持状態（オフセット式・選択順・逆方向）。
+        # ダイアログを閉じても保持し、開き直して何度でもやり直せる。
+        self._kenma_dlg_state: dict = {
+            "offset": "rotx(0)*roty(0)*rotz(0)", "sel": [], "rev": {}}
+
         # ── シークバー / IK 事前計算状態 ──
         self._sim_solutions: list = []        # List[np.ndarray] 各経路点の関節解
         self._sim_solutions_ready = False     # 事前計算完了フラグ
@@ -180,10 +194,14 @@ class MainWindow:
         self._update_fk_display()
 
         # 研磨機（Tormek T8 STL）を起動時から表示（研削経路CSVは読み込まない）
+        # 起動時の初期化は undo 履歴に積まない
+        self._suppress_undo = True
         try:
             self._load_tormek_stl()
         except Exception:
             pass
+        finally:
+            self._suppress_undo = False
 
         # 既定の文字サイズ（中）を全体に適用
         self._set_font_scale(self._font_scale)
@@ -370,7 +388,17 @@ class MainWindow:
         f.add_separator()
         f.add_command(label="  📤  FANUC TP 出力...       Ctrl+E", command=self._export_tp)
         f.add_separator()
+        f.add_command(label="  ⚙   設定をファイルへ出力...", command=self._export_settings)
+        f.add_command(label="  📥  設定ファイルを読み込む...", command=self._import_settings)
+        f.add_separator()
         f.add_command(label="  ✕   終了", command=self._on_close)
+
+        # 編集（Undo/Redo — 全機能やり直し対応）
+        e = menu("  編集 (Edit)  ")
+        e.add_command(label="  ↩  元に戻す              Ctrl+Z", command=self._undo)
+        e.add_command(label="  ↪  やり直す              Ctrl+Y", command=self._redo)
+        e.configure(postcommand=self._update_edit_menu)
+        self._edit_menu = e
 
         # ルート
         r = menu("  ルート (Route)  ")
@@ -414,6 +442,201 @@ class MainWindow:
         self.root.bind("<Control-s>", lambda e: self._save_csv())
         self.root.bind("<Control-e>", lambda e: self._export_tp())
         self.root.bind("<F5>",        lambda e: self._start_simulation())
+        self.root.bind("<Control-z>", lambda e: self._undo())
+        self.root.bind("<Control-y>", lambda e: self._redo())
+        self.root.bind("<Control-Z>", lambda e: self._redo())   # Ctrl+Shift+Z
+
+    # ──────────────────────────────────────────────────────────────────
+    # Undo / Redo（スナップショット方式 — 全機能やり直し対応）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _push_undo(self, label: str, coalesce: bool = False):
+        """状態を変更する直前に呼ぶ。coalesce=True で連続操作をまとめる。"""
+        if self._suppress_undo:
+            return
+        self._undo_mgr.push(label, coalesce=coalesce)
+
+    @contextmanager
+    def _undo_group(self, label: str):
+        """複数の変更を 1 回の undo 単位にまとめるコンテキスト。
+
+        内側で呼ばれる _push_undo は記録されない（二重記録防止）。
+        """
+        self._push_undo(label)
+        prev = self._suppress_undo
+        self._suppress_undo = True
+        try:
+            yield
+        finally:
+            self._suppress_undo = prev
+
+    def _undo(self):
+        if self._sim_running:
+            self._stop_simulation()
+        label = self._undo_mgr.undo()
+        if label:
+            self._set_status(f"↩  元に戻す: {label}")
+        else:
+            self._set_status("元に戻せる操作はありません")
+        return "break"
+
+    def _redo(self):
+        if self._sim_running:
+            self._stop_simulation()
+        label = self._undo_mgr.redo()
+        if label:
+            self._set_status(f"↪  やり直す: {label}")
+        else:
+            self._set_status("やり直せる操作はありません")
+        return "break"
+
+    def _update_edit_menu(self):
+        """編集メニューを開くたびに Undo/Redo ラベルと有効状態を更新する。"""
+        ul = self._undo_mgr.undo_label
+        rl = self._undo_mgr.redo_label
+        self._edit_menu.entryconfig(
+            0, label=f"  ↩  元に戻す{f': {ul}' if ul else ''}              Ctrl+Z",
+            state="normal" if ul else "disabled")
+        self._edit_menu.entryconfig(
+            1, label=f"  ↪  やり直す{f': {rl}' if rl else ''}              Ctrl+Y",
+            state="normal" if rl else "disabled")
+
+    def _capture_state(self) -> dict:
+        """Undo 用の全状態スナップショットを返す（操作直前に呼ばれる）。"""
+        return {
+            "route": (self.route.name, self.route.comment,
+                      self.route.uframe, self.route.utool,
+                      copy.deepcopy(self.route.waypoints)),
+            "markers": (copy.deepcopy(self._mk_list),
+                        self._mk_tcp_count, self._mk_tgt_count),
+            "tool_frames": [replace(t) for t in self.TOOL_FRAMES],
+            "user_frames": [replace(u) for u in self.USER_FRAMES],
+            "active_tool_num": self._active_tool.number,
+            "active_uframe_num": self._active_uframe.number,
+            "joint_angles": self._joint_angles.copy(),
+            "stl_vars":   [v.get() for v in self._stl_pose_vars],
+            "csv_vars":   [v.get() for v in self._csv_pose_vars],
+            "blade_vars": [v.get() for v in self._blade_pose_vars],
+            "stone_vars": [v.get() for v in self._stone_vars],
+            "blade_csv_path": self._blade_csv_path,
+            "tree_programs": list(self._tree_programs),
+            "viewport": self.viewport.snapshot_layers(),
+            "kenma_dlg": copy.deepcopy(self._kenma_dlg_state),
+            "speed_override": self._speed_override.get(),
+        }
+
+    def _restore_state(self, s: dict):
+        """スナップショットの状態へ戻し、全 UI を同期する。"""
+        prev = self._suppress_undo
+        self._suppress_undo = True
+        try:
+            # 経路
+            (self.route.name, self.route.comment,
+             self.route.uframe, self.route.utool, wps) = s["route"]
+            self.route.waypoints = wps
+            self.route_editor.set_route(self.route)
+
+            # マーカー
+            self._mk_list, self._mk_tcp_count, self._mk_tgt_count = s["markers"]
+            self._mk_refresh_listbox()
+            self._mk_sync_viewport()
+
+            # フレーム定義 + アクティブ UTool/UFrame
+            self.TOOL_FRAMES[:] = s["tool_frames"]
+            self.USER_FRAMES[:] = s["user_frames"]
+            self._utool_combo.config(values=[
+                f"UT{t.number}: {t.name}  (z={t.z:.0f}mm)"
+                for t in self.TOOL_FRAMES])
+            self._uframe_combo.config(values=[
+                f"UF{u.number}: {u.name}" for u in self.USER_FRAMES])
+            ti = next((i for i, t in enumerate(self.TOOL_FRAMES)
+                       if t.number == s["active_tool_num"]), 0)
+            self._utool_combo.current(ti)
+            self._active_tool = self.TOOL_FRAMES[ti]
+            self.viewport.set_tool_frame(self._active_tool)
+            ui = next((i for i, u in enumerate(self.USER_FRAMES)
+                       if u.number == s["active_uframe_num"]), 0)
+            self._uframe_combo.current(ui)
+            self._active_uframe = self.USER_FRAMES[ui]
+            self.viewport.set_user_frame(self._active_uframe)
+
+            # 入力欄（オーバーレイ / STONE 調整）
+            for vars_, key in ((self._stl_pose_vars, "stl_vars"),
+                               (self._csv_pose_vars, "csv_vars"),
+                               (self._blade_pose_vars, "blade_vars"),
+                               (self._stone_vars, "stone_vars")):
+                for var, val in zip(vars_, s[key]):
+                    var.set(val)
+
+            self._blade_csv_path = s["blade_csv_path"]
+            self._tree_programs  = s["tree_programs"]
+            self._kenma_dlg_state = s["kenma_dlg"]
+            self._speed_override.set(s["speed_override"])
+
+            # ビューポートのレイヤー（STL/CSV/刃先/参照フレーム）
+            self.viewport.restore_layers(s["viewport"])
+            self._rf_refresh_listbox()
+
+            # 関節角度（スライダー・FK・ロボット描画を同期）
+            self._set_angles(s["joint_angles"])
+
+            self._tree_refresh()
+            self._invalidate_sim_solutions()
+        finally:
+            self._suppress_undo = prev
+
+    # ──────────────────────────────────────────────────────────────────
+    # 設定ファイル（エクスポート / インポート / D&D）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _export_settings(self):
+        """現在の設定一式を JSON ファイルへ出力する。"""
+        path = filedialog.asksaveasfilename(
+            title="設定をファイルへ出力",
+            defaultextension=".json",
+            filetypes=[("設定ファイル (JSON)", "*.json"), ("All files", "*.*")],
+            initialfile="robot_sim_settings.json")
+        if not path:
+            return
+        try:
+            settings_io.save_settings(self, path)
+        except Exception as e:
+            messagebox.showerror("設定出力エラー",
+                                 f"設定の出力に失敗しました:\n{e}")
+            return
+        self._set_status(
+            f"✔  設定を出力: {os.path.basename(path)} — "
+            "3Dビューへドラッグ＆ドロップで復元できます")
+
+    def _import_settings(self, path: Optional[str] = None):
+        """設定 JSON を読み込んで全 UI へ反映する（D&D からも呼ばれる）。"""
+        if path is None:
+            path = filedialog.askopenfilename(
+                title="設定ファイルを読み込む",
+                filetypes=[("設定ファイル (JSON)", "*.json"),
+                           ("All files", "*.*")])
+            if not path:
+                return
+        try:
+            data = settings_io.load_settings(path)
+        except Exception as e:
+            messagebox.showerror("設定読込エラー",
+                                 f"設定ファイルの読込に失敗しました:\n{e}")
+            return
+        with self._undo_group("設定ファイル読込"):
+            try:
+                warns = settings_io.apply_settings(self, data)
+            except Exception as e:
+                messagebox.showerror("設定反映エラー",
+                                     f"設定の反映に失敗しました:\n{e}")
+                return
+        msg = f"✔  設定を読込: {os.path.basename(path)}"
+        if warns:
+            msg += f"  ⚠ {len(warns)}件の警告"
+            messagebox.showwarning(
+                "設定読込（警告）",
+                "一部の項目を反映できませんでした:\n\n" + "\n".join(warns))
+        self._set_status(msg + " — Ctrl+Z で元に戻せます")
 
     # ──────────────────────────────────────────────────────────────────
     # Main panels (3D viewport + route editor)
@@ -473,7 +696,7 @@ class MainWindow:
         self._build_workflow_bar(left_container)
 
         # 3D ビューポートは残りの全スペースを使う
-        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV をドロップで読込")
+        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = Viewport3D(left, self.kin)
 
@@ -488,6 +711,7 @@ class MainWindow:
             route_lf, self.route,
             on_change=self._on_route_changed,
             on_select=self._on_waypoint_selected,
+            on_before_change=self._push_undo,
             listbox_height=7,
         )
         self.route_editor.pack(fill=tk.X, padx=4, pady=4)
@@ -564,6 +788,7 @@ class MainWindow:
                    command=self._mk_apply_pos).pack(side=tk.LEFT, padx=2)
 
     def _mk_add_tcp(self):
+        self._push_undo("TCPマーカー追加")
         self._mk_tcp_count += 1
         pos = self._mk_current_tcp_pos()
         name = f"TCP-{self._mk_tcp_count}"
@@ -573,6 +798,7 @@ class MainWindow:
         self._set_status(f"✔  TCPマーカー追加: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
 
     def _mk_add_target(self):
+        self._push_undo("ターゲット追加")
         self._mk_tgt_count += 1
         pos = self._mk_current_tcp_pos()
         name = f"Target-{self._mk_tgt_count}"
@@ -588,6 +814,7 @@ class MainWindow:
             return
         idx = sel[0]
         name = self._mk_list[idx]["name"]
+        self._push_undo("マーカー削除")
         del self._mk_list[idx]
         self._mk_refresh_listbox()
         self._mk_sync_viewport()
@@ -604,6 +831,7 @@ class MainWindow:
             self._set_status("⚠  数値を入力してください")
             return
         idx = sel[0]
+        self._push_undo("マーカー位置変更", coalesce=True)
         self._mk_list[idx]["pos"] = pos
         self._mk_refresh_listbox(select_idx=idx)
         self._mk_sync_viewport()
@@ -650,7 +878,8 @@ class MainWindow:
             obj=obj,
             fields=["x", "y", "z"],
             labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)"],
-            on_apply=_apply)
+            on_apply=_apply,
+            undo_label="マーカー編集")
 
     def _on_mk_select(self, event=None):
         sel = self._mk_listbox.curselection()
@@ -748,11 +977,13 @@ class MainWindow:
         frames = self.viewport.get_ref_frames()
         if idx < len(frames):
             name = frames[idx]["name"]
+            self._push_undo("参照フレーム削除")
             self.viewport.remove_ref_frame(name)
             self._rf_refresh_listbox()
             self._set_status(f"✔  参照フレーム削除: {name}")
 
     def _rf_clear_all(self):
+        self._push_undo("参照フレーム全クリア")
         self.viewport.clear_ref_frames()
         self._rf_refresh_listbox()
         self._set_status("✔  参照フレームをすべてクリア")
@@ -793,7 +1024,8 @@ class MainWindow:
             fields=["x", "y", "z", "rx", "ry", "rz"],
             labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)",
                     "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
-            on_apply=_apply)
+            on_apply=_apply,
+            undo_label="参照フレーム編集")
 
     def _add_ref_frame_dialog(self):
         """Show dialog to add a custom reference frame."""
@@ -837,6 +1069,7 @@ class MainWindow:
             except ValueError:
                 messagebox.showerror("入力エラー", "数値を入力してください", parent=win)
                 return
+            self._push_undo("参照フレーム追加")
             self.viewport.add_ref_frame(name, x, y, z, rx, ry, rz)
             self._rf_refresh_listbox()
             self._set_status(f"✔  参照フレーム追加: {name}  ({x:.0f}, {y:.0f}, {z:.0f})")
@@ -970,6 +1203,7 @@ class MainWindow:
             self._set_status("⚠  数値を入力してください")
             return
 
+        self._push_undo("UF9 STONE 調整", coalesce=True)
         uf9 = self._uf9_frame(x=x, y=y, z=z, rx=rx, ry=ry, rz=rz)
         self._sync_uf9(
             uf9, update_fields=False,
@@ -1316,11 +1550,13 @@ class MainWindow:
         self._update_fk_display()
 
     def _on_slider_change(self, joint_idx: int, value_deg: float):
+        self._push_undo("スライダー操作", coalesce=True)
         self._joint_angles[joint_idx] = np.deg2rad(value_deg)
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
 
     def _on_utool_change(self, event=None):
+        self._push_undo("UTool切替")
         idx = self._utool_combo.current()
         self._active_tool = self.TOOL_FRAMES[idx]
         self.viewport.set_tool_frame(self._active_tool)
@@ -1328,6 +1564,7 @@ class MainWindow:
                          f"(TCP オフセット: Z={self._active_tool.z:.0f}mm)")
 
     def _on_uframe_change(self, event=None):
+        self._push_undo("UFrame切替")
         idx = self._uframe_combo.current()
         self._active_uframe = self.USER_FRAMES[idx]
         self.viewport.set_user_frame(self._active_uframe)
@@ -1495,6 +1732,7 @@ class MainWindow:
         except ValueError:
             self._set_status("⚠  数値を入力してください")
             return
+        self._push_undo("STL位置調整", coalesce=True)
         self.viewport.set_stl_pose(*vals)
         self._set_status(
             f"✔  STL 位置更新: X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
@@ -1505,17 +1743,20 @@ class MainWindow:
         except ValueError:
             self._set_status("⚠  数値を入力してください")
             return
+        self._push_undo("CSV位置調整", coalesce=True)
         self.viewport.set_csv_pose(*vals)
         self._set_status(
             f"✔  CSV 位置更新: X={vals[0]:.1f} Y={vals[1]:.1f} Z={vals[2]:.1f}")
 
     def _clear_stl(self):
+        self._push_undo("STLクリア")
         self.viewport.clear_stl()
         for v in self._stl_pose_vars:
             v.set("0.0")
         self._set_status("✔  STL オーバーレイをクリアしました")
 
     def _clear_csv(self):
+        self._push_undo("CSVクリア")
         self.viewport.clear_csv()
         for v in self._csv_pose_vars:
             v.set("0.0")
@@ -1529,11 +1770,13 @@ class MainWindow:
         except ValueError:
             self._set_status("⚠  数値を入力してください")
             return
+        self._push_undo("刃先CSV取付調整", coalesce=True)
         self.viewport.set_blade_pose(*vals)
         self._set_status(
             f"✔  刃先CSV 取付位置更新: Z={vals[2]:.1f} Rx={vals[3]:.1f}°")
 
     def _clear_blade(self):
+        self._push_undo("刃先CSVクリア")
         self.viewport.clear_blade()
         self._blade_csv_path = None
         if hasattr(self, "_tree"):
@@ -1548,14 +1791,15 @@ class MainWindow:
                 filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
             if not path:
                 return
-        n = self.viewport.load_blade_csv(path)
-        if n == 0:
-            messagebox.showerror("読込エラー",
-                "刃先CSVの読込に失敗しました。\n"
-                "形式: x,y,z,nx,ny,nz（6列・ヘッダーなし）")
-            return
-        self._blade_csv_path = path
-        self._apply_blade_pose()  # 現在の取付オフセットを適用
+        with self._undo_group("刃先CSV読込"):
+            n = self.viewport.load_blade_csv(path)
+            if n == 0:
+                messagebox.showerror("読込エラー",
+                    "刃先CSVの読込に失敗しました。\n"
+                    "形式: x,y,z,nx,ny,nz（6列・ヘッダーなし）")
+                return
+            self._blade_csv_path = path
+            self._apply_blade_pose()  # 現在の取付オフセットを適用
         if hasattr(self, "_tree"):
             self._tree_refresh()
         self._set_status(
@@ -1596,6 +1840,7 @@ class MainWindow:
         else:
             try:
                 loaded = RouteCSVIO.route_from_csv(path)
+                self._push_undo("経路CSV読込")
                 self.route.waypoints = loaded.waypoints
                 self.route.name      = loaded.name
                 self.route.comment   = loaded.comment
@@ -1929,6 +2174,7 @@ class MainWindow:
             if ans:
                 self._apply_prog_route(r)
             else:
+                self._push_undo("LSツリー追加")
                 self._tree_programs.append((r.name, r))
                 self._tree_refresh()
                 self._set_status(
@@ -1951,6 +2197,7 @@ class MainWindow:
                 merged.name = os.path.splitext(base)[0]
                 self._apply_prog_route(merged)
             elif ans is False:
+                self._push_undo("LSツリー追加")
                 for r in routes:
                     self._tree_programs.append((r.name, r))
                 self._tree_refresh()
@@ -1959,6 +2206,7 @@ class MainWindow:
 
     def _apply_prog_route(self, route):
         """読み込んだ Route を現在の経路として適用する。"""
+        self._push_undo("LS経路適用")
         self.route.waypoints = list(route.waypoints)
         self.route.name      = route.name
         self.route.comment   = route.comment
@@ -1975,6 +2223,7 @@ class MainWindow:
 
     def _remove_prog(self, idx: int):
         if 0 <= idx < len(self._tree_programs):
+            self._push_undo("プログラム削除")
             del self._tree_programs[idx]
             self._tree_refresh()
 
@@ -1994,6 +2243,7 @@ class MainWindow:
 
     def _setup_stone_uframe(self):
         """STL bbox の Z 最大値を grinder_top_z として UF9 STONE を自動設定する。"""
+        self._push_undo("UF9 STONE 自動設定")
         grinder_top_z = self._stl_top_z(UserFrame.stone9().z)
         self._sync_uf9(self._uf9_frame(z=grinder_top_z))
 
@@ -2063,6 +2313,7 @@ class MainWindow:
             except ValueError:
                 messagebox.showerror("入力エラー", "数値を入力してください", parent=win)
                 return
+            self._push_undo("経路一括調整")
             for wp in self.route.waypoints:
                 wp.x += dx
                 wp.y += dy
@@ -2096,6 +2347,7 @@ class MainWindow:
         path = paths[0].strip("{}")
         ext = os.path.splitext(path)[1].lower()
         if ext == ".stl":
+            self._push_undo("STL読込")
             ok = self.viewport.load_stl(path)
             if ok:
                 self._set_status(f"✔  STL 読込: {os.path.basename(path)}")
@@ -2105,13 +2357,17 @@ class MainWindow:
             if self._is_blade_csv(path):
                 self._load_blade_csv(path)
             else:
+                self._push_undo("CSV読込")
                 ok = self.viewport.load_csv_points(path)
                 if ok:
                     self._set_status(f"✔  CSV 読込: {os.path.basename(path)}")
                 else:
                     self._set_status("⚠  CSV に有効な X,Y,Z 列がありません")
+        elif ext == ".json":
+            # 設定ファイル（ファイル → 設定をファイルへ出力 で生成）
+            self._import_settings(path)
         else:
-            self._set_status(f"⚠  対応形式: .stl または .csv のみ ({ext})")
+            self._set_status(f"⚠  対応形式: .stl / .csv / .json（設定） ({ext})")
 
     # ──────────────────────────────────────────────────────────────────
     # ステータスバー
@@ -2154,6 +2410,7 @@ class MainWindow:
             step = float(self._jog_step.get())
         except ValueError:
             step = 5.0
+        self._push_undo("ジョグ操作", coalesce=True)
 
         if self._jog_mode.get() == "Joint":
             q = self._joint_angles.copy()
@@ -2226,6 +2483,7 @@ class MainWindow:
             return
         try:
             loaded = RouteCSVIO.route_from_csv(path)
+            self._push_undo("経路CSV読込")
             self.route.waypoints = loaded.waypoints
             self.route.name      = loaded.name
             self.route.comment   = loaded.comment
@@ -2715,6 +2973,7 @@ class MainWindow:
         self.root.update()
         q, ok = self.kin.inverse(T, q_init=self._joint_angles)
         if ok:
+            self._push_undo("IK移動", coalesce=True)
             self._set_angles(q)
             self.viewport.set_selected_waypoint(idx)
             self._set_status(f"✔  IK 成功: P[{idx+1}] ({wp.label})")
@@ -2729,17 +2988,26 @@ class MainWindow:
     # ──────────────────────────────────────────────────────────────────
 
     def _go_home(self):
+        self._push_undo("ホーム移動")
         self._set_angles(self.kin.dh.home_position())
         self._set_status("✔  ホームポジション (全軸 0°) に移動しました")
 
     def _go_ready(self):
+        self._push_undo("レディ移動")
         self._set_angles(self.kin.dh.ready_position())
         self._set_status("✔  レディポジション (J2=-45° J3=+30° J5=-60°) に移動しました")
 
     def _set_angles(self, q: np.ndarray):
         self._joint_angles = q.copy()
-        for i, var in enumerate(self._slider_vars):
-            var.set(np.rad2deg(q[i]))
+        # スライダー var.set はコールバック (_on_slider_change) を誘発する
+        # ため、プログラム由来の更新は undo に記録しない
+        prev = self._suppress_undo
+        self._suppress_undo = True
+        try:
+            for i, var in enumerate(self._slider_vars):
+                var.set(np.rad2deg(q[i]))
+        finally:
+            self._suppress_undo = prev
         self._update_viewport_from_angles(q)
         self._update_fk_display()
 
@@ -2764,7 +3032,8 @@ class MainWindow:
             fields=["x", "y", "z", "rx", "ry", "rz"],
             labels=["X オフセット (mm)", "Y オフセット (mm)", "Z オフセット (mm)",
                     "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
-            on_apply=_apply
+            on_apply=_apply,
+            undo_label="ツールフレーム編集",
         )
 
     def _edit_user_frame(self, uf=None):
@@ -2791,10 +3060,12 @@ class MainWindow:
             fields=["x", "y", "z", "rx", "ry", "rz"],
             labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)",
                     "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
-            on_apply=_apply
+            on_apply=_apply,
+            undo_label="ユーザーフレーム編集",
         )
 
-    def _frame_editor_dialog(self, title, desc, obj, fields, labels, on_apply):
+    def _frame_editor_dialog(self, title, desc, obj, fields, labels, on_apply,
+                             undo_label="フレーム編集"):
         win = tk.Toplevel(self.root)
         win.title(title)
         win.geometry("380x340")
@@ -2813,6 +3084,7 @@ class MainWindow:
 
         def _live_apply():
             """各フィールドの値を obj に書き戻し 3D ビューへ即時反映する。"""
+            self._push_undo(undo_label, coalesce=True)
             for f, v in vars_.items():
                 try:
                     setattr(obj, f, float(v.get()))
@@ -2864,6 +3136,7 @@ class MainWindow:
                     "CSVに有効な経路点が見つかりませんでした。\n"
                     "ヘッダー行: x_mm,y_mm,z_mm,rx_deg,ry_deg,rz_deg,speed_mmps,motion_type,label")
                 return
+            self._push_undo("研磨経路CSV読込")
             self.route.waypoints = loaded.waypoints
             self.route.name      = loaded.name or os.path.splitext(os.path.basename(path))[0]
             self.route.comment   = loaded.comment or "Knife sharpening route"
@@ -2899,18 +3172,19 @@ class MainWindow:
         if not os.path.isfile(stl_path):
             self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
             return
-        ok = self.viewport.load_stl(stl_path)
-        if ok:
-            self._apply_stl_default_pose()
-            # Auto-add UF9 stone top reference frame using actual STL bbox
-            stone_top_z = self._stl_top_z(self._STL_DEFAULT_POSE[2])
-            # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
-            # 参照フレーム / 調整パネルを一括更新）
-            self._sync_uf9(self._uf9_frame(z=stone_top_z))
-            self._set_status(
-                f"✔  Tormek T8 STL 読込済（X=740, Y=240, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
-        else:
-            self._set_status("⚠  STL 読込失敗")
+        with self._undo_group("Tormek STL 読込"):
+            ok = self.viewport.load_stl(stl_path)
+            if ok:
+                self._apply_stl_default_pose()
+                # Auto-add UF9 stone top reference frame using actual STL bbox
+                stone_top_z = self._stl_top_z(self._STL_DEFAULT_POSE[2])
+                # UF9 STONE を STL 上面 Z で同期（USER_FRAMES / コンボ /
+                # 参照フレーム / 調整パネルを一括更新）
+                self._sync_uf9(self._uf9_frame(z=stone_top_z))
+                self._set_status(
+                    f"✔  Tormek T8 STL 読込済（X=740, Y=240, Z=266, Rz=-90°）  UF9 STONE z={stone_top_z:.0f}mm")
+            else:
+                self._set_status("⚠  STL 読込失敗")
 
     def _load_tormek_csv(self):
         """Tormek 研削経路 CSV のみ読み込む（STLは触らない）。"""
@@ -2918,6 +3192,7 @@ class MainWindow:
         if not os.path.exists(csv_path):
             self._set_status("⚠  研削経路 CSV が見つかりません: " + csv_path)
             return
+        self._push_undo("Tormek CSV 読込")
         ok = self.viewport.load_csv_points(csv_path)
         if ok:
             self._set_status("✔  Tormek 研削経路 CSV 読込済")
@@ -3017,6 +3292,7 @@ class MainWindow:
 
         一括反映: リスト構築 → set_route 1回 → 再描画 1回（per-point 処理なし）。
         """
+        self._push_undo("研磨ルート展開")
         seq = build_playback_sequence(result)
         self.route.waypoints = seq
         self.route.name = "kenma"
@@ -3077,8 +3353,23 @@ class MainWindow:
         Rw, tw = T[:3, :3], T[:3, 3]
         world_curves = [(Rw @ g.pts.T).T + tw for g in groups]
 
-        sel: list = []      # 選択順のグループ index 列
-        rev: dict = {}      # gi -> 逆方向フラグ（RoboDK の「逆方向」相当）
+        # 前回のダイアログ状態（選択順・逆方向・オフセット式）を復元する。
+        # 曲線名で照合するため、同じ刃先CSVなら選択がそのまま戻る。
+        saved = self._kenma_dlg_state
+        name_to_gi = {n: i for i, n in enumerate(names)}
+        sel: list = [name_to_gi[n] for n in saved.get("sel", [])
+                     if n in name_to_gi]          # 選択順のグループ index 列
+        rev: dict = {name_to_gi[n]: True          # gi -> 逆方向フラグ
+                     for n, r in saved.get("rev", {}).items()
+                     if r and n in name_to_gi}
+
+        def _save_dlg_state():
+            """選択順・逆方向・オフセット式を保持する（次回・undo 用）。"""
+            self._kenma_dlg_state = {
+                "offset": off_var.get(),
+                "sel": [names[gi] for gi in sel],
+                "rev": {names[gi]: True for gi in sel if rev.get(gi, False)},
+            }
 
         win = tk.Toplevel(self.root)
         win.title("曲線を選択して研磨ルート生成")
@@ -3094,7 +3385,9 @@ class MainWindow:
                  "クリックした順番 = 研磨の実行順（RoboDKの曲線選択と同じ）。\n"
                  "選択済み曲線を再クリックすると解除されます。\n"
                  "※ クリック（5px未満）で選択 / ドラッグはそのまま視点回転です。\n"
-                 "※ リストの右クリック or「⇄ 逆方向」で掃引方向を反転できます。",
+                 "※ リストの右クリック or「⇄ 逆方向」で掃引方向を反転できます。\n"
+                 "※ 生成後もこの画面は開いたまま — オフセット等を変えて何度でも\n"
+                 "　 生成し直せます（Ctrl+Z で生成前のルートに戻せます）。",
             bg=BG_DARK, fg=FG_SUB,
             font=self._fnt(8), justify="left").pack(padx=14, anchor="w")
 
@@ -3218,6 +3511,7 @@ class MainWindow:
         lb.bind("<Button-3>", _on_lb_right_click)
 
         def _close():
+            _save_dlg_state()
             self.viewport.clear_pick_curves()
             win.destroy()
 
@@ -3233,8 +3527,10 @@ class MainWindow:
              "・rotz = 砥石面法線まわり（面内の向き）\n"
              "transl は接触フレーム軸方向に接触点を平行移動します。\n\n"
              "例: rotx(15) → 刃付け角を15°追加\n"
-             "既定 rotx(0)*roty(0)*rotz(0) = オフセットなし（従来と同一出力）")
-        off_var = tk.StringVar(value="rotx(0)*roty(0)*rotz(0)")
+             "既定 rotx(0)*roty(0)*rotz(0) = オフセットなし（従来と同一出力）\n"
+             "※ 式は保持されます — 生成後に変更して何度でも生成し直せます")
+        off_var = tk.StringVar(
+            value=saved.get("offset", "rotx(0)*roty(0)*rotz(0)"))
         off_state = {"mat": np.eye(4)}   # 最後に有効だった行列を保持
         off_row = ttk.Frame(off_lf)
         off_row.pack(fill=tk.X, padx=6, pady=(2, 1))
@@ -3265,6 +3561,7 @@ class MainWindow:
 
         off_entry.bind("<KeyRelease>", _validate_offset)
         off_entry.bind("<FocusOut>",  _validate_offset)
+        _validate_offset()   # 復元した式を即評価（off_state["mat"] を同期）
 
         # ── スタート地点に好ましい関節（RoboDK 互換） ────────────────
         q_lf = ttk.LabelFrame(win, text="  スタート地点に好ましい関節")
@@ -3364,7 +3661,7 @@ class MainWindow:
                                      f"生成に失敗しました:\n{e}", parent=win)
                 self._set_status("⚠  曲線選択ルートの生成に失敗しました")
                 return
-            _close()
+            _save_dlg_state()   # オフセット式・選択順を保持（次回/再生成用）
 
             ans = messagebox.askyesnocancel(
                 "曲線選択ルート生成",
@@ -3374,14 +3671,18 @@ class MainWindow:
                 f"  IK到達不能: {result.n_unreachable} 点\n\n"
                 "「はい」: kenma形式LS（3ファイル1組）を出力して経路点リストへ展開\n"
                 "「いいえ」: 経路点リストへ展開のみ（シミュ再生用）\n"
-                "「キャンセル」: 何もしない",
-                icon="question")
+                "「キャンセル」: 何もしない\n\n"
+                "※ この画面は開いたままです。オフセット等を変更して\n"
+                "　「ルート生成」を押せば何度でもやり直せます（Ctrl+Z でも戻せます）。",
+                icon="question", parent=win)
             if ans is None:
-                self._set_status("曲線選択ルート: 生成結果を破棄しました")
+                self._set_status("曲線選択ルート: 生成結果を破棄しました"
+                                 "（条件を変えて再生成できます）")
                 return
             if ans:
                 out_dir = filedialog.askdirectory(
-                    title="kenma形式LS（選択曲線）の出力先フォルダを選択")
+                    title="kenma形式LS（選択曲線）の出力先フォルダを選択",
+                    parent=win)
                 if out_dir:
                     try:
                         paths = export_kenma_ls(result, out_dir, self.kin,
@@ -3392,11 +3693,13 @@ class MainWindow:
                             f"✔  選択曲線LS出力完了: {names_str} → {out_dir}")
                     except Exception as e:
                         messagebox.showerror("LS出力エラー",
-                                             f"出力に失敗しました:\n{e}")
+                                             f"出力に失敗しました:\n{e}",
+                                             parent=win)
             self._apply_kenma_sequence(result)
             self._set_status(
                 f"✔  選択 {len(order)} 曲線（HaL {nl} / HaR {nr}）の研磨ルートを"
-                f"経路点リストへ展開: {len(self.route)} 点 — シミュ実行で再生できます")
+                f"経路点リストへ展開: {len(self.route)} 点 — "
+                "オフセットを変えて再生成も可能（Ctrl+Z で戻せます）")
 
         btn_row1 = ttk.Frame(win)
         btn_row1.pack(pady=(6, 2))
@@ -3419,9 +3722,14 @@ class MainWindow:
 
         btn_row2 = ttk.Frame(win)
         btn_row2.pack(pady=(2, 10))
-        ttk.Button(btn_row2, text="📐  ルート生成", style="Primary.TButton",
-                   command=_generate).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn_row2, text="キャンセル",
+        gen_btn = ttk.Button(btn_row2, text="📐  ルート生成", style="Primary.TButton",
+                             command=_generate)
+        gen_btn.pack(side=tk.LEFT, padx=6)
+        _tip(gen_btn,
+             "選択した曲線から研磨ルートを生成します。\n"
+             "生成後もこの画面は開いたまま — オフセット式や選択を変えて\n"
+             "何度でも生成し直せます（Ctrl+Z で生成前に戻せます）。")
+        ttk.Button(btn_row2, text="閉じる",
                    command=_close).pack(side=tk.LEFT, padx=6)
 
         win.protocol("WM_DELETE_WINDOW", _close)
@@ -3434,7 +3742,8 @@ class MainWindow:
             "3Dビューで曲線をクリックして研磨順に選択してください")
 
     def _clear_route(self):
-        if messagebox.askyesno("確認", "経路点をすべて削除しますか？\nこの操作は元に戻せません。"):
+        if messagebox.askyesno("確認", "経路点をすべて削除しますか？\n（Ctrl+Z で元に戻せます）"):
+            self._push_undo("ルートをクリア")
             self.route.clear()
             self.route_editor.set_route(self.route)
             self.viewport.set_route(self.route)   # set_route が再描画する

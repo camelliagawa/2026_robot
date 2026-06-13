@@ -158,68 +158,6 @@ def _disk(ax, center, normal, radius: float, color: str,
     ax.add_collection3d(poly)
 
 
-def _box_link(ax, p1, p2, w: float, h: float, color: str, alpha: float = 1.0):
-    """
-    Draw a rectangular-section link from p1 to p2.
-    w = width, h = height of the cross-section (perpendicular to link axis).
-    Gives a more realistic arm appearance than a cylinder.
-    """
-    p1 = np.asarray(p1, float)
-    p2 = np.asarray(p2, float)
-    v  = p2 - p1
-    ln = np.linalg.norm(v)
-    if ln < 1e-6:
-        return
-    v_u = v / ln
-    ref = [0, 0, 1] if abs(v_u[2]) < 0.9 else [1, 0, 0]
-    e1  = np.cross(v_u, ref); e1 /= np.linalg.norm(e1)
-    e2  = np.cross(v_u, e1)
-
-    hw, hh = w / 2, h / 2
-    # 8 corners: 4 at p1 end, 4 at p2 end
-    offsets = [hw * e1 + hh * e2, -hw * e1 + hh * e2,
-               -hw * e1 - hh * e2,  hw * e1 - hh * e2]
-    c = [p1 + o for o in offsets] + [p2 + o for o in offsets]
-
-    edge_c = FANUC_YELLOW_D if color == FANUC_YELLOW else "#444444"
-    faces = [
-        [c[0], c[1], c[2], c[3]],  # p1 cap
-        [c[4], c[5], c[6], c[7]],  # p2 cap
-        [c[0], c[1], c[5], c[4]],  # side A
-        [c[2], c[3], c[7], c[6]],  # side B
-        [c[1], c[2], c[6], c[5]],  # side C
-        [c[0], c[3], c[7], c[4]],  # side D
-    ]
-    poly = Poly3DCollection(faces, alpha=alpha, facecolor=color,
-                            edgecolor=edge_c, linewidth=0.4)
-    ax.add_collection3d(poly)
-
-
-def _rotated_box(ax, center, R: np.ndarray,
-                 lx: float, ly: float, lz: float,
-                 color: str, alpha: float = 1.0):
-    """
-    Draw a box rotated by matrix R, centered at `center`.
-    lx/ly/lz are full side lengths along R's x/y/z columns.
-    """
-    c = np.asarray(center, float)
-    signs = np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
-                       [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]], float)
-    half  = np.array([lx/2, ly/2, lz/2])
-    verts = c + (R @ (signs * half).T).T
-
-    edge_c = FANUC_YELLOW_D if color == FANUC_YELLOW else "#444444"
-    v = verts
-    faces = [
-        [v[0],v[1],v[2],v[3]], [v[4],v[5],v[6],v[7]],
-        [v[0],v[1],v[5],v[4]], [v[2],v[3],v[7],v[6]],
-        [v[1],v[2],v[6],v[5]], [v[0],v[3],v[7],v[4]],
-    ]
-    poly = Poly3DCollection(faces, alpha=alpha, facecolor=color,
-                            edgecolor=edge_c, linewidth=0.4)
-    ax.add_collection3d(poly)
-
-
 class Viewport3D:
     """Embedded 3D matplotlib viewport inside a tkinter frame."""
 
@@ -243,9 +181,11 @@ class Viewport3D:
 
         self._stl_verts: Optional[np.ndarray] = None   # (N,3,3) STL triangles
         self._stl_name: str = ""
+        self._stl_path: str = ""
         self._stl_T: np.ndarray = np.eye(4)
         self._csv_points: Optional[np.ndarray] = None  # (N,3) CSV points
         self._csv_name: str = ""
+        self._csv_path: str = ""
         self._csv_T: np.ndarray = np.eye(4)
 
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
@@ -256,6 +196,7 @@ class Viewport3D:
         self._blade_pts: Optional[np.ndarray] = None      # (N,3) local points
         self._blade_normals: Optional[np.ndarray] = None  # (N,3) local normals
         self._blade_name: str = ""
+        self._blade_path: str = ""
         self._blade_T: np.ndarray = np.eye(4)             # local offset from flange
 
         # 選択可能曲線（RoboDK風 曲線選択ダイアログ用・ワールド座標）
@@ -875,6 +816,7 @@ class Viewport3D:
             return False
         self._stl_verts = verts
         self._stl_name = os.path.basename(path)
+        self._stl_path = path
         self._redraw()
         return True
 
@@ -892,6 +834,7 @@ class Viewport3D:
         if pts:
             self._csv_points = np.array(pts)
             self._csv_name = os.path.basename(path)
+            self._csv_path = path
             self._redraw()
             return True
         return False
@@ -923,6 +866,7 @@ class Viewport3D:
         self._blade_pts     = np.array(pts, dtype=float)
         self._blade_normals = np.array(nrm, dtype=float)
         self._blade_name    = os.path.basename(path)
+        self._blade_path    = path
         self._redraw()
         return len(pts)
 
@@ -936,6 +880,7 @@ class Viewport3D:
         self._blade_pts = None
         self._blade_normals = None
         self._blade_name = ""
+        self._blade_path = ""
         self._blade_T = np.eye(4)
         self._redraw()
 
@@ -985,13 +930,52 @@ class Viewport3D:
     def clear_stl(self):
         self._stl_verts = None
         self._stl_name = ""
+        self._stl_path = ""
         self._stl_T = np.eye(4)
         self._redraw()
 
     def clear_csv(self):
         self._csv_points = None
         self._csv_name = ""
+        self._csv_path = ""
         self._csv_T = np.eye(4)
+        self._redraw()
+
+    # ── レイヤー状態のスナップショット（Undo/Redo 用） ────────────────
+
+    _LAYER_FIELDS = (
+        "_stl_verts", "_stl_name", "_stl_path", "_stl_T",
+        "_csv_points", "_csv_name", "_csv_path", "_csv_T",
+        "_blade_pts", "_blade_normals", "_blade_name", "_blade_path",
+        "_blade_T",
+    )
+
+    def snapshot_layers(self) -> dict:
+        """STL/CSV/刃先CSV/参照フレームの状態を辞書として返す。
+
+        点群データ（ndarray）は読み込み後に書き換えられないため参照を
+        共有し、姿勢行列のみコピーする。
+        """
+        snap = {}
+        for f in self._LAYER_FIELDS:
+            v = getattr(self, f)
+            snap[f] = v.copy() if f.endswith("_T") else v
+        snap["ref_frames"] = [
+            {"name": rf["name"], "T": rf["T"].copy(),
+             "color": rf.get("color", "#FF88FF")}
+            for rf in self._ref_frames
+        ]
+        return snap
+
+    def restore_layers(self, snap: dict):
+        """snapshot_layers() の状態を復元して再描画する。"""
+        for f in self._LAYER_FIELDS:
+            v = snap[f]
+            setattr(self, f, v.copy() if f.endswith("_T") else v)
+        self._ref_frames = [
+            {"name": rf["name"], "T": rf["T"].copy(), "color": rf["color"]}
+            for rf in snap["ref_frames"]
+        ]
         self._redraw()
 
     def _draw_overlay(self):
