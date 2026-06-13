@@ -173,6 +173,7 @@ class MainWindow:
         self._sim_solutions_ready = False     # 事前計算完了フラグ
         self._pre_frames = None               # 案1: 事前描画フレーム（RGBA画像）
         self._pre_idxs = None                 # 各フレームの分数インデックス
+        self._pre_fps = 20.0                  # フレームレート（動画保存でも使用）
         self._sim_precompute_thread: Optional[threading.Thread] = None
         self._sim_precompute_token = 0        # ルート変更ごとに増分（古い結果を破棄）
         self._seek_dragging = False           # スクラブ中フラグ
@@ -1510,10 +1511,20 @@ class MainWindow:
             command=self._smooth_play)
         self._smooth_btn.pack(pady=1, fill=tk.X)
         _tip(self._smooth_btn,
-             "案1: 再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
+             "再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
              "再描画をやめて画像を差し替えるだけにします（最も滑らか・高品質）。\n"
-             "・再生開始まで「描画中…」の待ち時間が発生します（キャンセル可）\n"
+             "・初回のみ「描画中…」の待ち時間が発生します（キャンセル可）\n"
+             "・2回目以降はキャッシュから即再生（ルート変更時は再描画）\n"
              "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
+        self._save_video_btn = ttk.Button(
+            sim_inner, text="💾  動画保存（MP4 / GIF）",
+            command=self._save_smooth_video, state="disabled")
+        self._save_video_btn.pack(pady=1, fill=tk.X)
+        _tip(self._save_video_btn,
+             "事前描画したフレームを動画ファイルとして保存します。\n"
+             "・MP4: 高品質（imageio-ffmpeg が使用可能な場合）\n"
+             "・GIF: 256色、フォールバック\n"
+             "「滑らか再生」を一度実行するとボタンが有効になります。")
         self._sim_progress_var = tk.StringVar(value="待機中")
         tk.Label(sim_inner, textvariable=self._sim_progress_var,
                  bg=BG_PANEL, fg=FG_SUB, font=("", 7)).pack()
@@ -2741,6 +2752,13 @@ class MainWindow:
         """ルート変更時に IK 解キャッシュを破棄して再計算を起動する。"""
         self._sim_solutions = []
         self._sim_solutions_ready = False
+        # 事前描画キャッシュもルート変更で無効化
+        self._pre_frames = None
+        self._pre_idxs = None
+        if hasattr(self, "_save_video_btn"):
+            self._save_video_btn.config(state="disabled")
+        if hasattr(self, "_smooth_btn"):
+            self._smooth_btn.config(text="🎬  滑らか再生（事前描画）")
         self._sim_precompute_token += 1
         token = self._sim_precompute_token
         self._set_seek_enabled(False)
@@ -3104,9 +3122,8 @@ class MainWindow:
     def _smooth_play(self):
         """全フレームを事前に画像へ描画してから滑らかに再生する。
 
-        再生前に各フレームを通常品質でオフスクリーン描画し RGBA 画像として
-        ためておき、再生中は重い 3D 再描画をやめて画像を差し替えるだけにする。
-        実機メッシュのまま滑らかに再生できる（案2 の軽量表示が不要になる）。
+        キャッシュ済みフレームがある場合は描画をスキップして即再生。
+        ルート変更時は _invalidate_sim_solutions でキャッシュが自動破棄される。
         """
         n_wp = len(self.route.waypoints)
         if n_wp < 2:
@@ -3126,13 +3143,18 @@ class MainWindow:
                 "再生不可", "総再生時間が 0 秒です。経路点の速度を確認してください。")
             return
 
+        # ── キャッシュがあれば即再生 ──────────────────────────────────
+        if self._pre_frames is not None and len(self._pre_frames) >= 2:
+            self._smooth_start_playback(ns, total)
+            return
+
         # ── フレーム枚数（時間等間隔・メモリ上限でクランプ） ──
         fig = self.viewport.fig
         w = max(int(fig.get_figwidth() * fig.dpi), 1)
         h = max(int(fig.get_figheight() * fig.dpi), 1)
         frame_bytes = max(w * h * 4, 1)
-        budget = 400 * 1024 * 1024  # 約400MB を上限にフレーム数を抑制
-        fps = 20.0
+        budget = 400 * 1024 * 1024
+        fps = self._pre_fps
         n_frames = int(round(total * fps)) + 1
         n_frames = max(2, min(n_frames, 240, max(2, int(budget // frame_bytes))))
         times = np.linspace(0.0, total, n_frames)
@@ -3198,7 +3220,7 @@ class MainWindow:
                 break
             try:
                 frames.append(self.viewport.render_frame(idx_to_q(idx_f)))
-            except Exception as e:  # 描画失敗時は中断して原状復帰
+            except Exception as e:
                 dlg.grab_release()
                 dlg.destroy()
                 self.viewport.update_robot(saved_pose)
@@ -3215,22 +3237,34 @@ class MainWindow:
         dlg.destroy()
 
         if cancelled or len(frames) < 2:
-            self.viewport.update_robot(saved_pose)  # 元の姿勢へ戻す
+            self.viewport.update_robot(saved_pose)
             self._set_status("⏹  事前描画をキャンセルしました")
             return
 
-        n_frames = len(frames)          # 中断で減った場合に合わせる
+        n_frames = len(frames)
         idxs = idxs[:n_frames]
 
-        # ── 事前描画フレームで滑らか再生 ──
+        # キャッシュとして保持（ルート変更まで繰り返し再生に使用）
         self._pre_frames = frames
         self._pre_idxs = idxs
+        self._smooth_btn.config(text="🎬  滑らか再生（キャッシュ済み）")
+        self._save_video_btn.config(state="normal")
+        self._smooth_start_playback(ns, total)
+
+    def _smooth_start_playback(self, ns: int, total: float):
+        """キャッシュ済みフレームで再生ループを起動する。"""
+        frames = self._pre_frames
+        idxs = self._pre_idxs
+        n_frames = len(frames)
+        fps = self._pre_fps
+
         self.viewport.begin_prerendered_playback(frames[0])
         self._sim_playing = True
         self._sim_running = True
         self._play_btn_var.set("⏸")
         self._sim_btn.config(state="disabled")
         self._smooth_btn.config(state="disabled")
+        self._save_video_btn.config(state="disabled")
         self._sim_start_time = time.time()
         self._sim_total_est = total
         self._sim_play_t0 = 0.0
@@ -3245,8 +3279,8 @@ class MainWindow:
                 def _update(fi=fi):
                     if not self._sim_running or self.viewport._pre_img is None:
                         return
-                    self.viewport.show_prerendered_frame(self._pre_frames[fi])
-                    idx = self._pre_idxs[fi]
+                    self.viewport.show_prerendered_frame(frames[fi])
+                    idx = idxs[fi]
                     self._seek_updating = True
                     try:
                         self._seek_var.set(idx)
@@ -3272,9 +3306,15 @@ class MainWindow:
         self._sim_running = False
         self._play_btn_var.set("▶")
         self._sim_btn.config(state="normal")
-        self._smooth_btn.config(state="normal")
+        # キャッシュが残っていれば「キャッシュ済み」表示のまま、動画保存も有効
+        cached = self._pre_frames is not None and len(self._pre_frames) >= 2
+        self._smooth_btn.config(
+            state="normal",
+            text="🎬  滑らか再生（キャッシュ済み）" if cached
+                 else "🎬  滑らか再生（事前描画）")
+        self._save_video_btn.config(state="normal" if cached else "disabled")
         n_done = len(self._pre_frames) if self._pre_frames else 0
-        self.viewport.end_prerendered_playback()  # 3D 描画へ復帰
+        self.viewport.end_prerendered_playback()
         n = len(self.route.waypoints)
         if was_running and n:
             self._seek_updating = True
@@ -3287,9 +3327,63 @@ class MainWindow:
         self._sim_progress_var.set("完了" if was_running else "一時停止")
         self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
         self._set_status(
-            f"✔  滑らか再生完了（事前描画 {n_done} フレーム）")
-        self._pre_frames = None   # メモリ解放
-        self._pre_idxs = None
+            f"✔  滑らか再生完了（{n_done} フレーム キャッシュ済み・繰り返し再生可）")
+
+    def _save_smooth_video(self):
+        """キャッシュ済みフレームを動画ファイル（MP4 / GIF）として保存する。"""
+        if not self._pre_frames or len(self._pre_frames) < 2:
+            messagebox.showwarning("フレームなし",
+                                   "先に「滑らか再生」を実行してフレームをキャッシュしてください。")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="動画を保存",
+            defaultextension=".mp4",
+            filetypes=[("MP4 動画", "*.mp4"), ("GIF アニメーション", "*.gif"),
+                       ("すべてのファイル", "*.*")],
+        )
+        if not path:
+            return
+
+        fps = self._pre_fps
+        ext = os.path.splitext(path)[1].lower()
+        self._set_status(f"💾  動画を保存中…  {os.path.basename(path)}")
+        self._save_video_btn.config(state="disabled")
+        self.root.update()
+
+        try:
+            if ext == ".gif":
+                self._save_as_gif(path, fps)
+            else:
+                self._save_as_mp4(path, fps)
+            self._set_status(f"✔  動画を保存しました: {path}")
+        except Exception as e:
+            messagebox.showerror("保存エラー", f"動画の保存に失敗しました:\n{e}")
+            self._set_status("✖  動画の保存に失敗しました")
+        finally:
+            self._save_video_btn.config(state="normal")
+
+    def _save_as_mp4(self, path: str, fps: float):
+        """imageio-ffmpeg で MP4 として保存する。"""
+        try:
+            import imageio
+        except ImportError:
+            raise RuntimeError(
+                "imageio が見つかりません。pip install imageio[ffmpeg] を実行してください。")
+        # RGBA→RGB（alpha チャンネルを落とす）
+        rgb_frames = [f[:, :, :3] for f in self._pre_frames]
+        imageio.mimsave(path, rgb_frames, fps=fps,
+                        codec="libx264", quality=8,
+                        macro_block_size=None)
+
+    def _save_as_gif(self, path: str, fps: float):
+        """Pillow で GIF アニメーションとして保存する。"""
+        from PIL import Image
+        duration_ms = int(1000 / max(fps, 1))
+        pil_frames = [Image.fromarray(f[:, :, :3]) for f in self._pre_frames]
+        pil_frames[0].save(
+            path, save_all=True, append_images=pil_frames[1:],
+            duration=duration_ms, loop=0, optimize=False)
 
     # ──────────────────────────────────────────────────────────────────
     # IK
