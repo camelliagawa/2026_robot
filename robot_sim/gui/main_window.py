@@ -426,9 +426,6 @@ class MainWindow:
 
         # 表示
         v = menu("  表示 (View)  ")
-        v.add_command(label="  ⊡  全体表示にフィット          F",
-                      command=self._fit_view)
-        v.add_separator()
         self._font_size_var = tk.StringVar(value="中")
         for lbl, sc in [("小", 1.1), ("中", 1.3), ("大", 1.6)]:
             v.add_radiobutton(
@@ -449,8 +446,6 @@ class MainWindow:
         self.root.bind("<Control-z>", lambda e: self._undo())
         self.root.bind("<Control-y>", lambda e: self._redo())
         self.root.bind("<Control-Z>", lambda e: self._redo())   # Ctrl+Shift+Z
-        self.root.bind("<f>", self._on_fit_key)
-        self.root.bind("<F>", self._on_fit_key)
 
     # ──────────────────────────────────────────────────────────────────
     # Undo / Redo（スナップショット方式 — 全機能やり直し対応）
@@ -494,20 +489,6 @@ class MainWindow:
             self._set_status(f"↪  やり直す: {label}")
         else:
             self._set_status("やり直せる操作はありません")
-        return "break"
-
-    def _fit_view(self):
-        """3Dビューを全ジオメトリが収まるよう自動調整する（メニュー/ボタン/F）。"""
-        self.viewport.fit_view()
-        self._set_status("⊡  全体表示にフィットしました")
-
-    def _on_fit_key(self, event=None):
-        """F キー: 入力欄にフォーカスがある時は通常入力を優先し、それ以外で
-        全体表示にフィットする。"""
-        w = self.root.focus_get()
-        if isinstance(w, (tk.Entry, ttk.Entry, tk.Text, ttk.Combobox, tk.Spinbox)):
-            return  # テキスト入力中は通常の文字入力として扱う
-        self._fit_view()
         return "break"
 
     def _update_edit_menu(self):
@@ -695,12 +676,35 @@ class MainWindow:
         sash.bind("<Leave>", _sash_leave)
         _tip(sash, "ドラッグでステーションパネルの幅を変更できます")
 
-        # ── 上部：固定フレーム（スクロール廃止 — フォント変更時のずれを防止）──
-        right = ttk.Frame(right_outer)
-        right.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        # ── 下部：折りたたみ式更新履歴 ──
+        # ── 下部：折りたたみ式更新履歴（先に下端へ確保）──
         self._build_changelog_panel_collapsible(right_outer)
+
+        # ── 上部：スクロール可能フレーム ──
+        # 内容（マーカー・参照フレーム・砥石調整・経路点・STL/CSV Pose）が
+        # ウィンドウ高に収まらない時でも、スクロールバー＋ホイールで
+        # 末尾の STL/CSV Pose まで常に表示できるようにする（ステーション欄と同様）。
+        right_canvas = tk.Canvas(right_outer, bg=BG_DARK,
+                                 highlightthickness=0, bd=0)
+        right_vsb = ttk.Scrollbar(right_outer, orient=tk.VERTICAL,
+                                  command=right_canvas.yview)
+        right_canvas.configure(yscrollcommand=right_vsb.set)
+        right_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        right_canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        right = ttk.Frame(right_canvas)
+        right_win = right_canvas.create_window((0, 0), window=right, anchor="nw")
+        self._right_canvas = right_canvas
+
+        def _on_inner_config(event):
+            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+
+        def _on_canvas_config(event):
+            # 内側フレーム幅をキャンバス幅に合わせる（横スクロール不要に）
+            right_canvas.itemconfigure(right_win, width=event.width)
+
+        right.bind("<Configure>", _on_inner_config)
+        right_canvas.bind("<Configure>", _on_canvas_config)
+        self._bind_right_mousewheel(right_canvas)
 
         # 左コンテナ：ビューポート＋ジョグパネルをまとめて右パネルと同幅に
         left_container = ttk.Frame(self.root)
@@ -718,13 +722,6 @@ class MainWindow:
         # 3D ビューポートは残りの全スペースを使う
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        vp_bar = ttk.Frame(left)
-        vp_bar.pack(side=tk.TOP, fill=tk.X, padx=4, pady=(2, 0))
-        fit_btn = ttk.Button(vp_bar, text="⊡  全体表示にフィット (F)",
-                             command=self._fit_view)
-        fit_btn.pack(side=tk.LEFT)
-        _tip(fit_btn, "ロボット・STL・砥石・経路など全体が画面に収まるよう\n"
-                      "視点とズームを自動調整します（F キーでも実行）。")
         self.viewport = Viewport3D(left, self.kin)
 
         self._build_markers_panel(right)
@@ -748,6 +745,38 @@ class MainWindow:
         if _HAS_DND:
             self.viewport.canvas_widget.drop_target_register(DND_FILES)
             self.viewport.canvas_widget.dnd_bind("<<Drop>>", self._on_viewport_drop)
+
+    def _bind_right_mousewheel(self, canvas):
+        """ポインタが右パネル内にある間、ホイールでパネルを縦スクロールする。
+
+        リストボックス・入力欄など自前でホイールを使う widget 上では
+        そちらを優先し、二重スクロールを防ぐ（その widget で early-return）。
+        """
+        skip = (tk.Listbox, tk.Text, tk.Entry, ttk.Entry,
+                ttk.Combobox, tk.Spinbox)
+
+        def _wheel(event):
+            w = self.root.winfo_containing(event.x_root, event.y_root)
+            inside = False
+            while w is not None:
+                if isinstance(w, skip):
+                    return        # 自前ホイール widget を優先
+                if w is canvas:
+                    inside = True
+                    break
+                w = getattr(w, "master", None)
+            if not inside:
+                return
+            if getattr(event, "num", None) == 5 or event.delta < 0:
+                canvas.yview_scroll(1, "units")
+            else:
+                canvas.yview_scroll(-1, "units")
+
+        # 永続 bind_all（領域判定で右パネル外は無視）— Enter/Leave 方式の
+        # 「子 widget へ移ると解除される」問題を避ける。
+        self.root.bind_all("<MouseWheel>", _wheel, add="+")
+        self.root.bind_all("<Button-4>",   _wheel, add="+")  # Linux 上スクロール
+        self.root.bind_all("<Button-5>",   _wheel, add="+")  # Linux 下スクロール
 
     # ──────────────────────────────────────────────────────────────────
     # TCP・ターゲットマーカー管理パネル
