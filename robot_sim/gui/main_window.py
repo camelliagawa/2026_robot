@@ -34,7 +34,7 @@ import numpy as np
 from ..robot.kinematics import Kinematics
 from ..robot.tool_frame import ToolFrame
 from ..robot.user_frame import UserFrame
-from ..path.route import Route
+from ..path.route import Route, Waypoint
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
 from ..path.kenma_export import (
@@ -137,6 +137,22 @@ def _tip(widget: tk.Widget, text: str) -> _Tooltip:
     return _Tooltip(widget, text)
 
 
+class _NamedTarget:
+    """Named TCP target / bookmark for the Route Sequence."""
+    __slots__ = ("name", "x", "y", "z", "rx", "ry", "rz")
+
+    def __init__(self, name: str, x: float = 0.0, y: float = 0.0,
+                 z: float = 400.0, rx: float = 180.0, ry: float = 0.0, rz: float = 0.0):
+        self.name = name
+        self.x = float(x);  self.y = float(y);  self.z = float(z)
+        self.rx = float(rx); self.ry = float(ry); self.rz = float(rz)
+
+    def as_waypoint(self, speed: float = 50.0) -> Waypoint:
+        return Waypoint(x=self.x, y=self.y, z=self.z,
+                        rx=self.rx, ry=self.ry, rz=self.rz,
+                        speed=speed, label=self.name)
+
+
 class MainWindow:
     """Top-level application window."""
 
@@ -158,6 +174,8 @@ class MainWindow:
         self._active_uframe = self.USER_FRAMES[0]
         self._tree_programs: list = []   # [(prog_name, Route)]
         self._blade_csv_path: Optional[str] = None
+        self._named_targets: list = []   # List[_NamedTarget]
+        self._route_sequence: list = []  # List[dict] — {"type":"route"|"target", ...}
 
         # ── Undo/Redo（全機能やり直し対応） ──
         self._suppress_undo = False   # 再生・復元中の自動更新は記録しない
@@ -2055,6 +2073,38 @@ class MainWindow:
             tree.insert(tools_node, "end", iid="blade_csv",
                          text=f"[刃先] {name} ({n_blade}pt)")
 
+        # Named Targets ライブラリ
+        nt_count = len(self._named_targets)
+        nt_node = tree.insert(robot, "end", iid="named_targets",
+                               text=f"📍 Named Targets  ({nt_count}個)",
+                               open=True)
+        for i, nt in enumerate(self._named_targets):
+            tree.insert(nt_node, "end", iid=f"nt_{i}",
+                         text=f"📍 {nt.name}  ({nt.x:.0f}, {nt.y:.0f}, {nt.z:.0f})")
+
+        # Route Sequence（CSVルートと Named Target を自由に組み合わせ）
+        _seq_nums = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+        seq_count = len(self._route_sequence)
+        seq_node = tree.insert(robot, "end", iid="route_sequence",
+                                text=f"📋 Route Sequence  ({seq_count} steps)",
+                                open=True)
+        for i, si in enumerate(self._route_sequence):
+            num = _seq_nums[i] if i < len(_seq_nums) else f"({i+1})"
+            if si["type"] == "route":
+                r = si["route"]
+                n_wps = len(r.waypoints)
+                tree.insert(seq_node, "end", iid=f"seq_{i}",
+                             text=f"{num} CSV: {r.name}  ({n_wps}点)",
+                             tags=("seq_item",))
+            else:
+                nt = si["target"]
+                tree.insert(seq_node, "end", iid=f"seq_{i}",
+                             text=f"{num} → {nt.name}  ({nt.x:.0f}, {nt.y:.0f}, {nt.z:.0f})",
+                             tags=("seq_item",))
+        if self._route_sequence:
+            tree.insert(seq_node, "end", iid="seq_play",
+                         text="▶  Sequence を再生")
+
         # Targets (経路点)
         # 大規模ルート（>25点）はデフォルト折りたたみ＋サマリー表示
         n = len(self.route.waypoints)
@@ -2110,6 +2160,23 @@ class MainWindow:
         if not sel:
             return
         iid = sel[0]
+        if iid == "named_targets":
+            self._create_named_target_dialog()
+            return "break"
+        if iid.startswith("nt_"):
+            idx = int(iid[3:])
+            self._rename_named_target(idx)
+            return "break"
+        if iid == "seq_play":
+            self._play_sequence()
+            return "break"
+        if iid.startswith("seq_") and iid != "seq_play":
+            idx = int(iid[4:])
+            if 0 <= idx < len(self._route_sequence):
+                si = self._route_sequence[idx]
+                if si["type"] == "route":
+                    self._apply_sequence_route(idx)
+            return "break"
         if iid.startswith("wp_"):
             idx = int(iid[3:])
             if 0 <= idx < len(self.route.waypoints):
@@ -2185,6 +2252,44 @@ class MainWindow:
                              command=lambda i=idx: self._tree_goto_wp(i))
             menu.add_command(label="🗑  この経路点を削除",
                              command=lambda i=idx: self._tree_delete_wp(i))
+        elif item == "named_targets":
+            menu.add_command(label="📍  現在のTCPをターゲットとして追加...",
+                             command=self._create_named_target_dialog)
+        elif item.startswith("nt_"):
+            i = int(item[3:])
+            if 0 <= i < len(self._named_targets):
+                nt = self._named_targets[i]
+                menu.add_command(label=f"📍  {nt.name} へ IK 移動",
+                                 command=lambda idx=i: self._goto_named_target(idx))
+                menu.add_command(label="→  Route Sequence に追加",
+                                 command=lambda idx=i: self._add_target_to_sequence(idx))
+                menu.add_separator()
+                menu.add_command(label="✏  名前を変更...",
+                                 command=lambda idx=i: self._rename_named_target(idx))
+                menu.add_command(label="🗑  削除",
+                                 command=lambda idx=i: self._delete_named_target(idx))
+        elif item == "route_sequence":
+            menu.add_command(label="📋  現在の経路を Sequence に追加",
+                             command=self._add_current_route_to_sequence)
+            if self._route_sequence:
+                menu.add_separator()
+                menu.add_command(label="▶  Sequence を再生",
+                                 command=self._play_sequence)
+                menu.add_command(label="🗑  Sequence をクリア",
+                                 command=self._clear_sequence)
+        elif item.startswith("seq_") and item != "seq_play":
+            i = int(item[4:])
+            if 0 <= i < len(self._route_sequence):
+                si = self._route_sequence[i]
+                if si["type"] == "route":
+                    menu.add_command(label="📋  この経路を現在の経路として適用",
+                                     command=lambda idx=i: self._apply_sequence_route(idx))
+                    menu.add_separator()
+                menu.add_command(label="🗑  このステップを削除",
+                                 command=lambda idx=i: self._remove_sequence_item(idx))
+        elif item == "seq_play":
+            menu.add_command(label="▶  Sequence を再生",
+                             command=self._play_sequence)
         elif item == "targets":
             menu.add_command(label="📂  CSV から読込...", command=self._load_csv)
             menu.add_command(label="📋  LS ファイル読込...", command=self._load_ls_file)
@@ -2222,6 +2327,9 @@ class MainWindow:
         if iid and iid.startswith("wp_"):
             self._tree_drag_iid = iid
             self._tree.config(cursor="fleur")
+        elif iid and iid.startswith("seq_") and iid != "seq_play":
+            self._tree_drag_iid = iid
+            self._tree.config(cursor="fleur")
         else:
             self._tree_drag_iid = None
 
@@ -2229,8 +2337,12 @@ class MainWindow:
         if not self._tree_drag_iid:
             return
         target = self._tree.identify_row(event.y)
-        if target and target.startswith("wp_"):
-            self._tree.selection_set(target)
+        if self._tree_drag_iid.startswith("wp_"):
+            if target and target.startswith("wp_"):
+                self._tree.selection_set(target)
+        elif self._tree_drag_iid.startswith("seq_"):
+            if target and target.startswith("seq_") and target != "seq_play":
+                self._tree.selection_set(target)
 
     def _on_tree_drag_release(self, event):
         self._tree.config(cursor="")
@@ -2240,6 +2352,23 @@ class MainWindow:
             return
 
         target = self._tree.identify_row(event.y)
+
+        # seq_ アイテムの並べ替え
+        if src_iid.startswith("seq_") and src_iid != "seq_play":
+            src_idx = int(src_iid[4:])
+            if target and target.startswith("seq_") and target != "seq_play":
+                dst_idx = int(target[4:])
+                n_seq = len(self._route_sequence)
+                if src_idx != dst_idx and 0 <= src_idx < n_seq and 0 <= dst_idx < n_seq:
+                    si = self._route_sequence.pop(src_idx)
+                    self._route_sequence.insert(dst_idx, si)
+                    self._tree_refresh()
+                    new_iid = f"seq_{dst_idx}"
+                    if self._tree.exists(new_iid):
+                        self._tree.selection_set(new_iid)
+            return
+
+        # wp_ アイテムの並べ替え
         src_idx = int(src_iid[3:])
         n = len(self.route.waypoints)
 
@@ -2266,6 +2395,233 @@ class MainWindow:
         if self._tree.exists(new_iid):
             self._tree.selection_set(new_iid)
             self._tree.see(new_iid)
+
+    # ── Named Targets ────────────────────────────────────────────────
+
+    def _create_named_target_dialog(self):
+        """現在のTCP位置を Named Target として登録するダイアログを開く。"""
+        T = self.kin.forward(self._joint_angles)
+        x, y, z, rx, ry, rz = self.kin.transform_to_pose(T)
+
+        win = tk.Toplevel(self.root)
+        win.title("Named Target を追加")
+        win.geometry("340x220")
+        win.resizable(False, False)
+        win.configure(bg=BG_PANEL)
+        win.transient(self.root)
+        win.grab_set()
+
+        frm = tk.Frame(win, bg=BG_PANEL)
+        frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=10)
+        frm.columnconfigure(1, weight=1)
+
+        tk.Label(frm, text="ターゲット名:", bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("Yu Gothic UI", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        name_var = tk.StringVar(value=f"Target {len(self._named_targets) + 1}")
+        name_entry = tk.Entry(frm, textvariable=name_var, bg=BG_WIDGET, fg=FG_PRIMARY,
+                              insertbackground=FG_PRIMARY, relief="flat",
+                              font=("Consolas", 9))
+        name_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=4)
+
+        pos_text = (
+            f"X: {x:.1f} mm   Rx: {rx:.1f} °\n"
+            f"Y: {y:.1f} mm   Ry: {ry:.1f} °\n"
+            f"Z: {z:.1f} mm   Rz: {rz:.1f} °"
+        )
+        tk.Label(frm, text=pos_text, bg=BG_PANEL, fg=FG_SUB,
+                 font=("Consolas", 9), justify="left").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(8, 12))
+
+        btn_frm = tk.Frame(frm, bg=BG_PANEL)
+        btn_frm.grid(row=2, column=0, columnspan=2, sticky="e")
+
+        def _ok():
+            nm = name_var.get().strip() or f"Target {len(self._named_targets) + 1}"
+            self._named_targets.append(
+                _NamedTarget(name=nm, x=x, y=y, z=z, rx=rx, ry=ry, rz=rz))
+            if hasattr(self, "_tree"):
+                self._tree_refresh()
+            self._set_status(f"✔  Named Target 追加: {nm}")
+            win.destroy()
+
+        tk.Button(btn_frm, text="OK", command=_ok,
+                  bg=BTN_PRIMARY, fg="white", relief="flat",
+                  padx=16, pady=4).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(btn_frm, text="キャンセル", command=win.destroy,
+                  bg=BG_WIDGET, fg=FG_PRIMARY, relief="flat",
+                  padx=8, pady=4).pack(side=tk.RIGHT)
+
+        name_entry.focus_set()
+        name_entry.select_range(0, tk.END)
+        win.bind("<Return>", lambda _e: _ok())
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+    def _rename_named_target(self, idx: int):
+        """Named Target の名前を変更するダイアログ。"""
+        if not (0 <= idx < len(self._named_targets)):
+            return
+        nt = self._named_targets[idx]
+
+        win = tk.Toplevel(self.root)
+        win.title("ターゲット名を変更")
+        win.geometry("300x110")
+        win.resizable(False, False)
+        win.configure(bg=BG_PANEL)
+        win.transient(self.root)
+        win.grab_set()
+
+        frm = tk.Frame(win, bg=BG_PANEL)
+        frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=10)
+        frm.columnconfigure(1, weight=1)
+
+        tk.Label(frm, text="新しい名前:", bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("Yu Gothic UI", 9)).grid(row=0, column=0, sticky="w", pady=4)
+        name_var = tk.StringVar(value=nt.name)
+        name_entry = tk.Entry(frm, textvariable=name_var, bg=BG_WIDGET, fg=FG_PRIMARY,
+                              insertbackground=FG_PRIMARY, relief="flat",
+                              font=("Consolas", 9))
+        name_entry.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        btn_frm = tk.Frame(frm, bg=BG_PANEL)
+        btn_frm.grid(row=1, column=0, columnspan=2, sticky="e", pady=(10, 0))
+
+        def _ok():
+            nm = name_var.get().strip()
+            if nm:
+                nt.name = nm
+                if hasattr(self, "_tree"):
+                    self._tree_refresh()
+            win.destroy()
+
+        tk.Button(btn_frm, text="OK", command=_ok,
+                  bg=BTN_PRIMARY, fg="white", relief="flat",
+                  padx=16, pady=4).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(btn_frm, text="キャンセル", command=win.destroy,
+                  bg=BG_WIDGET, fg=FG_PRIMARY, relief="flat",
+                  padx=8, pady=4).pack(side=tk.RIGHT)
+
+        name_entry.focus_set()
+        name_entry.select_range(0, tk.END)
+        win.bind("<Return>", lambda _e: _ok())
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+    def _delete_named_target(self, idx: int):
+        """Named Target を削除する（Sequence 内の参照も削除）。"""
+        if not (0 <= idx < len(self._named_targets)):
+            return
+        nt = self._named_targets[idx]
+        self._route_sequence = [
+            si for si in self._route_sequence
+            if not (si["type"] == "target" and si["target"] is nt)
+        ]
+        del self._named_targets[idx]
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+
+    def _goto_named_target(self, idx: int):
+        """Named Target の位置へ IK 移動する。"""
+        if not (0 <= idx < len(self._named_targets)):
+            return
+        nt = self._named_targets[idx]
+        T = nt.as_waypoint().to_transform()
+        q, ok = self.kin.inverse(T, q_init=self._joint_angles)
+        if ok and q is not None:
+            self._push_undo(f"Named Target へ移動: {nt.name}")
+            self._set_angles(q)
+        else:
+            messagebox.showwarning("IK 失敗", f"{nt.name} への IK が解けませんでした。\n"
+                                   "ターゲット位置が可動範囲外の可能性があります。")
+
+    # ── Route Sequence ───────────────────────────────────────────────
+
+    def _add_target_to_sequence(self, nt_idx: int):
+        """Named Target を Route Sequence に追加する。"""
+        if not (0 <= nt_idx < len(self._named_targets)):
+            return
+        nt = self._named_targets[nt_idx]
+        self._route_sequence.append({"type": "target", "target": nt})
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(f"✔  Sequence に追加: → {nt.name}")
+
+    def _add_current_route_to_sequence(self):
+        """現在の経路を Route Sequence に追加する。"""
+        if not self.route.waypoints:
+            messagebox.showwarning("経路点なし", "現在の経路に経路点がありません。")
+            return
+        route_copy = copy.deepcopy(self.route)
+        self._route_sequence.append({"type": "route", "route": route_copy})
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(
+            f"✔  Sequence に追加: CSV {route_copy.name} ({len(route_copy.waypoints)}点)")
+
+    def _remove_sequence_item(self, idx: int):
+        """Route Sequence からステップを削除する。"""
+        if 0 <= idx < len(self._route_sequence):
+            del self._route_sequence[idx]
+            if hasattr(self, "_tree"):
+                self._tree_refresh()
+
+    def _clear_sequence(self):
+        """Route Sequence を全てクリアする。"""
+        if not self._route_sequence:
+            return
+        if messagebox.askyesno("Sequence をクリア", "Route Sequence を全て削除しますか？"):
+            self._route_sequence.clear()
+            if hasattr(self, "_tree"):
+                self._tree_refresh()
+
+    def _apply_sequence_route(self, seq_idx: int):
+        """Sequence 内の CSV ルートを現在の経路として適用する。"""
+        if not (0 <= seq_idx < len(self._route_sequence)):
+            return
+        si = self._route_sequence[seq_idx]
+        if si["type"] != "route":
+            return
+        route = si["route"]
+        self._push_undo("Sequence 経路を適用")
+        self.route.waypoints = copy.deepcopy(route.waypoints)
+        self.route.name = route.name
+        self.route_editor.set_route(self.route)
+        self._on_route_changed()
+
+    def _play_sequence(self):
+        """Route Sequence を平坦化して連続再生する。"""
+        if not self._route_sequence:
+            messagebox.showwarning("Sequence が空",
+                                   "Route Sequence にアイテムを追加してください。\n\n"
+                                   "・ Named Targets の右クリック → Route Sequence に追加\n"
+                                   "・ Route Sequence の右クリック → 現在の経路を追加")
+            return
+
+        flat_wps = []
+        for si in self._route_sequence:
+            if si["type"] == "route":
+                flat_wps.extend(copy.deepcopy(si["route"].waypoints))
+            else:
+                flat_wps.append(si["target"].as_waypoint())
+
+        if not flat_wps:
+            return
+
+        self._push_undo("Route Sequence 再生")
+        self.route.waypoints = flat_wps
+        self.route_editor.set_route(self.route)
+        self._on_route_changed()
+        self._set_status(f"⌛  Route Sequence ({len(flat_wps)}点) — IK 計算中... 完了後に自動再生します")
+
+        token = self._sim_precompute_token
+
+        def _autoplay():
+            if self._sim_precompute_token != token:
+                return  # ルートが再度変更された場合はキャンセル
+            if self._sim_solutions_ready:
+                self._start_simulation()
+            else:
+                self.root.after(200, _autoplay)
+
+        self.root.after(200, _autoplay)
 
     # ──────────────────────────────────────────────────────────────────
     # ワークフローバー
