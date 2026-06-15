@@ -34,7 +34,7 @@ import numpy as np
 from ..robot.kinematics import Kinematics
 from ..robot.tool_frame import ToolFrame
 from ..robot.user_frame import UserFrame
-from ..path.route import Route, Waypoint
+from ..path.route import Route, Waypoint, MotionType
 from ..path.csv_io import RouteCSVIO
 from ..path.tp_exporter import TPExporter
 from ..path.kenma_export import (
@@ -138,7 +138,11 @@ def _tip(widget: tk.Widget, text: str) -> _Tooltip:
 
 
 class _NamedTarget:
-    """Named TCP target / bookmark for the Route Sequence."""
+    """Named TCP target / pose bookmark (RoboDK 風ターゲット)。
+
+    RoboDK のターゲットと同様、ターゲット自体は「姿勢」のみを保持し、
+    動作種別（MoveJ/MoveL）や速度は Route Sequence の命令側が持つ。
+    """
     __slots__ = ("name", "x", "y", "z", "rx", "ry", "rz")
 
     def __init__(self, name: str, x: float = 0.0, y: float = 0.0,
@@ -147,10 +151,16 @@ class _NamedTarget:
         self.x = float(x);  self.y = float(y);  self.z = float(z)
         self.rx = float(rx); self.ry = float(ry); self.rz = float(rz)
 
-    def as_waypoint(self, speed: float = 50.0) -> Waypoint:
+    def update_pose(self, x, y, z, rx, ry, rz):
+        """Teach: 姿勢を現在値で上書きする。"""
+        self.x = float(x);  self.y = float(y);  self.z = float(z)
+        self.rx = float(rx); self.ry = float(ry); self.rz = float(rz)
+
+    def as_waypoint(self, speed: float = 50.0,
+                    motion: MotionType = MotionType.JOINT) -> Waypoint:
         return Waypoint(x=self.x, y=self.y, z=self.z,
                         rx=self.rx, ry=self.ry, rz=self.rz,
-                        speed=speed, label=self.name)
+                        speed=speed, motion_type=motion, label=self.name)
 
 
 class MainWindow:
@@ -2029,11 +2039,28 @@ class MainWindow:
         self._tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
         sb.config(command=self._tree.yview)
 
+        # RoboDK 風の色分け（ターゲット=緑 / CSVステップ=青 / 再生=緑太字）
+        _tree_font = ("Yu Gothic UI", 9)
+        try:
+            self._tree.tag_configure("nt_target",  foreground="#7EE787", font=_tree_font)
+            self._tree.tag_configure("seq_route",  foreground=ACCENT2,   font=_tree_font)
+            self._tree.tag_configure("seq_movej",  foreground="#7EE787", font=_tree_font)
+            self._tree.tag_configure("seq_movel",  foreground="#79C0FF", font=_tree_font)
+            self._tree.tag_configure("seq_play",
+                                     foreground=OK_GREEN,
+                                     font=("Yu Gothic UI", 9, "bold"))
+            self._tree.tag_configure("drop_target", background=BTN_PRIMARY)
+        except tk.TclError:
+            pass
+
         self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._tree.bind("<Double-Button-1>",  self._on_tree_double_click)
         self._tree.bind("<Button-3>",          self._on_tree_right_click)
-        # ドラッグ＆ドロップで wp_X ノードを並べ替え
+        self._tree.bind("<F2>",                self._on_tree_rename_key)
+        self._tree.bind("<Delete>",            self._on_tree_delete_key)
+        # ドラッグ＆ドロップで wp_X / seq_X ノードを並べ替え（Named Target も投入可）
         self._tree_drag_iid: Optional[str] = None
+        self._tree_drop_iid: Optional[str] = None
         self._tree.bind("<ButtonPress-1>",   self._on_tree_drag_start)
         self._tree.bind("<B1-Motion>",       self._on_tree_drag_motion)
         self._tree.bind("<ButtonRelease-1>", self._on_tree_drag_release)
@@ -2073,20 +2100,27 @@ class MainWindow:
             tree.insert(tools_node, "end", iid="blade_csv",
                          text=f"[刃先] {name} ({n_blade}pt)")
 
-        # Named Targets ライブラリ
+        # Named Targets ライブラリ（RoboDK のターゲット相当）
         nt_count = len(self._named_targets)
         nt_node = tree.insert(robot, "end", iid="named_targets",
-                               text=f"📍 Named Targets  ({nt_count}個)",
+                               text=f"📍 Targets  ({nt_count})",
                                open=True)
         for i, nt in enumerate(self._named_targets):
             tree.insert(nt_node, "end", iid=f"nt_{i}",
-                         text=f"📍 {nt.name}  ({nt.x:.0f}, {nt.y:.0f}, {nt.z:.0f})")
+                         text=f"⌖ {nt.name}   "
+                              f"[{nt.x:.0f}, {nt.y:.0f}, {nt.z:.0f}]",
+                         tags=("nt_target",))
 
-        # Route Sequence（CSVルートと Named Target を自由に組み合わせ）
+        # Route Sequence（CSVルートと Target を自由に組み合わせるプログラム）
         _seq_nums = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
         seq_count = len(self._route_sequence)
+        n_pts, length_mm, time_s = self._sequence_stats()
+        if seq_count:
+            seq_summary = f"  —  {n_pts}点  {length_mm:.0f}mm  {time_s:.1f}s"
+        else:
+            seq_summary = ""
         seq_node = tree.insert(robot, "end", iid="route_sequence",
-                                text=f"📋 Route Sequence  ({seq_count} steps)",
+                                text=f"📋 Route Sequence  ({seq_count} steps){seq_summary}",
                                 open=True)
         for i, si in enumerate(self._route_sequence):
             num = _seq_nums[i] if i < len(_seq_nums) else f"({i+1})"
@@ -2094,16 +2128,23 @@ class MainWindow:
                 r = si["route"]
                 n_wps = len(r.waypoints)
                 tree.insert(seq_node, "end", iid=f"seq_{i}",
-                             text=f"{num} CSV: {r.name}  ({n_wps}点)",
-                             tags=("seq_item",))
+                             text=f"{num}  CSV ▸ {r.name}   ({n_wps}点)",
+                             tags=("seq_route",))
             else:
                 nt = si["target"]
+                mt = si.get("motion", "J")
+                spd = si.get("speed", 100 if mt == "J" else 50)
+                move = "MoveJ" if mt == "J" else "MoveL"
+                unit = "%" if mt == "J" else "mm/s"
+                tag = "seq_movej" if mt == "J" else "seq_movel"
                 tree.insert(seq_node, "end", iid=f"seq_{i}",
-                             text=f"{num} → {nt.name}  ({nt.x:.0f}, {nt.y:.0f}, {nt.z:.0f})",
-                             tags=("seq_item",))
+                             text=f"{num}  {move} ▸ {nt.name}   "
+                                  f"@{spd:.0f}{unit}",
+                             tags=(tag,))
         if self._route_sequence:
             tree.insert(seq_node, "end", iid="seq_play",
-                         text="▶  Sequence を再生")
+                         text="▶  Sequence を再生",
+                         tags=("seq_play",))
 
         # Targets (経路点)
         # 大規模ルート（>25点）はデフォルト折りたたみ＋サマリー表示
@@ -2146,6 +2187,30 @@ class MainWindow:
                 self.viewport.set_selected_waypoint(idx)
                 self._ik_wp_var.set(idx + 1)
 
+    def _on_tree_rename_key(self, event=None):
+        """F2: 選択中の Named Target をリネームする。"""
+        sel = self._tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("nt_"):
+            self._rename_named_target(int(iid[3:]))
+        return "break"
+
+    def _on_tree_delete_key(self, event=None):
+        """Delete: 選択中の Target / Sequence ステップ / 経路点を削除する。"""
+        sel = self._tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("nt_"):
+            self._delete_named_target(int(iid[3:]))
+        elif iid.startswith("seq_") and iid != "seq_play":
+            self._remove_sequence_item(int(iid[4:]))
+        elif iid.startswith("wp_"):
+            self._tree_delete_wp(int(iid[3:]))
+        return "break"
+
     def _on_tree_double_click(self, event=None):
         """ダブルクリックで各ノードの主編集アクションを開く。
 
@@ -2164,8 +2229,9 @@ class MainWindow:
             self._create_named_target_dialog()
             return "break"
         if iid.startswith("nt_"):
+            # RoboDK 同様、ダブルクリックでロボットをターゲットへ移動（F2 で改名）
             idx = int(iid[3:])
-            self._rename_named_target(idx)
+            self._goto_named_target(idx)
             return "break"
         if iid == "seq_play":
             self._play_sequence()
@@ -2259,18 +2325,30 @@ class MainWindow:
             i = int(item[3:])
             if 0 <= i < len(self._named_targets):
                 nt = self._named_targets[i]
-                menu.add_command(label=f"📍  {nt.name} へ IK 移動",
+                menu.add_command(label=f"⌖  {nt.name} へ移動（ダブルクリック）",
                                  command=lambda idx=i: self._goto_named_target(idx))
-                menu.add_command(label="→  Route Sequence に追加",
-                                 command=lambda idx=i: self._add_target_to_sequence(idx))
+                menu.add_command(label="📝  Teach — 現在のTCP位置で上書き",
+                                 command=lambda idx=i: self._teach_named_target(idx))
                 menu.add_separator()
-                menu.add_command(label="✏  名前を変更...",
+                menu.add_command(label="＋  MoveJ で Sequence に追加",
+                                 command=lambda idx=i: self._add_target_to_sequence(idx, "J"))
+                menu.add_command(label="＋  MoveL で Sequence に追加",
+                                 command=lambda idx=i: self._add_target_to_sequence(idx, "L"))
+                menu.add_separator()
+                menu.add_command(label="✏  名前を変更...（F2）",
                                  command=lambda idx=i: self._rename_named_target(idx))
-                menu.add_command(label="🗑  削除",
+                menu.add_command(label="🗑  削除（Delete）",
                                  command=lambda idx=i: self._delete_named_target(idx))
         elif item == "route_sequence":
             menu.add_command(label="📋  現在の経路を Sequence に追加",
                              command=self._add_current_route_to_sequence)
+            if self._named_targets:
+                tsub = tk.Menu(menu, tearoff=0, bg=BG_PANEL, fg=FG_PRIMARY,
+                               activebackground=BTN_PRIMARY, activeforeground="white")
+                for ti, nt in enumerate(self._named_targets):
+                    tsub.add_command(label=f"⌖ {nt.name}",
+                                     command=lambda idx=ti: self._add_target_to_sequence(idx))
+                menu.add_cascade(label="📍  Target を Sequence に追加", menu=tsub)
             if self._route_sequence:
                 menu.add_separator()
                 menu.add_command(label="▶  Sequence を再生",
@@ -2281,11 +2359,30 @@ class MainWindow:
             i = int(item[4:])
             if 0 <= i < len(self._route_sequence):
                 si = self._route_sequence[i]
+                menu.add_command(label=f"▶  ここから再生（ステップ{i+1}〜）",
+                                 command=lambda idx=i: self._play_sequence(from_idx=idx))
+                menu.add_separator()
                 if si["type"] == "route":
                     menu.add_command(label="📋  この経路を現在の経路として適用",
                                      command=lambda idx=i: self._apply_sequence_route(idx))
-                    menu.add_separator()
-                menu.add_command(label="🗑  このステップを削除",
+                else:
+                    cur = si.get("motion", "J")
+                    if cur == "J":
+                        menu.add_command(label="🔁  MoveL に変更",
+                                         command=lambda idx=i: self._set_sequence_motion(idx, "L"))
+                    else:
+                        menu.add_command(label="🔁  MoveJ に変更",
+                                         command=lambda idx=i: self._set_sequence_motion(idx, "J"))
+                    menu.add_command(label="🏃  速度を設定...",
+                                     command=lambda idx=i: self._set_sequence_speed(idx))
+                menu.add_separator()
+                if i > 0:
+                    menu.add_command(label="▲  上へ移動",
+                                     command=lambda idx=i: self._move_sequence_item(idx, -1))
+                if i < len(self._route_sequence) - 1:
+                    menu.add_command(label="▼  下へ移動",
+                                     command=lambda idx=i: self._move_sequence_item(idx, +1))
+                menu.add_command(label="🗑  このステップを削除（Delete）",
                                  command=lambda idx=i: self._remove_sequence_item(idx))
         elif item == "seq_play":
             menu.add_command(label="▶  Sequence を再生",
@@ -2320,14 +2417,36 @@ class MainWindow:
             self.route_editor.set_route(self.route)
             self._on_route_changed()
 
-    # ── ツリー ドラッグ＆ドロップ（wp_X ノードの並べ替え） ──────────────
+    # ── ツリー ドラッグ＆ドロップ ────────────────────────────────────
+    #   ・wp_X  : 経路点の並べ替え
+    #   ・seq_X : Sequence ステップの並べ替え
+    #   ・nt_X  : Named Target を Sequence へドロップして追加
+
+    def _clear_drop_indicator(self):
+        prev = getattr(self, "_tree_drop_iid", None)
+        if prev and self._tree.exists(prev):
+            # ドロップ強調を外して元のタグへ戻す（_tree_refresh が正しく再設定）
+            cur = list(self._tree.item(prev, "tags"))
+            cur = [t for t in cur if t != "drop_target"]
+            self._tree.item(prev, tags=cur)
+        self._tree_drop_iid = None
+
+    def _set_drop_indicator(self, iid):
+        if iid == getattr(self, "_tree_drop_iid", None):
+            return
+        self._clear_drop_indicator()
+        if iid and self._tree.exists(iid):
+            cur = list(self._tree.item(iid, "tags"))
+            if "drop_target" not in cur:
+                cur.append("drop_target")
+                self._tree.item(iid, tags=cur)
+            self._tree_drop_iid = iid
 
     def _on_tree_drag_start(self, event):
         iid = self._tree.identify_row(event.y)
-        if iid and iid.startswith("wp_"):
-            self._tree_drag_iid = iid
-            self._tree.config(cursor="fleur")
-        elif iid and iid.startswith("seq_") and iid != "seq_play":
+        if iid and (iid.startswith("wp_")
+                    or iid.startswith("nt_")
+                    or (iid.startswith("seq_") and iid != "seq_play")):
             self._tree_drag_iid = iid
             self._tree.config(cursor="fleur")
         else:
@@ -2337,21 +2456,41 @@ class MainWindow:
         if not self._tree_drag_iid:
             return
         target = self._tree.identify_row(event.y)
-        if self._tree_drag_iid.startswith("wp_"):
+        src = self._tree_drag_iid
+        if src.startswith("wp_"):
             if target and target.startswith("wp_"):
                 self._tree.selection_set(target)
-        elif self._tree_drag_iid.startswith("seq_"):
+        elif src.startswith("seq_"):
             if target and target.startswith("seq_") and target != "seq_play":
                 self._tree.selection_set(target)
+        elif src.startswith("nt_"):
+            # Target を Sequence ノード / ステップへドロップ可能と示す
+            if target and (target == "route_sequence"
+                           or (target.startswith("seq_"))):
+                self._set_drop_indicator(target)
+            else:
+                self._clear_drop_indicator()
 
     def _on_tree_drag_release(self, event):
         self._tree.config(cursor="")
+        self._clear_drop_indicator()
         src_iid = self._tree_drag_iid
         self._tree_drag_iid = None
         if not src_iid:
             return
 
         target = self._tree.identify_row(event.y)
+
+        # Named Target を Sequence へドロップして追加
+        if src_iid.startswith("nt_"):
+            nt_idx = int(src_iid[3:])
+            if target == "route_sequence" or target == "seq_play":
+                self._add_target_to_sequence(nt_idx)
+            elif target and target.startswith("seq_"):
+                # 既存ステップの位置に挿入
+                dst_idx = int(target[4:])
+                self._add_target_to_sequence(nt_idx, insert_at=dst_idx)
+            return
 
         # seq_ アイテムの並べ替え
         if src_iid.startswith("seq_") and src_iid != "seq_play":
@@ -2528,21 +2667,162 @@ class MainWindow:
         if ok and q is not None:
             self._push_undo(f"Named Target へ移動: {nt.name}")
             self._set_angles(q)
+            self._set_status(f"⌖  {nt.name} へ移動しました")
         else:
             messagebox.showwarning("IK 失敗", f"{nt.name} への IK が解けませんでした。\n"
                                    "ターゲット位置が可動範囲外の可能性があります。")
 
+    def _teach_named_target(self, idx: int):
+        """Teach: 現在のTCP姿勢でターゲットを上書きする（RoboDK の Teach 相当）。"""
+        if not (0 <= idx < len(self._named_targets)):
+            return
+        nt = self._named_targets[idx]
+        T = self.kin.forward(self._joint_angles)
+        x, y, z, rx, ry, rz = self.kin.transform_to_pose(T)
+        nt.update_pose(x, y, z, rx, ry, rz)
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+        self._set_status(
+            f"📝  Teach: {nt.name} を現在位置で更新 "
+            f"({x:.0f}, {y:.0f}, {z:.0f})")
+
     # ── Route Sequence ───────────────────────────────────────────────
 
-    def _add_target_to_sequence(self, nt_idx: int):
-        """Named Target を Route Sequence に追加する。"""
+    def _sequence_stats(self):
+        """Sequence を平坦化したときの (点数, 距離mm, 推定時間s) を返す。
+
+        ツリー再描画ごとに呼ばれるため、deepcopy せず参照のみで集計する。
+        """
+        flat = []  # 参照のみ（読み取り専用集計）
+        for si in self._route_sequence:
+            if si["type"] == "route":
+                flat.extend(si["route"].waypoints)
+            else:
+                mt = si.get("motion", "J")
+                spd = si.get("speed", 100 if mt == "J" else 50)
+                motion = MotionType.JOINT if mt == "J" else MotionType.LINEAR
+                flat.append(si["target"].as_waypoint(speed=spd, motion=motion))
+        if not flat:
+            return 0, 0.0, 0.0
+        tmp = Route(name="_seq")
+        tmp.waypoints = flat
+        try:
+            return len(flat), tmp.total_length_mm(), tmp.estimated_time_sec()
+        except Exception:
+            return len(flat), 0.0, 0.0
+
+    def _flatten_sequence(self, from_idx: int = 0):
+        """Sequence を 1 本の Waypoint 列へ平坦化する（再生用・deepcopy）。
+
+        from_idx を指定すると、そのステップ以降だけを平坦化する。
+        """
+        flat = []
+        for si in self._route_sequence[from_idx:]:
+            if si["type"] == "route":
+                flat.extend(copy.deepcopy(si["route"].waypoints))
+            else:
+                mt = si.get("motion", "J")
+                spd = si.get("speed", 100 if mt == "J" else 50)
+                motion = MotionType.JOINT if mt == "J" else MotionType.LINEAR
+                flat.append(si["target"].as_waypoint(speed=spd, motion=motion))
+        return flat
+
+    def _add_target_to_sequence(self, nt_idx: int, motion: str = "J",
+                                insert_at: Optional[int] = None):
+        """Named Target を MoveJ/MoveL 命令として Route Sequence に追加する。"""
         if not (0 <= nt_idx < len(self._named_targets)):
             return
         nt = self._named_targets[nt_idx]
-        self._route_sequence.append({"type": "target", "target": nt})
+        step = {"type": "target", "target": nt, "motion": motion,
+                "speed": 100 if motion == "J" else 50}
+        if insert_at is None or not (0 <= insert_at <= len(self._route_sequence)):
+            self._route_sequence.append(step)
+        else:
+            self._route_sequence.insert(insert_at, step)
         if hasattr(self, "_tree"):
             self._tree_refresh()
-        self._set_status(f"✔  Sequence に追加: → {nt.name}")
+        move = "MoveJ" if motion == "J" else "MoveL"
+        self._set_status(f"✔  Sequence に追加: {move} → {nt.name}")
+
+    def _set_sequence_motion(self, idx: int, motion: str):
+        """Sequence のターゲットステップの動作種別(J/L)を変更する。"""
+        if not (0 <= idx < len(self._route_sequence)):
+            return
+        si = self._route_sequence[idx]
+        if si["type"] != "target":
+            return
+        old = si.get("motion", "J")
+        si["motion"] = motion
+        # 種別変更時は速度の単位が変わるため既定速度へ
+        if old != motion:
+            si["speed"] = 100 if motion == "J" else 50
+        if hasattr(self, "_tree"):
+            self._tree_refresh()
+
+    def _set_sequence_speed(self, idx: int):
+        """Sequence のターゲットステップの速度を設定するダイアログ。"""
+        if not (0 <= idx < len(self._route_sequence)):
+            return
+        si = self._route_sequence[idx]
+        if si["type"] != "target":
+            return
+        mt = si.get("motion", "J")
+        unit = "%" if mt == "J" else "mm/s"
+        cur = si.get("speed", 100 if mt == "J" else 50)
+
+        win = tk.Toplevel(self.root)
+        win.title("速度を設定")
+        win.geometry("280x110")
+        win.resizable(False, False)
+        win.configure(bg=BG_PANEL)
+        win.transient(self.root)
+        win.grab_set()
+
+        frm = tk.Frame(win, bg=BG_PANEL)
+        frm.pack(fill=tk.BOTH, expand=True, padx=14, pady=10)
+        frm.columnconfigure(1, weight=1)
+
+        tk.Label(frm, text=f"速度 ({unit}):", bg=BG_PANEL, fg=FG_PRIMARY,
+                 font=("Yu Gothic UI", 9)).grid(row=0, column=0, sticky="w")
+        spd_var = tk.StringVar(value=f"{cur:.0f}")
+        ent = tk.Entry(frm, textvariable=spd_var, bg=BG_WIDGET, fg=FG_PRIMARY,
+                       insertbackground=FG_PRIMARY, relief="flat",
+                       font=("Consolas", 9))
+        ent.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        btn_frm = tk.Frame(frm, bg=BG_PANEL)
+        btn_frm.grid(row=1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        def _ok():
+            try:
+                v = float(spd_var.get())
+                if v > 0:
+                    si["speed"] = v
+                    if hasattr(self, "_tree"):
+                        self._tree_refresh()
+            except ValueError:
+                pass
+            win.destroy()
+
+        tk.Button(btn_frm, text="OK", command=_ok, bg=BTN_PRIMARY, fg="white",
+                  relief="flat", padx=16, pady=4).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(btn_frm, text="キャンセル", command=win.destroy, bg=BG_WIDGET,
+                  fg=FG_PRIMARY, relief="flat", padx=8, pady=4).pack(side=tk.RIGHT)
+        ent.focus_set(); ent.select_range(0, tk.END)
+        win.bind("<Return>", lambda _e: _ok())
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+    def _move_sequence_item(self, idx: int, delta: int):
+        """Sequence ステップを上下に 1 つ移動する。"""
+        n = len(self._route_sequence)
+        new = idx + delta
+        if not (0 <= idx < n) or not (0 <= new < n):
+            return
+        si = self._route_sequence.pop(idx)
+        self._route_sequence.insert(new, si)
+        self._tree_refresh()
+        if self._tree.exists(f"seq_{new}"):
+            self._tree.selection_set(f"seq_{new}")
 
     def _add_current_route_to_sequence(self):
         """現在の経路を Route Sequence に追加する。"""
@@ -2586,30 +2866,36 @@ class MainWindow:
         self.route_editor.set_route(self.route)
         self._on_route_changed()
 
-    def _play_sequence(self):
-        """Route Sequence を平坦化して連続再生する。"""
+    def _play_sequence(self, from_idx: Optional[int] = None):
+        """Route Sequence を平坦化して連続再生する。
+
+        from_idx を指定すると、そのステップ以降だけを再生する
+        （RoboDK の "Run from here" 相当）。
+        """
         if not self._route_sequence:
             messagebox.showwarning("Sequence が空",
                                    "Route Sequence にアイテムを追加してください。\n\n"
-                                   "・ Named Targets の右クリック → Route Sequence に追加\n"
-                                   "・ Route Sequence の右クリック → 現在の経路を追加")
+                                   "・ Target を右クリック → MoveJ/MoveL で Sequence に追加\n"
+                                   "・ Target を Sequence へドラッグ＆ドロップ\n"
+                                   "・ Route Sequence を右クリック → 現在の経路を追加")
             return
 
-        flat_wps = []
-        for si in self._route_sequence:
-            if si["type"] == "route":
-                flat_wps.extend(copy.deepcopy(si["route"].waypoints))
-            else:
-                flat_wps.append(si["target"].as_waypoint())
+        if from_idx is None or not (0 <= from_idx < len(self._route_sequence)):
+            from_idx = 0
 
+        flat_wps = self._flatten_sequence(from_idx=from_idx)
         if not flat_wps:
             return
 
         self._push_undo("Route Sequence 再生")
         self.route.waypoints = flat_wps
+        self.route.name = "ROUTE_SEQUENCE"
         self.route_editor.set_route(self.route)
         self._on_route_changed()
-        self._set_status(f"⌛  Route Sequence ({len(flat_wps)}点) — IK 計算中... 完了後に自動再生します")
+        label = f"ステップ{from_idx+1}〜" if from_idx > 0 else "全体"
+        self._set_status(
+            f"⌛  Route Sequence 再生（{label}・{len(flat_wps)}点）"
+            " — IK 計算中... 完了後に自動再生します")
 
         token = self._sim_precompute_token
 
