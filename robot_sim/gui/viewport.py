@@ -68,7 +68,7 @@ FANUC_BLACK     = "#1A1A1A"   # 関節部
 FANUC_DARK_GRAY = "#2E2E2E"   # ベース台座
 KNIFE_BLADE     = "#C8C8D0"
 KNIFE_HANDLE    = "#3A2010"
-ROUTE_COLOR     = "#2288FF"
+ROUTE_COLOR     = "#00E5FF"
 WP_COLOR        = "#FF4422"
 WP_ACTIVE       = "#00FF88"
 TCP_COLOR       = "#00FFCC"
@@ -887,17 +887,18 @@ class Viewport3D:
         n = len(positions)
         ZTOP = 1000
         self.ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
-                     color=ROUTE_COLOR, lw=1.5, alpha=0.7, zorder=ZTOP)
+                     color=ROUTE_COLOR, lw=2.5, alpha=1.0, zorder=ZTOP)
 
         if n > self.ROUTE_BIG_N:
             # 軽量モード: 始点(緑)・終点(赤)と選択中の1点のみマーカー表示
+            # scatter→plot変換: Line3D は computed_zorder に左右されず確実に最前面へ
             p0, p1 = positions[0], positions[-1]
-            self.ax.scatter([p0[0]], [p0[1]], [p0[2]],
-                            c=WP_ACTIVE, s=60, zorder=ZTOP,
-                            depthshade=False, marker="o")
-            self.ax.scatter([p1[0]], [p1[1]], [p1[2]],
-                            c=WP_COLOR, s=60, zorder=ZTOP,
-                            depthshade=False, marker="s")
+            self.ax.plot([p0[0]], [p0[1]], [p0[2]],
+                         color=WP_ACTIVE, marker="o", markersize=8,
+                         linestyle="none", zorder=ZTOP)
+            self.ax.plot([p1[0]], [p1[1]], [p1[2]],
+                         color=WP_COLOR, marker="s", markersize=8,
+                         linestyle="none", zorder=ZTOP)
             self.ax.text(p0[0] + 10, p0[1] + 10, p0[2] + 10,
                          f"START ({n}点)", color=WP_ACTIVE,
                          fontsize=6, alpha=0.85, zorder=ZTOP)
@@ -906,9 +907,9 @@ class Viewport3D:
             sel = self._selected_wp_idx
             if sel is not None and 0 <= sel < n:
                 wp = self._route.waypoints[sel]
-                self.ax.scatter([wp.x], [wp.y], [wp.z],
-                                c=WP_ACTIVE, s=100, zorder=ZTOP,
-                                depthshade=False, marker="*")
+                self.ax.plot([wp.x], [wp.y], [wp.z],
+                             color=WP_ACTIVE, marker="*", markersize=12,
+                             linestyle="none", zorder=ZTOP)
                 label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
                 self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
                              label_text, color="white", fontsize=6, alpha=0.9,
@@ -918,11 +919,11 @@ class Viewport3D:
         for i, wp in enumerate(self._route.waypoints):
             selected = (i == self._selected_wp_idx)
             color    = WP_ACTIVE if selected else WP_COLOR
-            size     = 100 if selected else 45
+            ms       = 10 if selected else 7
             marker   = "*" if selected else "o"
-            self.ax.scatter([wp.x], [wp.y], [wp.z],
-                            c=color, s=size, zorder=ZTOP,
-                            depthshade=False, marker=marker)
+            self.ax.plot([wp.x], [wp.y], [wp.z],
+                         color=color, marker=marker, markersize=ms,
+                         linestyle="none", zorder=ZTOP)
             label_text = f"{i+1}:{wp.label}" if wp.label else f"P[{i+1}]"
             fg = "white" if selected else "#AAAAAA"
             self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
