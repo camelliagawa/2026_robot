@@ -922,7 +922,11 @@ class MainWindow:
             return
         m = self._mk_list[idx]
         from types import SimpleNamespace
-        obj = SimpleNamespace(x=m["pos"][0], y=m["pos"][1], z=m["pos"][2])
+        obj = SimpleNamespace(
+            x=round(m["pos"][0]),
+            y=round(m["pos"][1]),
+            z=round(m["pos"][2]),
+        )
 
         def _apply():
             m["pos"] = [obj.x, obj.y, obj.z]
@@ -933,12 +937,13 @@ class MainWindow:
 
         self._frame_editor_dialog(
             title=f"マーカー編集: {m['name']}",
-            desc="マーカーの位置を編集します（3Dビューへ即時反映）。",
+            desc="マーカーの位置を編集します（3Dビューへ即時反映）。\nホイール: ±1mm  /  Shift+ホイール: ±0.1mm  /  Ctrl+ホイール: ±10mm",
             obj=obj,
             fields=["x", "y", "z"],
             labels=["X 位置 (mm)", "Y 位置 (mm)", "Z 位置 (mm)"],
             on_apply=_apply,
-            undo_label="マーカー編集")
+            undo_label="マーカー編集",
+            fmt="{:.0f}")
 
     def _on_mk_select(self, event=None):
         sel = self._mk_listbox.curselection()
@@ -3549,7 +3554,7 @@ class MainWindow:
         )
 
     def _frame_editor_dialog(self, title, desc, obj, fields, labels, on_apply,
-                             undo_label="フレーム編集"):
+                             undo_label="フレーム編集", fmt="{:.2f}"):
         win = tk.Toplevel(self.root)
         win.title(title)
         win.geometry("380x340")
@@ -3581,11 +3586,12 @@ class MainWindow:
             row.pack(fill=tk.X, padx=16, pady=2)
             tk.Label(row, text=lbl, bg=BG_PANEL, fg=FG_SUB,
                      font=self._fnt(8, fam=""), width=18, anchor="w").pack(side=tk.LEFT)
-            v = tk.StringVar(value=str(getattr(obj, f)))
+            raw = getattr(obj, f)
+            v = tk.StringVar(value=fmt.format(float(raw)))
             vars_[f] = v
             # ホイール/Enter/フォーカス離脱で即時プレビュー
             self._make_num_field(row, v, on_change=_live_apply,
-                                 width=12).pack(side=tk.LEFT, padx=4)
+                                 width=12, fmt=fmt).pack(side=tk.LEFT, padx=4)
 
         def apply():
             _live_apply()
