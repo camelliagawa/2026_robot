@@ -186,6 +186,7 @@ class MainWindow:
         self._blade_csv_path: Optional[str] = None
         self._named_targets: list = []   # List[_NamedTarget]
         self._route_sequence: list = []  # List[dict] — {"type":"route"|"target", ...}
+        self._seq_dirty = True           # True when sequence changed since last apply to route
 
         # ── Undo/Redo（全機能やり直し対応） ──
         self._suppress_undo = False   # 再生・復元中の自動更新は記録しない
@@ -2511,6 +2512,7 @@ class MainWindow:
                 if src_idx != dst_idx and 0 <= src_idx < n_seq and 0 <= dst_idx < n_seq:
                     si = self._route_sequence.pop(src_idx)
                     self._route_sequence.insert(dst_idx, si)
+                    self._seq_dirty = True
                     self._tree_refresh()
                     new_iid = f"seq_{dst_idx}"
                     if self._tree.exists(new_iid):
@@ -2749,6 +2751,7 @@ class MainWindow:
             self._route_sequence.append(step)
         else:
             self._route_sequence.insert(insert_at, step)
+        self._seq_dirty = True
         if hasattr(self, "_tree"):
             self._tree_refresh()
         move = "MoveJ" if motion == "J" else "MoveL"
@@ -2766,6 +2769,7 @@ class MainWindow:
         # 種別変更時は速度の単位が変わるため既定速度へ
         if old != motion:
             si["speed"] = 100 if motion == "J" else 50
+        self._seq_dirty = True
         if hasattr(self, "_tree"):
             self._tree_refresh()
 
@@ -2808,6 +2812,7 @@ class MainWindow:
                 v = float(spd_var.get())
                 if v > 0:
                     si["speed"] = v
+                    self._seq_dirty = True
                     if hasattr(self, "_tree"):
                         self._tree_refresh()
             except ValueError:
@@ -2830,6 +2835,7 @@ class MainWindow:
             return
         si = self._route_sequence.pop(idx)
         self._route_sequence.insert(new, si)
+        self._seq_dirty = True
         self._tree_refresh()
         if self._tree.exists(f"seq_{new}"):
             self._tree.selection_set(f"seq_{new}")
@@ -2841,6 +2847,7 @@ class MainWindow:
             return
         route_copy = copy.deepcopy(self.route)
         self._route_sequence.append({"type": "route", "route": route_copy})
+        self._seq_dirty = True
         if hasattr(self, "_tree"):
             self._tree_refresh()
         self._set_status(
@@ -2850,6 +2857,7 @@ class MainWindow:
         """Route Sequence からステップを削除する。"""
         if 0 <= idx < len(self._route_sequence):
             del self._route_sequence[idx]
+            self._seq_dirty = True
             if hasattr(self, "_tree"):
                 self._tree_refresh()
 
@@ -2859,6 +2867,7 @@ class MainWindow:
             return
         if messagebox.askyesno("Sequence をクリア", "Route Sequence を全て削除しますか？"):
             self._route_sequence.clear()
+            self._seq_dirty = True
             if hasattr(self, "_tree"):
                 self._tree_refresh()
 
@@ -2902,6 +2911,7 @@ class MainWindow:
         self.route.name = "ROUTE_SEQUENCE"
         self.route_editor.set_route(self.route)
         self._on_route_changed()
+        self._seq_dirty = False
         label = f"ステップ{from_idx+1}〜" if from_idx > 0 else "全体"
         self._set_status(
             f"⌛  Route Sequence 再生（{label}・{len(flat_wps)}点）"
@@ -2913,7 +2923,8 @@ class MainWindow:
             if self._sim_precompute_token != token:
                 return  # ルートが再度変更された場合はキャンセル
             if self._sim_solutions_ready:
-                self._start_simulation()
+                self._seek_var.set(0.0)
+                self._play_from_current()
             else:
                 self.root.after(200, _autoplay)
 
@@ -3714,6 +3725,13 @@ class MainWindow:
 
     def _start_simulation(self):
         """F5 / 実行ボタン: 先頭から再生する。"""
+        # Route Sequence が定義されていれば、変更があれば展開して再生
+        if self._route_sequence:
+            needs_apply = self._seq_dirty or self.route.name != "ROUTE_SEQUENCE"
+            if needs_apply:
+                self._play_sequence()
+                return
+            # シーケンス適用済みかつ変更なし → 通常再生へ fall-through
         if not self.route.waypoints:
             messagebox.showwarning("経路点なし", "経路点が1つもありません。")
             return
@@ -3857,7 +3875,36 @@ class MainWindow:
 
         キャッシュ済みフレームがある場合は描画をスキップして即再生。
         ルート変更時は _invalidate_sim_solutions でキャッシュが自動破棄される。
+        Route Sequence が定義されている場合は自動的に展開してから再生する。
         """
+        # Route Sequence が定義されていれば、変更があれば展開してから滑らか再生
+        if self._route_sequence:
+            needs_apply = self._seq_dirty or self.route.name != "ROUTE_SEQUENCE"
+            if needs_apply:
+                flat_wps = self._flatten_sequence()
+                if not flat_wps:
+                    return
+                self._push_undo("Route Sequence 展開（滑らか再生）")
+                self.route.waypoints = flat_wps
+                self.route.name = "ROUTE_SEQUENCE"
+                self.route_editor.set_route(self.route)
+                self._on_route_changed()
+                self._seq_dirty = False
+                self._set_status(
+                    f"⌛  Route Sequence IK計算中 ({len(flat_wps)}点)…"
+                    " 完了後に滑らか再生を開始します")
+                token = self._sim_precompute_token
+                def _wait_ik():
+                    if self._sim_precompute_token != token:
+                        return
+                    if self._sim_solutions_ready:
+                        self._smooth_play()  # 再帰: 今度は needs_apply=False で即再生
+                    else:
+                        self.root.after(200, _wait_ik)
+                self.root.after(200, _wait_ik)
+                return
+            # シーケンス適用済みかつ変更なし → 通常の滑らか再生ロジックへ fall-through
+
         n_wp = len(self.route.waypoints)
         if n_wp < 2:
             messagebox.showwarning("経路点なし", "経路点が2つ以上必要です。")
