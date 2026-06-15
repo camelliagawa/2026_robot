@@ -2,10 +2,16 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.18.4"
+APP_VERSION = "0.18.5"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.18.5", "2026-06-15", "12:45 JST", [
+        "MP4 動画保存の Broken pipe エラーを修正: ウィンドウ幅が奇数（例 1223px）"
+        "だと libx264/yuv420p が偶数サイズを要求するため ffmpeg が即死していた。"
+        "フレームを偶数サイズにクロップし macro_block_size=1 で書き出すよう変更。"
+        "万一 MP4 書き込みに失敗しても GIF へのフォールバック保存を提案する",
+    ]),
     ("0.18.4", "2026-06-15", "09:00 JST", [
         "加工ルートを障害物に隠れず常に最前面に表示できるよう修正: "
         "scatter（PathCollection3D）→ plot マーカー（Line3D）に変換し、"
