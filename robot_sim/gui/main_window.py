@@ -2014,6 +2014,11 @@ class MainWindow:
         self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._tree.bind("<Double-Button-1>",  self._on_tree_double_click)
         self._tree.bind("<Button-3>",          self._on_tree_right_click)
+        # ドラッグ＆ドロップで wp_X ノードを並べ替え
+        self._tree_drag_iid: Optional[str] = None
+        self._tree.bind("<ButtonPress-1>",   self._on_tree_drag_start)
+        self._tree.bind("<B1-Motion>",       self._on_tree_drag_motion)
+        self._tree.bind("<ButtonRelease-1>", self._on_tree_drag_release)
 
         self._tree_refresh()
 
@@ -2051,21 +2056,27 @@ class MainWindow:
                          text=f"[刃先] {name} ({n_blade}pt)")
 
         # Targets (経路点)
-        # 大規模ルート（>25点）は数百ノードの挿入で固まるため、
-        # 先頭5点 + サマリーノードのみ表示する（O(1) 規模に抑える）
+        # 大規模ルート（>25点）はデフォルト折りたたみ＋サマリー表示
         n = len(self.route.waypoints)
         big_route = n > 25
+        try:
+            _len_mm = self.route.total_length_mm()
+            _sec    = self.route.estimated_time_sec()
+            _summary = f"  {_len_mm:.0f}mm  {_sec:.1f}s"
+        except Exception:
+            _summary = ""
         targets = tree.insert(robot, "end", iid="targets",
-                               text=f"🎯 Targets  ({n}点)"
-                                    + ("  — 大規模ルート" if big_route else ""),
-                               open=True)
+                               text=f"🎯 Targets  ({n}点){_summary}",
+                               open=not big_route)   # 大規模は折りたたみ
         shown = self.route.waypoints[:5] if big_route else self.route.waypoints
         for i, wp in enumerate(shown):
             lbl = wp.label or f"P[{i+1}]"
-            tree.insert(targets, "end", iid=f"wp_{i}", text=f"● {lbl}")
+            tree.insert(targets, "end", iid=f"wp_{i}",
+                         text=f"● {lbl}",
+                         tags=("waypoint",))
         if big_route:
             tree.insert(targets, "end", iid="targets_more",
-                         text=f"… 他{n - 5}点（大規模ルートのため省略）")
+                         text=f"… 他{n - 5}点（クリックで展開 / 大規模ルートは省略表示）")
 
         # Programs (読み込み済み LS)
         progs = tree.insert(robot, "end", iid="programs",
@@ -2203,6 +2214,58 @@ class MainWindow:
             del self.route.waypoints[idx]
             self.route_editor.set_route(self.route)
             self._on_route_changed()
+
+    # ── ツリー ドラッグ＆ドロップ（wp_X ノードの並べ替え） ──────────────
+
+    def _on_tree_drag_start(self, event):
+        iid = self._tree.identify_row(event.y)
+        if iid and iid.startswith("wp_"):
+            self._tree_drag_iid = iid
+            self._tree.config(cursor="fleur")
+        else:
+            self._tree_drag_iid = None
+
+    def _on_tree_drag_motion(self, event):
+        if not self._tree_drag_iid:
+            return
+        target = self._tree.identify_row(event.y)
+        if target and target.startswith("wp_"):
+            self._tree.selection_set(target)
+
+    def _on_tree_drag_release(self, event):
+        self._tree.config(cursor="")
+        src_iid = self._tree_drag_iid
+        self._tree_drag_iid = None
+        if not src_iid:
+            return
+
+        target = self._tree.identify_row(event.y)
+        src_idx = int(src_iid[3:])
+        n = len(self.route.waypoints)
+
+        if target and target.startswith("wp_"):
+            dst_idx = int(target[3:])
+        elif target == "targets_more":
+            dst_idx = n - 1          # 「他XX点」の上にドロップ → 末尾へ
+        else:
+            self._tree.selection_set(src_iid)
+            return
+
+        if src_idx == dst_idx or not (0 <= src_idx < n) or not (0 <= dst_idx < n):
+            self._tree.selection_set(src_iid)
+            return
+
+        self._push_undo("ウェイポイント並べ替え")
+        wp = self.route.waypoints.pop(src_idx)
+        self.route.waypoints.insert(dst_idx, wp)
+        self.route_editor.set_route(self.route)
+        self._on_route_changed()
+
+        # 移動後のアイテムを再選択
+        new_iid = f"wp_{dst_idx}"
+        if self._tree.exists(new_iid):
+            self._tree.selection_set(new_iid)
+            self._tree.see(new_iid)
 
     # ──────────────────────────────────────────────────────────────────
     # ワークフローバー
