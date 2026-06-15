@@ -2,10 +2,26 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.18.0"
+APP_VERSION = "0.18.3"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.18.3", "2026-06-15", "08:30 JST", [
+        "ショートカットからの起動でコンソールウィンドウが表示されなくなった: "
+        "launch.ps1 を新設し create_shortcut.ps1 を更新。PowerShell の "
+        "-WindowStyle Hidden 経由で pythonw を起動するため、ターミナルが"
+        "一切表示されずアプリだけがそのまま開く。"
+        "ショートカットを再作成するには create_shortcut.ps1 を再実行してください",
+    ]),
+    ("0.18.2", "2026-06-15", "08:00 JST", [
+        "読み込まれた CSV 点群を常に最前面に表示: scatter・ファイル名ラベルに "
+        "zorder=1000 を設定し、砥石 STL に隠れずに常に見えるようにした",
+    ]),
+    ("0.18.1", "2026-06-13", "23:00 JST", [
+        "MP4 動画保存時に imageio 未インストールなら GIF へ自動フォールバック: "
+        "「GIF として保存しますか？」ダイアログを出し OK なら Pillow で .gif 保存。"
+        "MP4 で保存したい場合は pip install imageio[ffmpeg] を実行してください",
+    ]),
     ("0.18.0", "2026-06-13", "22:30 JST", [
         "「関節角度 / ジョグ操作」パネルを3Dビューポート下部から右パネル"
         "（刃先CSV の下）へ移動: ビューポートを常に大画面で表示できるようにした。"
