@@ -1099,6 +1099,7 @@ class Viewport3D:
         self._redraw()
 
     def _draw_overlay(self):
+        ZTOP = 1000
         if self._stl_verts is not None:
             R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
             all_verts = self._stl_verts.reshape(-1, 3)
@@ -1136,10 +1137,12 @@ class Viewport3D:
             R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
             pts = (R @ self._csv_points.T).T + t
             self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
-                            c="#FF9944", s=8, alpha=0.6, depthshade=False)
+                            c="#FF9944", s=8, alpha=0.6, depthshade=False,
+                            zorder=ZTOP)
             ctr = pts.mean(axis=0)
             self.ax.text(ctr[0], ctr[1], ctr[2],
-                         self._csv_name, color="#FFBB66", fontsize=6)
+                         self._csv_name, color="#FFBB66", fontsize=6,
+                         zorder=ZTOP)
 
     # ── Markers ────────────────────────────────────────────────────────
 
