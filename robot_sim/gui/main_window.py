@@ -3389,6 +3389,23 @@ class MainWindow:
                 self._save_as_mp4(path, fps)
             self._set_status(f"✔  動画を保存しました: {path}")
         except Exception as e:
+            # MP4 書き込みに失敗した場合は GIF フォールバックを提案する
+            if ext != ".gif":
+                gif_path = os.path.splitext(path)[0] + ".gif"
+                if messagebox.askyesno(
+                    "MP4 保存に失敗",
+                    f"MP4 の保存に失敗しました:\n{e}\n\n"
+                    f"代わりに GIF として保存しますか？\n{gif_path}",
+                ):
+                    try:
+                        self._save_as_gif(gif_path, fps)
+                        self._set_status(f"✔  GIF を保存しました: {gif_path}")
+                        return
+                    except Exception as e2:
+                        messagebox.showerror(
+                            "保存エラー", f"GIF の保存にも失敗しました:\n{e2}")
+                        self._set_status("✖  動画の保存に失敗しました")
+                        return
             messagebox.showerror("保存エラー", f"動画の保存に失敗しました:\n{e}")
             self._set_status("✖  動画の保存に失敗しました")
         finally:
@@ -3403,9 +3420,18 @@ class MainWindow:
                 "imageio が見つかりません。pip install imageio[ffmpeg] を実行してください。")
         # RGBA→RGB（alpha チャンネルを落とす）
         rgb_frames = [f[:, :, :3] for f in self._pre_frames]
+        # libx264 / yuv420p は偶数の幅・高さを要求する。奇数サイズ
+        # （例: 1223x858）だと ffmpeg が Broken pipe で即死するため、
+        # 末尾の 1 行 / 1 列を削って偶数サイズにそろえてから書き出す。
+        h, w = rgb_frames[0].shape[:2]
+        h2, w2 = h - (h % 2), w - (w % 2)
+        if (h2, w2) != (h, w):
+            rgb_frames = [np.ascontiguousarray(f[:h2, :w2, :])
+                          for f in rgb_frames]
+        # macro_block_size=1: 偶数化済みなので追加パディング不要
         imageio.mimsave(path, rgb_frames, fps=fps,
                         codec="libx264", quality=8,
-                        macro_block_size=None)
+                        macro_block_size=1)
 
     def _save_as_gif(self, path: str, fps: float):
         """Pillow で GIF アニメーションとして保存する。"""
