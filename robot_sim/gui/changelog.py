@@ -2,10 +2,16 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.18.3"
+APP_VERSION = "0.18.4"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.18.4", "2026-06-15", "09:00 JST", [
+        "加工ルートを障害物に隠れず常に最前面に表示できるよう修正: "
+        "scatter（PathCollection3D）→ plot マーカー（Line3D）に変換し、"
+        "computed_zorder の影響を排除。ルートライン幅 1.5→2.5、不透明度 0.7→1.0、"
+        "色を明るいシアン (#00E5FF) に変更してグレーの砥石との視認性を向上",
+    ]),
     ("0.18.3", "2026-06-15", "08:30 JST", [
         "ショートカットからの起動でコンソールウィンドウが表示されなくなった: "
         "launch.ps1 を新設し create_shortcut.ps1 を更新。PowerShell の "
