@@ -837,7 +837,7 @@ class MainWindow:
             bg=BG_WIDGET, fg=FG_PRIMARY, font=("Consolas", 8),
             selectbackground=BTN_PRIMARY, selectforeground="white",
             borderwidth=0, highlightthickness=1, highlightcolor=BORDER,
-            activestyle="none",
+            activestyle="none", exportselection=False,
         )
         self._mk_listbox.pack(fill=tk.X)
         sb.config(command=self._mk_listbox.yview)
@@ -882,6 +882,8 @@ class MainWindow:
         self._mk_list.append({"type": "tcp", "name": name, "pos": list(pos)})
         self._mk_refresh_listbox(select_last=True)
         self._mk_sync_viewport()
+        for i, v in enumerate(self._mk_pos_vars):
+            v.set(f"{pos[i]:.1f}")
         self._set_status(f"✔  TCPマーカー追加: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
 
     def _mk_add_target(self):
@@ -892,6 +894,8 @@ class MainWindow:
         self._mk_list.append({"type": "target", "name": name, "pos": list(pos)})
         self._mk_refresh_listbox(select_last=True)
         self._mk_sync_viewport()
+        for i, v in enumerate(self._mk_pos_vars):
+            v.set(f"{pos[i]:.1f}")
         self._set_status(f"✔  ターゲット追加: {name}  ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f})")
 
     def _mk_delete(self):
@@ -974,6 +978,8 @@ class MainWindow:
             fmt="{:.0f}")
 
     def _on_mk_select(self, event=None):
+        if getattr(self, '_mk_refreshing', False):
+            return
         sel = self._mk_listbox.curselection()
         if not sel:
             return
@@ -988,19 +994,23 @@ class MainWindow:
         return T[:3, 3]
 
     def _mk_refresh_listbox(self, select_last: bool = False, select_idx: Optional[int] = None):
-        self._mk_listbox.delete(0, tk.END)
-        for m in self._mk_list:
-            p = m["pos"]
-            prefix = "TCP" if m["type"] == "tcp" else "🎯 "
-            entry = f"{prefix}  {m['name']:10s}  ({p[0]:7.1f}, {p[1]:7.1f}, {p[2]:7.1f})"
-            self._mk_listbox.insert(tk.END, entry)
-            color = "#00FFCC" if m["type"] == "tcp" else "#FF8800"
-            self._mk_listbox.itemconfig(tk.END, fg=color)
-        if select_last and self._mk_listbox.size() > 0:
-            self._mk_listbox.selection_set(tk.END)
-            self._mk_listbox.see(tk.END)
-        elif select_idx is not None and 0 <= select_idx < self._mk_listbox.size():
-            self._mk_listbox.selection_set(select_idx)
+        self._mk_refreshing = True
+        try:
+            self._mk_listbox.delete(0, tk.END)
+            for m in self._mk_list:
+                p = m["pos"]
+                prefix = "TCP" if m["type"] == "tcp" else "🎯 "
+                entry = f"{prefix}  {m['name']:10s}  ({p[0]:7.1f}, {p[1]:7.1f}, {p[2]:7.1f})"
+                self._mk_listbox.insert(tk.END, entry)
+                color = "#00FFCC" if m["type"] == "tcp" else "#FF8800"
+                self._mk_listbox.itemconfig(tk.END, fg=color)
+            if select_last and self._mk_listbox.size() > 0:
+                self._mk_listbox.selection_set(tk.END)
+                self._mk_listbox.see(tk.END)
+            elif select_idx is not None and 0 <= select_idx < self._mk_listbox.size():
+                self._mk_listbox.selection_set(select_idx)
+        finally:
+            self._mk_refreshing = False
 
     def _mk_sync_viewport(self):
         tcp_markers = [

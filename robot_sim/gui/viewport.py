@@ -1127,7 +1127,7 @@ class Viewport3D:
             facecolors = np.clip(base[None, :] * intensity[:, None], 0, 1)
 
             poly = Poly3DCollection(tris, facecolors=facecolors,
-                                    edgecolors="none", alpha=0.95)
+                                    edgecolors="none", alpha=0.45)
             self.ax.add_collection3d(poly)
 
             ctr = tv.mean(axis=0)
