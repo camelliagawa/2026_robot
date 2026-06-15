@@ -2,10 +2,24 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.18.5"
+APP_VERSION = "0.19.0"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.0", "2026-06-15", "23:05 JST", [
+        "ステーションツリーに「📍 Targets（名前付きTCPターゲット）」を追加（RoboDK相当）: "
+        "現在のTCP姿勢をターゲットとして登録し、ダブルクリックでその姿勢へ移動、"
+        "F2で改名・Deleteで削除。右クリックの「Teach」で既存ターゲットを現在位置で上書き",
+        "ステーションツリーに「📋 Route Sequence」を追加: CSVルートと Targets を"
+        "自由な順序で組み合わせたプログラムを構成できる（CSV① → Target A → CSV② → Target B 等）。"
+        "各ターゲットは MoveJ/MoveL 命令として速度を保持し、①②③… の番号付きで表示",
+        "Route Sequence の操作: ステップのドラッグ並べ替え・上下移動・削除、"
+        "Target をシーケンスへドラッグ＆ドロップで挿入、右クリックで動作種別(MoveJ/MoveL)切替・速度設定。"
+        "ヘッダにステップ数・総点数・距離・推定時間をライブ表示",
+        "「▶ Sequence を再生」を追加: シーケンス全体（または途中ステップ以降）を1本の経路へ"
+        "平坦化し、IK事前計算の完了後に自動再生（Undo対応・ステップ毎の動作種別/速度を反映）",
+        "色分けを追加: ターゲット=緑 / CSVステップ=青 / MoveJ=緑 / MoveL=水色 / 再生=緑太字",
+    ]),
     ("0.18.5", "2026-06-15", "12:45 JST", [
         "MP4 動画保存の Broken pipe エラーを修正: ウィンドウ幅が奇数（例 1223px）"
         "だと libx264/yuv420p が偶数サイズを要求するため ffmpeg が即死していた。"
