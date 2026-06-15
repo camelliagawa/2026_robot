@@ -176,6 +176,10 @@ class Viewport3D:
         self._jog_target: Optional[np.ndarray]  = None
 
         self._zoom_scale: float = 1.0
+        # set_box_aspect(zoom=) が実際に適用された倍率。zoom 非対応の
+        # 旧 matplotlib では 1.0（縮小なし）になり、_px_per_world の
+        # スケール整合に使う（カーソル追従ズーム/パンのズレ防止）。
+        self._box_zoom_eff: float = self._BOX_ZOOM
         self._elev: float = 25.0
         self._azim: float = -45.0
         self._pan_cx: float = 0.0
@@ -307,9 +311,10 @@ class Viewport3D:
         """ワールド1mmあたりの画面ピクセル数（おおよそ）。"""
         lim = 700.0 * self._zoom_scale
         fig_w = self.fig.get_figwidth() * self.fig.dpi
-        # set_box_aspect(zoom=_BOX_ZOOM) で内容が縮小される分を反映する
-        # （カーソル追従ズームのスケール整合のため）。
-        return self._BOX_ZOOM * max(fig_w, 1.0) / (2.0 * lim)
+        # set_box_aspect(zoom=) で内容が縮小される分を反映する
+        # （カーソル追従ズームのスケール整合のため）。zoom が実際に
+        # 適用されたかを _box_zoom_eff が保持する（旧 mpl では 1.0）。
+        return self._box_zoom_eff * max(fig_w, 1.0) / (2.0 * lim)
 
     def _center_disp(self):
         """3D ビューの画面中心ピクセル座標（axes bbox の中心を使用）。
@@ -507,8 +512,11 @@ class Viewport3D:
         try:
             # zoom<1 で 3D 内容を subplot 矩形内へ収め、端の見切れを防ぐ。
             ax.set_box_aspect((1, 1, 1), zoom=self._BOX_ZOOM)
+            self._box_zoom_eff = self._BOX_ZOOM
         except TypeError:
-            # 旧 matplotlib（zoom 非対応）フォールバック
+            # 旧 matplotlib（zoom 非対応）フォールバック: 内容は縮小
+            # されないため、有効ズーム倍率を 1.0 として記録する。
+            self._box_zoom_eff = 1.0
             try:
                 ax.set_box_aspect((1, 1, 1))
             except Exception:
@@ -607,6 +615,26 @@ class Viewport3D:
 
     _LIGHT_DIR = np.array([0.45, -0.35, 0.82]) / np.linalg.norm([0.45, -0.35, 0.82])
 
+    @staticmethod
+    def _face_normals(tris: np.ndarray) -> np.ndarray:
+        """三角形配列 (N,3,3) から単位面法線 (N,3) を返す。"""
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        lens = np.linalg.norm(n, axis=1, keepdims=True)
+        lens[lens < 1e-9] = 1.0
+        return n / lens
+
+    @staticmethod
+    def _lambert_facecolors(normals, base_rgb, light,
+                            ambient: float = 0.35,
+                            diffuse: float = 0.65) -> np.ndarray:
+        """単位法線 (N,3) から Lambert シェーディング済み facecolors (N,3)。
+
+        intensity = ambient + diffuse * |n·light| を base_rgb に乗じる
+        （両面ライティング: 法線の向きに依らず |·| で明るさを取る）。
+        """
+        inten = ambient + diffuse * np.abs(normals @ light)
+        return np.clip(np.asarray(base_rgb)[None, :] * inten[:, None], 0, 1)
+
     def _draw_robot_meshes(self, q: np.ndarray):
         """実機メッシュをランバートシェーディング付きで描画する。
 
@@ -621,8 +649,8 @@ class Viewport3D:
             R, t = T[:3, :3], T[:3, 3]
             all_tris.append(verts @ R.T + t)     # (N,3,3) ワールド座標へ
             tn = normals @ R.T                   # (N,3)  回転のみ
-            inten = 0.30 + 0.70 * np.abs(tn @ self._LIGHT_DIR)
-            all_colors.append(np.clip(rgb[None, :] * inten[:, None], 0, 1))
+            all_colors.append(self._lambert_facecolors(
+                tn, rgb, self._LIGHT_DIR, ambient=0.30, diffuse=0.70))
         poly = Poly3DCollection(np.concatenate(all_tris),
                                 facecolors=np.concatenate(all_colors),
                                 edgecolors="none", alpha=1.0)
@@ -641,15 +669,9 @@ class Viewport3D:
                          color="#333333", lw=3, alpha=0.25)
 
             T_ee = self.kin.forward(q)
-            origin = T_ee[:3, 3]
-            R = T_ee[:3, :3]
-            for col, (color, name) in enumerate(
-                    zip(["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])):
-                tip = origin + 70 * R[:, col]
-                self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
-                             [origin[2], tip[2]], color=color, lw=2.0, alpha=0.9)
-                self.ax.text(tip[0], tip[1], tip[2], name,
-                             color=color, fontsize=6, alpha=0.85)
+            self._draw_frame_triad(
+                T_ee, 70, ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"],
+                lw=2.0, alpha=0.9)
 
             self._draw_knife(T_ee)
             self._draw_blade_csv(T_ee)
@@ -728,15 +750,9 @@ class Viewport3D:
 
         # ── EE 座標フレーム ────────────────────────────────────────
         T_ee = self.kin.forward(q)
-        origin = T_ee[:3, 3]
-        R = T_ee[:3, :3]
-        for col, (color, name) in enumerate(
-                zip(["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"])):
-            tip = origin + 70 * R[:, col]
-            self.ax.plot([origin[0], tip[0]], [origin[1], tip[1]],
-                         [origin[2], tip[2]], color=color, lw=2.0, alpha=0.9)
-            self.ax.text(tip[0], tip[1], tip[2], name,
-                         color=color, fontsize=6, alpha=0.85)
+        self._draw_frame_triad(
+            T_ee, 70, ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"],
+            lw=2.0, alpha=0.9)
 
         self._draw_knife(T_ee)
         self._draw_blade_csv(T_ee)
@@ -985,7 +1001,13 @@ class Viewport3D:
         if not pts:
             return 0
         self._blade_pts     = np.array(pts, dtype=float)
-        self._blade_normals = np.array(nrm, dtype=float)
+        # 法線を単位ベクトルに正規化する。CSV の法線は任意長で書かれる
+        # ことがあり、未正規化のままだと法線ウィスカーの描画長が
+        # |n| 倍にばらつき、研磨接触方向の確認が不正確になる。
+        nrm_arr = np.array(nrm, dtype=float)
+        lens = np.linalg.norm(nrm_arr, axis=1, keepdims=True)
+        lens[lens < 1e-9] = 1.0
+        self._blade_normals = nrm_arr / lens
         self._blade_name    = os.path.basename(path)
         self._blade_path    = path
         self._redraw()
@@ -1112,19 +1134,11 @@ class Viewport3D:
             step = max(1, len(tverts) // max_tris)
             tris = tverts[::step]
 
-            v1 = tris[:, 1] - tris[:, 0]
-            v2 = tris[:, 2] - tris[:, 0]
-            normals = np.cross(v1, v2)
-            lens = np.linalg.norm(normals, axis=1, keepdims=True)
-            lens[lens < 1e-9] = 1.0
-            normals /= lens
-
+            normals = self._face_normals(tris)
             light = np.array([0.4, -0.3, 0.85])
             light /= np.linalg.norm(light)
-            intensity = 0.35 + 0.65 * np.abs(normals @ light)
-
             base = np.array([0.45, 0.58, 0.75])  # 青灰色（機械色）
-            facecolors = np.clip(base[None, :] * intensity[:, None], 0, 1)
+            facecolors = self._lambert_facecolors(normals, base, light)
 
             poly = Poly3DCollection(tris, facecolors=facecolors,
                                     edgecolors="none", alpha=0.45)

@@ -2,10 +2,26 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.19.2"
+APP_VERSION = "0.19.3"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.3", "2026-06-16", "06:45 JST", [
+        "バグ修正: 刃先CSVの法線ベクトルが未正規化のまま描画され、"
+        "法線ウィスカーの長さが |n| 倍にばらつく問題を修正（読込時に単位ベクトル化）",
+        "バグ修正: 旧 matplotlib（set_box_aspect の zoom 非対応）環境で、"
+        "カーソル追従ズーム/パンのスケールがズレる問題を修正。"
+        "zoom が実際に適用された倍率を _box_zoom_eff として保持し _px_per_world に反映",
+        "バグ修正: 設定ファイル読込時、STL/CSV オーバーレイの読込に失敗しても"
+        "ポーズだけが適用され状態が不整合になる問題を修正（読込成功時のみポーズ適用）",
+        "バグ修正: 設定ファイルの motion_type が未知/破損値だと MotionType の"
+        "ValueError で設定ロードが途中で停止する問題を修正（L にフォールバック）",
+        "バグ修正: 経路点の編集ダイアログで OK を押すと cnt(CNT) / joint_speed_pct / "
+        "call(CALL命令) が消える問題を修正（ダイアログに UI の無いフィールドを引き継ぐ）",
+        "整理: EE座標トライアドの描画コードを共通ヘルパー _draw_frame_triad に統合（重複3箇所→1箇所）",
+        "整理: Lambert シェーディング計算を _face_normals / _lambert_facecolors "
+        "ヘルパーに切り出し、ロボットメッシュと STL オーバーレイで共有",
+    ]),
     ("0.19.2", "2026-06-15", "23:59 JST", [
         "Route Sequence をシミュレーションパネルの「実行(F5)」「滑らか再生」「動画保存」から直接利用可能にした。"
         "シーケンスが定義されている場合、各ボタンを押すと自動的にシーケンスを展開してIK計算し再生する。"

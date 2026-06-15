@@ -32,6 +32,9 @@ class WaypointDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result: Optional[Waypoint] = None
 
+        # 元の Waypoint を保持し、ダイアログに無いフィールド
+        # （cnt / joint_speed_pct / call）を編集後も引き継ぐ。
+        self._src = waypoint
         wp = waypoint or Waypoint()
         self._vars = {}
 
@@ -88,6 +91,12 @@ class WaypointDialog(tk.Toplevel):
                 label=self._vars["label"].get().strip(),
                 motion_type=MotionType(self._mt_var.get()),
             )
+            # ダイアログに UI を持たないフィールドは元の Waypoint から
+            # 引き継ぐ（FANUC の CNT / JOINT 速度% / CALL 命令を消さない）。
+            if self._src is not None:
+                wp.cnt = self._src.cnt
+                wp.joint_speed_pct = self._src.joint_speed_pct
+                wp.call = self._src.call
             self.result = wp
             self.destroy()
         except ValueError as e:

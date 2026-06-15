@@ -45,7 +45,13 @@ def _wp_to_dict(wp: Waypoint) -> dict:
 
 def _wp_from_dict(d: dict) -> Waypoint:
     kwargs = {k: d[k] for k in _WP_KEYS if k in d}
-    kwargs["motion_type"] = MotionType(d.get("motion_type", "L"))
+    mt = d.get("motion_type", "L")
+    try:
+        kwargs["motion_type"] = MotionType(mt)
+    except ValueError:
+        # 未知/破損した motion_type は L（直線）にフォールバックして
+        # 設定ロード全体が途中で死ぬのを防ぐ。
+        kwargs["motion_type"] = MotionType.LINEAR
     return Waypoint(**kwargs)
 
 
@@ -194,19 +200,26 @@ def apply_settings(mw, data: dict) -> list:
         if layer is None:
             return
         path = layer.get("path") or ""
+        loaded = False
         if path:
             if os.path.isfile(path):
-                if not load(path):
+                if load(path):
+                    loaded = True
+                else:
                     warns.append(f"{key}: 読込失敗 ({path})")
             else:
                 warns.append(f"{key}: ファイルが見つかりません ({path})")
         else:
             clear()
-        pose = layer.get("pose")
-        if pose and len(pose) >= 6:
-            for var, val in zip(pose_vars, pose):
-                var.set(f"{float(val):.2f}")
-            apply_pose()
+        # ジオメトリの読込に成功した場合のみポーズを適用する。
+        # 失敗時に適用すると、実体のないレイヤーへ姿勢だけが反映され
+        # 状態が不整合になる（次回保存で誤ったポーズが残る）。
+        if loaded:
+            pose = layer.get("pose")
+            if pose and len(pose) >= 6:
+                for var, val in zip(pose_vars, pose):
+                    var.set(f"{float(val):.2f}")
+                apply_pose()
 
     _apply_layer("stl", mw._stl_pose_vars, vp.load_stl,
                  mw._apply_stl_pose, vp.clear_stl)
