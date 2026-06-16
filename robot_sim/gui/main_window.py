@@ -3584,6 +3584,11 @@ class MainWindow:
                 self._sim_solutions_ready = True
                 self._set_seek_enabled(True)
                 self._update_seek_info(0.0)
+                # GPU(リアルタイム)版は事前描画キャッシュ無しでも動画保存できる
+                # （保存時にオンデマンドで事前描画する）ため、IK完了で有効化する。
+                if getattr(self.viewport, "realtime", False) \
+                        and len(sols) >= 2 and hasattr(self, "_save_video_btn"):
+                    self._save_video_btn.config(state="normal")
                 if n_warn > 0:
                     self._set_status(
                         f"⚠  床干渉 {n_warn}点 — 代替 IK でも回避不能。"
@@ -3989,10 +3994,31 @@ class MainWindow:
                 "再生不可", "総再生時間が 0 秒です。経路点の速度を確認してください。")
             return
 
+        # ── GPU(リアルタイム)バックエンドでは事前描画は不要 ──────────────
+        # 実機メッシュのまま 60fps 超で再生できるため、リアルタイム再生へ委譲する。
+        if getattr(self.viewport, "realtime", False):
+            self._seek_var.set(0.0)
+            self._play_from_current()
+            return
+
         # ── キャッシュがあれば即再生 ──────────────────────────────────
         if self._pre_frames is not None and len(self._pre_frames) >= 2:
             self._smooth_start_playback(ns, total)
             return
+
+        if not self._prerender_frames(ns, cum, total):
+            return
+        self._smooth_btn.config(text="🎬  滑らか再生（キャッシュ済み）")
+        self._save_video_btn.config(state="normal")
+        self._smooth_start_playback(ns, total)
+
+    def _prerender_frames(self, ns: int, cum, total: float) -> bool:
+        """全フレームを render_frame で画像化し _pre_frames/_pre_idxs に格納する。
+
+        進捗ダイアログを表示し、キャンセル・失敗時は False を返す（キャッシュ未更新）。
+        matplotlib 版の滑らか再生と GPU 版の動画保存の双方から使用する。
+        """
+        sols = self._sim_solutions
 
         # ── フレーム枚数（時間等間隔・メモリ上限でクランプ） ──
         fig = self.viewport.fig
@@ -4062,7 +4088,7 @@ class MainWindow:
                 self.viewport.update_robot(saved_pose)
                 messagebox.showerror("事前描画エラー", f"描画に失敗しました:\n{e}")
                 self._set_status("✖  事前描画に失敗しました")
-                return
+                return False
             pbar["value"] = k + 1
             pct_var.set(f"{k + 1} / {n_frames}")
             if (k % 2) == 0 or k == n_frames - 1:
@@ -4075,7 +4101,7 @@ class MainWindow:
         if cancelled or len(frames) < 2:
             self.viewport.update_robot(saved_pose)
             self._set_status("⏹  事前描画をキャンセルしました")
-            return
+            return False
 
         n_frames = len(frames)
         idxs = idxs[:n_frames]
@@ -4083,9 +4109,7 @@ class MainWindow:
         # キャッシュとして保持（ルート変更まで繰り返し再生に使用）
         self._pre_frames = frames
         self._pre_idxs = idxs
-        self._smooth_btn.config(text="🎬  滑らか再生（キャッシュ済み）")
-        self._save_video_btn.config(state="normal")
-        self._smooth_start_playback(ns, total)
+        return True
 
     def _smooth_start_playback(self, ns: int, total: float):
         """キャッシュ済みフレームで再生ループを起動する。"""
@@ -4166,7 +4190,24 @@ class MainWindow:
             f"✔  滑らか再生完了（{n_done} フレーム キャッシュ済み・繰り返し再生可）")
 
     def _save_smooth_video(self):
-        """キャッシュ済みフレームを動画ファイル（MP4 / GIF）として保存する。"""
+        """キャッシュ済みフレームを動画ファイル（MP4 / GIF）として保存する。
+
+        GPU(リアルタイム)バックエンドでは滑らか再生で事前描画を行わないため、
+        フレーム未キャッシュ時はここで動画用に一度だけ事前描画する。
+        """
+        if (not self._pre_frames or len(self._pre_frames) < 2) \
+                and getattr(self.viewport, "realtime", False):
+            if not self._sim_solutions_ready or len(self._sim_solutions) < 2:
+                messagebox.showwarning("フレームなし",
+                                       "経路点が2つ以上必要です（IK計算の完了もお待ちください）。")
+                return
+            cum, total = self._segment_times()
+            if total <= 1e-6:
+                messagebox.showinfo("保存不可", "総再生時間が 0 秒です。")
+                return
+            if not self._prerender_frames(len(self._sim_solutions), cum, total):
+                return   # キャンセル/失敗
+
         if not self._pre_frames or len(self._pre_frames) < 2:
             messagebox.showwarning("フレームなし",
                                    "先に「滑らか再生」を実行してフレームをキャッシュしてください。")
