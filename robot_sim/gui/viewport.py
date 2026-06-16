@@ -193,10 +193,18 @@ class Viewport3D:
         self._stl_name: str = ""
         self._stl_path: str = ""
         self._stl_T: np.ndarray = np.eye(4)
+        # Lambert シェーディングキャッシュ: STL データ/ポーズ変化時に None でリセット。
+        # ルート変更やカメラ操作では STL 自体は変わらないため再利用する。
+        # keys: tris (N,3,3), facecolors (N,4), ctr (3,), zmax (float)
+        self._stl_cache: Optional[dict] = None
+
         self._csv_points: Optional[np.ndarray] = None  # (N,3) CSV points
         self._csv_name: str = ""
         self._csv_path: str = ""
         self._csv_T: np.ndarray = np.eye(4)
+        # 変換済み CSV 点群キャッシュ: データ/ポーズ変化時に None でリセット。
+        # keys: pts (N,3), ctr (3,)
+        self._csv_cache: Optional[dict] = None
 
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
@@ -1065,6 +1073,7 @@ class Viewport3D:
         self._stl_verts = verts
         self._stl_name = os.path.basename(path)
         self._stl_path = path
+        self._stl_cache = None   # データ変化 → Lambert キャッシュ破棄
         self._static_dirty = True
         self._redraw()
         return True
@@ -1084,6 +1093,7 @@ class Viewport3D:
             self._csv_points = np.array(pts)
             self._csv_name = os.path.basename(path)
             self._csv_path = path
+            self._csv_cache = None   # データ変化 → 変換キャッシュ破棄
             self._static_dirty = True
             self._redraw()
             return True
@@ -1179,12 +1189,14 @@ class Viewport3D:
     def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._stl_cache = None   # ポーズ変化 → Lambert キャッシュ破棄
         self._static_dirty = True
         self._redraw()
 
     def set_csv_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._csv_cache = None   # ポーズ変化 → 変換キャッシュ破棄
         self._static_dirty = True
         self._redraw()
 
@@ -1193,6 +1205,7 @@ class Viewport3D:
         self._stl_name = ""
         self._stl_path = ""
         self._stl_T = np.eye(4)
+        self._stl_cache = None
         self._static_dirty = True
         self._redraw()
 
@@ -1201,6 +1214,7 @@ class Viewport3D:
         self._csv_name = ""
         self._csv_path = ""
         self._csv_T = np.eye(4)
+        self._csv_cache = None
         self._static_dirty = True
         self._redraw()
 
@@ -1239,43 +1253,58 @@ class Viewport3D:
             {"name": rf["name"], "T": rf["T"].copy(), "color": rf["color"]}
             for rf in snap["ref_frames"]
         ]
+        # STL/CSV データ・ポーズが変わった可能性があるためキャッシュを破棄
+        self._stl_cache = None
+        self._csv_cache = None
         self._static_dirty = True
         self._redraw()
 
     def _draw_overlay(self):
+        """STL / CSV オーバーレイを描画する。
+
+        頂点変換・法線計算・Lambert シェーディングは STL/CSV データまたは
+        ポーズが変わった時だけ再計算し、_stl_cache / _csv_cache に保持する。
+        ルート変更・カメラ操作などでは numpy 重計算をスキップして描画のみ行う。
+        """
         ZTOP = 1000
         if self._stl_verts is not None:
-            R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
-            all_verts = self._stl_verts.reshape(-1, 3)
-            tv = ((R @ all_verts.T).T + t)
-            tverts = tv.reshape(-1, 3, 3)
-
-            # 三角形を間引いてソリッド面で描画（法線による簡易シェーディング）
-            max_tris = 1500
-            step = max(1, len(tverts) // max_tris)
-            tris = tverts[::step]
-
-            normals = self._face_normals(tris)
-            light = np.array([0.4, -0.3, 0.85])
-            light /= np.linalg.norm(light)
-            base = np.array([0.45, 0.58, 0.75])  # 青灰色（機械色）
-            facecolors = self._lambert_facecolors(normals, base, light)
-
-            poly = Poly3DCollection(tris, facecolors=facecolors,
+            if self._stl_cache is None:
+                # データまたはポーズ変化時のみ再計算
+                R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
+                all_verts = self._stl_verts.reshape(-1, 3)
+                tv = ((R @ all_verts.T).T + t)
+                tverts = tv.reshape(-1, 3, 3)
+                max_tris = 1500
+                step = max(1, len(tverts) // max_tris)
+                tris = tverts[::step]
+                normals = self._face_normals(tris)
+                light = np.array([0.4, -0.3, 0.85])
+                light /= np.linalg.norm(light)
+                base = np.array([0.45, 0.58, 0.75])
+                self._stl_cache = {
+                    "tris":       tris,
+                    "facecolors": self._lambert_facecolors(normals, base, light),
+                    "ctr":        tv.mean(axis=0),
+                    "zmax":       float(tv[:, 2].max()),
+                }
+            sc = self._stl_cache
+            poly = Poly3DCollection(sc["tris"], facecolors=sc["facecolors"],
                                     edgecolors="none", alpha=0.45)
             self.ax.add_collection3d(poly)
-
-            ctr = tv.mean(axis=0)
-            zmax = tv[:, 2].max()
+            ctr, zmax = sc["ctr"], sc["zmax"]
             self.ax.text(ctr[0], ctr[1], zmax + 25,
                          self._stl_name, color="#99BBFF", fontsize=7)
+
         if self._csv_points is not None:
-            R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
-            pts = (R @ self._csv_points.T).T + t
-            self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
+            if self._csv_cache is None:
+                R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
+                pts = (R @ self._csv_points.T).T + t
+                self._csv_cache = {"pts": pts, "ctr": pts.mean(axis=0)}
+            cc = self._csv_cache
+            self.ax.scatter(cc["pts"][:, 0], cc["pts"][:, 1], cc["pts"][:, 2],
                             c="#FF9944", s=8, alpha=0.6, depthshade=False,
                             zorder=ZTOP)
-            ctr = pts.mean(axis=0)
+            ctr = cc["ctr"]
             self.ax.text(ctr[0], ctr[1], ctr[2],
                          self._csv_name, color="#FFBB66", fontsize=6,
                          zorder=ZTOP)

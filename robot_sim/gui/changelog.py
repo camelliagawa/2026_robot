@@ -2,10 +2,18 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.19.7"
+APP_VERSION = "0.19.8"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.8", "2026-06-16", "19:05 JST", [
+        "パフォーマンス（描画最適化 Step3/5）: STL/CSVオーバーレイのLambert"
+        "シェーディングキャッシュを導入。STL の頂点変換(R@verts.T+t)・法線計算・"
+        "Lambert色計算は STL データまたはポーズが変わった時だけ再計算し、"
+        "_stl_cache / _csv_cache に保持する（load/set_pose/clear/restore_layers で破棄）。"
+        "ルート変更・カメラパン/ズーム時など STL 自体が変わらないフレームでは"
+        "numpy 重計算をスキップし描画オブジェクト生成のみ行う",
+    ]),
     ("0.19.7", "2026-06-16", "18:40 JST", [
         "パフォーマンス（描画最適化 Step2/5）: 静的層/動的層の分離による選択的再描画を導入。"
         "床グリッド/ルート/STL/マーカー等の「静的層」はコンテンツ変化時のみ ax.cla()+全再構築し、"
