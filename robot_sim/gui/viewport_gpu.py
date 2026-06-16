@@ -170,9 +170,11 @@ class ViewportGPU:
 
         # ── VisPy キャンバスを Tk フレームへ埋め込み ──────────────────────
         # app="tkinter" が pyopengltk 経由で Tk ウィジェットを生成する。
+        # keys=None: 埋め込みでは VisPy 組込キー処理（Escで閉じる等）は不要。
+        # "interactive" だと tkinter バックエンドで未対応キーの警告が出るため無効化。
         self.canvas = scene.SceneCanvas(
             parent=parent, app="tkinter",
-            bgcolor="#161B22", keys="interactive")
+            bgcolor="#161B22", keys=None)
         # main_window 側が pack / DnD バインドに使う Tk ウィジェット
         self.canvas_widget = self.canvas.native
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
