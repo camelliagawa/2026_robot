@@ -174,6 +174,9 @@ class ViewportGPU:
         self.kin = kinematics
         self._joint_angles = np.zeros(6)
         self._fast_mode = False
+        # GPU はリアルタイム描画が十分滑らかなため「事前描画再生」が不要。
+        # main_window はこのフラグを見て滑らか再生をリアルタイム再生に切替える。
+        self.realtime = True
 
         # ── レイヤー状態 ──────────────────────────────────────────────────
         self._route: Optional["Route"] = None
