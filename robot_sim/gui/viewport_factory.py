@@ -34,7 +34,7 @@ def create_viewport(parent: tk.Widget, kinematics: "Kinematics",
     "gpu" 指定時に VisPy 版の生成へ失敗したら matplotlib 版へ自動フォールバックし、
     どの環境でもアプリが起動できることを保証する。
     """
-    backend = (backend or os.environ.get("ROBOT_VIEWPORT", "mpl")).strip().lower()
+    backend = (backend or os.environ.get("ROBOT_VIEWPORT", "gpu")).strip().lower()
 
     if backend == "gpu":
         try:
