@@ -27,7 +27,7 @@ import numpy as np
 # ── 依存チェック ──────────────────────────────────────────────────────────
 try:
     from vispy import app, scene
-    from vispy.scene.visuals import Mesh, Text, GridLines
+    from vispy.scene.visuals import Mesh
 except ImportError:
     print("=" * 60)
     print("【エラー】VisPy がインストールされていません。")
@@ -141,7 +141,7 @@ def main():
         distance=1800,
         center=(0, 0, 400),
         fov=35,
-        up="z",
+        up="+z",
     )
 
     total_tris = 0
@@ -152,13 +152,12 @@ def main():
         if not os.path.isfile(path):
             print(f"  [skip] {path}")
             continue
-        verts, faces, v_normals = _load_stl(path)
+        verts, faces, _ = _load_stl(path)
         verts_w = _apply_transform(verts, T4)
-        v_normals_w = (v_normals @ T4[:3, :3].T).astype(np.float32)
+        # VisPy 0.16 の Mesh は法線を内部で自動計算する(shading="flat")。
         Mesh(
             vertices=verts_w,
             faces=faces,
-            vertex_normals=v_normals_w,
             color=rgba,
             shading="flat",
             parent=view.scene,
@@ -167,12 +166,11 @@ def main():
 
     # ── 砥石 STL オーバーレイ ─────────────────────────────────────────────
     if os.path.isfile(_TORMEK_PATH):
-        verts, faces, v_normals = _load_stl(_TORMEK_PATH)
+        verts, faces, _ = _load_stl(_TORMEK_PATH)
         verts_w = verts + _TORMEK_POS
         Mesh(
             vertices=verts_w,
             faces=faces,
-            vertex_normals=v_normals,
             color=(0.45, 0.58, 0.75, 0.5),
             shading="flat",
             parent=view.scene,
@@ -181,52 +179,17 @@ def main():
     else:
         print(f"  [skip] {_TORMEK_PATH}")
 
-    # ── 床グリッド（参考線）─────────────────────────────────────────────
-    grid_vis = scene.visuals.GridLines(color=(0.2, 0.3, 0.4, 0.4),
-                                       parent=view.scene)
+    # ── XYZ 軸（向きの参考・3Dシーン用の確実な表示）────────────────────
+    scene.visuals.XYZAxis(parent=view.scene)
 
-    # ── FPS カウンター（左上）─────────────────────────────────────────────
-    fps_label = Text(
-        f"FPS: --   三角形: {total_tris:,}",
-        color="white",
-        font_size=11,
-        anchor_x="left",
-        anchor_y="top",
-        parent=canvas.scene,
-    )
-    fps_label.transform = scene.transforms.STTransform(translate=(12, 12))
+    # ── FPS 計測（ウィンドウタイトルに表示・最も確実な方法）──────────────
+    base_title = f"VisPy GPU PoC — {total_tris:,} 三角形"
 
-    # 比較ラベル（左下）
-    note = Text(
-        "← matplotlib CPU 版と回転の滑らかさを比べてください",
-        color="#88AACC",
-        font_size=9,
-        anchor_x="left",
-        anchor_y="bottom",
-        parent=canvas.scene,
-    )
-    note.transform = scene.transforms.STTransform(
-        translate=(12, canvas.size[1] - 12))
+    def _show_fps(fps):
+        canvas.title = f"{base_title} — {fps:.0f} FPS  [Q:終了]"
 
-    # ── FPS 計測 ──────────────────────────────────────────────────────────
-    import time
-    _frame_times: list = []
-
-    @canvas.events.draw.connect
-    def on_draw(event):
-        now = time.monotonic()
-        _frame_times.append(now)
-        # 直近30フレームで FPS 計算
-        while len(_frame_times) > 30:
-            _frame_times.pop(0)
-        if len(_frame_times) >= 2:
-            fps = (len(_frame_times) - 1) / (_frame_times[-1] - _frame_times[0])
-            fps_label.text = f"FPS: {fps:.0f}   三角形: {total_tris:,}"
-
-    @canvas.events.resize.connect
-    def on_resize(event):
-        note.transform = scene.transforms.STTransform(
-            translate=(12, event.size[1] - 12))
+    # window 秒ごとに FPS を計測してタイトルへ反映
+    canvas.measure_fps(window=0.5, callback=_show_fps)
 
     @canvas.events.key_press.connect
     def on_key(event):
