@@ -228,6 +228,12 @@ class Viewport3D:
         # 実機メッシュ（assets/robot/*.stl）— 読込失敗時は円柱フォールバック
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
         self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
+        # ── インタラクティブ LOD（回転/パン中の自動軽量化）──────────────
+        # ドラッグ中は約1万ポリゴンの再投影が毎フレーム走り重いため、
+        # 操作中だけロボットを円柱表示・STLオーバーレイを非表示にして
+        # ポリゴン数を激減させ、手を離したら高精細フル描画へ戻す。
+        self._interacting: bool = False
+        self._scroll_idle_id = None    # ホイール停止検知用 after id
         self._pre_img = None           # 事前描画再生中の figimage（None=通常描画）
         # ── ロボットメッシュ Poly3DCollection の永続保持（Step 4）──────────
         # ax.cla() 後または fast_mode 切替後は None にリセット。
@@ -407,7 +413,20 @@ class Viewport3D:
             self._pan_cz = float(np.clip(W[2] + r * (self._pan_cz - W[2]), -2000, 4000))
         self._zoom_scale = new
         self._static_dirty = True   # 軸リミット・目盛りが変わる
+        # ホイール連続操作も軽量化。スクロールには release が無いため、
+        # 一定時間スクロールが止まったら高精細へ戻す（デバウンス）。
+        if not self._interacting:
+            self._enter_interacting()
+        if self._scroll_idle_id is not None:
+            self.canvas_widget.after_cancel(self._scroll_idle_id)
+        self._scroll_idle_id = self.canvas_widget.after(
+            250, self._on_scroll_idle)
         self._redraw()
+
+    def _on_scroll_idle(self):
+        """ホイール操作が止まったら高精細フル描画へ戻す。"""
+        self._scroll_idle_id = None
+        self._exit_interacting()
 
     def _on_mpress(self, event):
         if event.button == 1:
@@ -415,6 +434,16 @@ class Viewport3D:
         elif event.button in (2, 3):   # 右ボタン or ホイール（中）ボタン = パン
             self._pan_start = (event.x, event.y,
                                self._pan_cx, self._pan_cy, self._pan_cz)
+
+    def _enter_interacting(self):
+        """ドラッグ確定時に軽量シーンへ切替える（実機メッシュ→円柱・STL非表示）。"""
+        if self._interacting:
+            return
+        self._interacting = True
+        # ロボット描画モードが実機メッシュ→円柱に変わるため永続コレクションを破棄
+        self._robot_mesh_coll = None
+        # STL オーバーレイ（静的層）を落とすため静的層を再構築させる
+        self._static_dirty = True
 
     def _on_mrelease(self, event):
         # クリック（ドラッグ距離 < 5px）なら曲線ピックとして処理。
@@ -435,11 +464,26 @@ class Viewport3D:
         self._pick_candidate = None
         self._rotate_start = None
         self._pan_start    = None
+        self._exit_interacting()
+
+    def _exit_interacting(self):
+        """ドラッグ終了 → 高精細フル描画へ1回だけ戻す。"""
+        if not self._interacting:
+            return
+        self._interacting = False
+        # 円柱→実機メッシュに戻すため永続コレクションを破棄して再生成
+        self._robot_mesh_coll = None
+        # STL オーバーレイを復活させるため静的層を再構築
+        self._static_dirty = True
+        self._redraw()
 
     def _on_mmove(self, event):
         if self._rotate_start is not None and event.button == 1:
             dx = event.x - self._rotate_start[0]
             dy = event.y - self._rotate_start[1]
+            # 実ドラッグ（5px超）が確定したら軽量シーンへ切替
+            if not self._interacting and dx * dx + dy * dy >= 25.0:
+                self._enter_interacting()
             self._azim = self._rotate_start[3] - dx * 0.5
             self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
             # 回転は view_init のみ更新 → 軸リミット/目盛りは変わらない
@@ -447,6 +491,8 @@ class Viewport3D:
             self._gizmo_dirty = True
             self._redraw()
         elif self._pan_start is not None and event.button in (2, 3):
+            if not self._interacting:
+                self._enter_interacting()
             # 掴んだ点がカーソルに追従する画面平面パン（上下ドラッグでZも移動）
             right, up = self._cam_vectors()
             s = 1.0 / self._px_per_world()
@@ -847,7 +893,7 @@ class Viewport3D:
         if T_ee is None:
             T_ee = self.kin.forward(q)
 
-        if self._link_meshes and not self._fast_mode:
+        if self._link_meshes and not self._fast_mode and not self._interacting:
             self._draw_robot_meshes(q)
 
             # 地面の影（リンク原点の投影ポリライン）
@@ -1318,7 +1364,9 @@ class Viewport3D:
         ルート変更・カメラ操作などでは numpy 重計算をスキップして描画のみ行う。
         """
         ZTOP = 1000
-        if self._stl_verts is not None:
+        # 操作中（回転/パン）は重い半透明 STL（~1500ポリゴン）を描かない。
+        # 手を離すと _exit_interacting() が静的層を再構築して復活する。
+        if self._stl_verts is not None and not self._interacting:
             if self._stl_cache is None:
                 # データまたはポーズ変化時のみ再計算
                 R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
