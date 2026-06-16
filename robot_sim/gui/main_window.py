@@ -1909,7 +1909,7 @@ class MainWindow:
     def _apply_stl_pose(self):
         try:
             vals = [float(v.get()) for v in self._stl_pose_vars]
-        except ValueError:
+        except (ValueError, tk.TclError):
             self._set_status("⚠  数値を入力してください")
             return
         self._push_undo("STL位置調整", coalesce=True)
@@ -1920,7 +1920,7 @@ class MainWindow:
     def _apply_csv_pose(self):
         try:
             vals = [float(v.get()) for v in self._csv_pose_vars]
-        except ValueError:
+        except (ValueError, tk.TclError):
             self._set_status("⚠  数値を入力してください")
             return
         self._push_undo("CSV位置調整", coalesce=True)
@@ -1947,7 +1947,7 @@ class MainWindow:
     def _apply_blade_pose(self):
         try:
             vals = [float(v.get()) for v in self._blade_pose_vars]
-        except ValueError:
+        except (ValueError, tk.TclError):
             self._set_status("⚠  数値を入力してください")
             return
         self._push_undo("刃先CSV取付調整", coalesce=True)
@@ -3298,9 +3298,9 @@ class MainWindow:
             step = float(self._jog_step.get())
         except ValueError:
             step = 5.0
-        self._push_undo("ジョグ操作", coalesce=True)
 
         if self._jog_mode.get() == "Joint":
+            self._push_undo("ジョグ操作", coalesce=True)
             q = self._joint_angles.copy()
             q[axis] += np.deg2rad(step * direction)
             lower, upper = self.kin.dh.get_joint_limits()
@@ -3318,6 +3318,8 @@ class MainWindow:
                 T[:3, :3] = dR @ T[:3, :3]
             q, ok = self.kin.inverse(T, q_init=self._joint_angles)
             if ok:
+                # IK 成功時のみ undo を記録（失敗時は状態が変わらないため）
+                self._push_undo("ジョグ操作", coalesce=True)
                 self._set_angles(q)
                 self.viewport.set_jog_target(T[:3, 3])
             else:

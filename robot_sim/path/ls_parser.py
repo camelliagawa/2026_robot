@@ -111,15 +111,12 @@ def _parse_prog_section(text: str, kin) -> Optional[Route]:
     pr_regs = _parse_pr_registers(mn_text)
     T_uf = np.eye(4)
     uframe_pr_m = re.search(r"UFRAME\[(\d+)\]\s*=\s*PR\[(\d+)\]", mn_text)
-    utool_pr_m  = re.search(r"UTOOL\[(\d+)\]\s*=\s*PR\[(\d+)\]",  mn_text)
     if uframe_pr_m:
         pr_num = int(uframe_pr_m.group(2))
         if pr_num in pr_regs:
             T_uf = _pr_to_transform(pr_regs[pr_num])
-    if utool_pr_m:
-        pr_num = int(utool_pr_m.group(2))
-        if pr_num in pr_regs:
-            _pr_to_transform(pr_regs[pr_num])  # parsed but not applied at route level
+    # 注: UTOOL[n]=PR[m] は読み取るが route レベルでは適用しない。
+    # waypoint はワールド系の TCP 姿勢として保持するため UTOOL 変換は不要。
 
     motions   = _parse_mn_section(mn_text)
     positions = _parse_pos_section(pos_text)

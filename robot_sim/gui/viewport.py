@@ -50,7 +50,7 @@ def _load_stl_file(path: str) -> Optional[np.ndarray]:
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import tkinter as tk
@@ -410,12 +410,14 @@ class Viewport3D:
         self.ax.view_init(elev=self._elev, azim=self._azim)
         self._draw_workspace()
         self._draw_user_frame()
-        self._draw_robot(self._joint_angles)
+        # FK は重描画ごとに1回だけ計算し、ロボット描画とピック曲線描画で共有する
+        T_ee = self.kin.forward(self._joint_angles)
+        self._draw_robot(self._joint_angles, T_ee)
         self._draw_overlay()
         self._draw_ref_frames()
         self._draw_markers()
         self._draw_route()
-        self._draw_pick_curves()
+        self._draw_pick_curves(T_ee)
         self._draw_jog_target()
         self._draw_gizmo()
 
@@ -657,9 +659,11 @@ class Viewport3D:
         poly.set_zsort("average")
         self.ax.add_collection3d(poly)
 
-    def _draw_robot(self, q: np.ndarray):
+    def _draw_robot(self, q: np.ndarray, T_ee: Optional[np.ndarray] = None):
         """Draw FANUC LR Mate 200iD/14L（実機メッシュ、欠落時は円柱形状）。"""
         pos = self.kin.get_joint_positions(q)  # (7, 3)  Base + J1…J6
+        if T_ee is None:
+            T_ee = self.kin.forward(q)
 
         if self._link_meshes and not self._fast_mode:
             self._draw_robot_meshes(q)
@@ -668,7 +672,6 @@ class Viewport3D:
             self.ax.plot(pos[:, 0], pos[:, 1], np.zeros(len(pos)),
                          color="#333333", lw=3, alpha=0.25)
 
-            T_ee = self.kin.forward(q)
             self._draw_frame_triad(
                 T_ee, 70, ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"],
                 lw=2.0, alpha=0.9)
@@ -749,7 +752,6 @@ class Viewport3D:
                      color="#333333", lw=3, alpha=0.25)
 
         # ── EE 座標フレーム ────────────────────────────────────────
-        T_ee = self.kin.forward(q)
         self._draw_frame_triad(
             T_ee, 70, ["#FF4444", "#44FF44", "#4444FF"], ["X", "Y", "Z"],
             lw=2.0, alpha=0.9)
@@ -1235,14 +1237,16 @@ class Viewport3D:
         if idx is not None and self._pick_candidate is None:
             self._pick_candidate = idx
 
-    def _draw_pick_curves(self):
+    def _draw_pick_curves(self, T_ee: Optional[np.ndarray] = None):
         """選択可能曲線を描画する。未選択=シアン細線 / 選択=緑太線+順番号。"""
         self._pick_artist_map = {}
         if not self._pick_curves:
             return
         # 刃先ローカル指定なら現在のフランジ姿勢でワールドへ変換（包丁追従）。
         if self._pick_curves_local:
-            T = self.kin.forward(self._joint_angles) @ self._blade_T
+            if T_ee is None:
+                T_ee = self.kin.forward(self._joint_angles)
+            T = T_ee @ self._blade_T
             Rw, tw = T[:3, :3], T[:3, 3]
             curves = [(Rw @ c.T).T + tw for c in self._pick_curves]
         else:

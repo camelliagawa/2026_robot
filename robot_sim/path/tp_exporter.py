@@ -275,24 +275,12 @@ class TPExporter:
         ut = route.utool
 
         # UFrame PR register setup (like HaL.LS PR[9,1..6] = ...; UFRAME[9]=PR[9])
-        if uframe_pos and len(uframe_pos) >= 6:
-            labels = ["1", "2", "3", "4", "5", "6"]
-            for i, val in enumerate(uframe_pos[:6]):
-                lines.append(f"{line_num:4d}:  PR[{uf},{labels[i]}]={val:.3f} ;")
-                line_num += 1
-            lines.append(f"{line_num:4d}:  UFRAME[{uf}]=PR[{uf}] ;")
-            line_num += 1
+        line_num = self._emit_pr_block(lines, line_num, uf, uframe_pos, "UFRAME")
         lines.append(f"{line_num:4d}:  UFRAME_NUM={uf} ;")
         line_num += 1
 
         # UTool PR register setup
-        if utool_pos and len(utool_pos) >= 6:
-            labels = ["1", "2", "3", "4", "5", "6"]
-            for i, val in enumerate(utool_pos[:6]):
-                lines.append(f"{line_num:4d}:  PR[{ut},{labels[i]}]={val:.3f} ;")
-                line_num += 1
-            lines.append(f"{line_num:4d}:  UTOOL[{ut}]=PR[{ut}] ;")
-            line_num += 1
+        line_num = self._emit_pr_block(lines, line_num, ut, utool_pos, "UTOOL")
         lines.append(f"{line_num:4d}:  UTOOL_NUM={ut} ;")
         line_num += 1
 
@@ -323,6 +311,19 @@ class TPExporter:
     def _term_str(wp: Waypoint) -> str:
         """Termination type string: CNTn if wp.cnt is set, else FINE."""
         return f"CNT{int(wp.cnt)}" if wp.cnt is not None else "FINE"
+
+    @staticmethod
+    def _emit_pr_block(lines: List[str], line_num: int, reg: int,
+                       pos: Optional[Tuple[float, ...]], frame_kw: str) -> int:
+        """PR[reg,1..6]=… と <frame_kw>[reg]=PR[reg] 行を lines へ追記し、
+        更新後の line_num を返す（UFRAME/UTOOL の重複出力ロジックを集約）。"""
+        if pos and len(pos) >= 6:
+            for i, val in enumerate(pos[:6]):
+                lines.append(f"{line_num:4d}:  PR[{reg},{i+1}]={val:.3f} ;")
+                line_num += 1
+            lines.append(f"{line_num:4d}:  {frame_kw}[{reg}]=PR[{reg}] ;")
+            line_num += 1
+        return line_num
 
     def _motion_instruction(self, wp: Waypoint, p_idx: int,
                              speed_override: int = 100) -> str:

@@ -2,10 +2,21 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.19.4"
+APP_VERSION = "0.19.5"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.5", "2026-06-16", "13:55 JST", [
+        "効率化: 3D再描画で順運動学(FK)を1回だけ計算し、ロボット描画とピック曲線描画で"
+        "共有するよう変更（刃先ローカル曲線がある場合の二重計算を解消）",
+        "バグ修正: Cartesian ジョグで IK 失敗時にも undo 履歴が積まれていた問題を修正"
+        "（成功時のみ記録）",
+        "整理: TP出力の UFRAME/UTOOL の PRレジスタ出力ロジックを _emit_pr_block に集約"
+        "（重複コードと冗長な labels 配列を除去、出力は完全に同一）",
+        "整理: TP(.ls)読み込みで取得後に破棄されていた UTOOL 変換のデッドコードを除去",
+        "整理: viewport の未使用 import (NavigationToolbar2Tk) を削除",
+        "堅牢化: STL/CSV/刃先の位置適用ハンドラの例外捕捉を (ValueError, TclError) に統一",
+    ]),
     ("0.19.4", "2026-06-16", "12:50 JST", [
         "パフォーマンス: ジョグ・再生中の冗長な再描画を解消。スライダーへの"
         "プログラム由来の値設定（_set_angles / _seek_to_fraction）が"
