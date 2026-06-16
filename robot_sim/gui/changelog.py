@@ -2,10 +2,21 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.19.9"
+APP_VERSION = "0.19.10"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.10", "2026-06-16", "20:00 JST", [
+        "パフォーマンス（描画最適化 Step5/5）: IK プリコンピュート改善。"
+        "① IK 計算中の経路点ごとの進捗表示: シークバー情報欄に"
+        "「IK計算中 P[x/n]...」をリアルタイム表示（root.after で主スレッド更新）。"
+        "② 床干渉回避シードの並列化: floor avoidance 時の 5 つの代替シード IK を"
+        "concurrent.futures.ThreadPoolExecutor で並列実行（scipy minimize は"
+        "GIL 外で真の並列化が可能なため、複数ウェイポイントで床回避が必要な場合に"
+        "プリコンピュート時間を短縮）。"
+        "③ 事前描画 FPS 設定スピンボックスを追加（5〜30 fps・デフォルト 20）。"
+        "FPS を下げるとフレームキャッシュ生成が速くなる。変更時はキャッシュを自動無効化",
+    ]),
     ("0.19.9", "2026-06-16", "19:30 JST", [
         "パフォーマンス（描画最適化 Step4/5）: ロボットメッシュ Poly3DCollection を"
         "永続保持し、毎フレームの生成・破棄コストを省く。"

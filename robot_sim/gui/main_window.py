@@ -19,6 +19,7 @@ Layout:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import os
 import time
@@ -1573,6 +1574,24 @@ class MainWindow:
              "・初回のみ「描画中…」の待ち時間が発生します（キャンセル可）\n"
              "・2回目以降はキャッシュから即再生（ルート変更時は再描画）\n"
              "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
+        fps_row = ttk.Frame(sim_inner)
+        fps_row.pack(fill=tk.X, pady=(1, 0))
+        tk.Label(fps_row, text="FPS:", bg=BG_PANEL, fg=FG_SUB,
+                 font=("", 8)).pack(side=tk.LEFT)
+        self._pre_fps_var = tk.IntVar(value=int(self._pre_fps))
+        fps_spin = tk.Spinbox(
+            fps_row, from_=5, to=30, increment=1,
+            textvariable=self._pre_fps_var, width=4, font=("", 8),
+            bg=BG_WIDGET, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
+            command=self._on_pre_fps_change)
+        fps_spin.pack(side=tk.LEFT, padx=2)
+        fps_spin.bind("<Return>", lambda e: self._on_pre_fps_change())
+        _tip(fps_spin,
+             "事前描画のフレームレートを設定します（5〜30 fps）。\n"
+             "低くするほど事前描画が速く終わります（画質は下がります）。\n"
+             "変更するとフレームキャッシュが無効化され再描画が必要になります。")
+        tk.Label(fps_row, text="fps（事前描画）", bg=BG_PANEL, fg=FG_SUB,
+                 font=("", 8)).pack(side=tk.LEFT, padx=(0, 2))
         self._save_video_btn = ttk.Button(
             sim_inner, text="💾  動画保存（MP4 / GIF）",
             command=self._save_smooth_video, state="disabled")
@@ -3497,6 +3516,22 @@ class MainWindow:
         if hasattr(self, "_seek_play_btn"):
             self._seek_play_btn.config(state=state)
 
+    def _on_pre_fps_change(self):
+        """FPS スピンボックス変更時: _pre_fps を更新してフレームキャッシュを無効化。"""
+        try:
+            v = int(self._pre_fps_var.get())
+        except (ValueError, tk.TclError):
+            v = 20
+        self._pre_fps = float(max(5, min(30, v)))
+        self._pre_fps_var.set(int(self._pre_fps))
+        if self._pre_frames is not None:
+            self._pre_frames = None
+            self._pre_idxs = None
+            if hasattr(self, "_smooth_btn"):
+                self._smooth_btn.config(text="🎬  滑らか再生（事前描画）")
+            if hasattr(self, "_save_video_btn"):
+                self._save_video_btn.config(state="disabled")
+
     # ── IK 事前計算（バックグラウンド） ───────────────────────────────
 
     def _invalidate_sim_solutions(self):
@@ -3532,7 +3567,16 @@ class MainWindow:
         q_seed = self._joint_angles.copy()
 
         def work():
-            sols, n_warn = self._compute_sim_solutions(waypoints, q_seed)
+            def progress_cb(i: int, wp_n: int):
+                def _upd(i=i, wp_n=wp_n):
+                    if token != self._sim_precompute_token:
+                        return
+                    if hasattr(self, "_seek_info_var"):
+                        self._seek_info_var.set(f"IK計算中 P[{i + 1}/{wp_n}]...")
+                self.root.after(0, _upd)
+
+            sols, n_warn = self._compute_sim_solutions(waypoints, q_seed,
+                                                       progress_cb=progress_cb)
             def done():
                 if token != self._sim_precompute_token:
                     return  # 古い計算結果は破棄
@@ -3549,10 +3593,10 @@ class MainWindow:
         self._sim_precompute_thread = threading.Thread(target=work, daemon=True)
         self._sim_precompute_thread.start()
 
-    def _compute_sim_solutions(self, waypoints, q_seed):
+    def _compute_sim_solutions(self, waypoints, q_seed, progress_cb=None):
         """全経路点の IK を連鎖シードで解く。
 
-        各点で床干渉（関節位置 Z < 0）を検出したら代替 IK シードを試みる。
+        各点で床干渉（関節位置 Z < 0）を検出したら代替 IK シードを並列に試みる。
         戻り値: (sols, n_floor_warn)
           sols: List[np.ndarray] 各経路点の関節解（len == len(waypoints)）
           n_floor_warn: 床干渉が残った経路点数（0 なら安全）
@@ -3576,8 +3620,12 @@ class MainWindow:
         sols = []
         n_floor_warn = 0
         q_prev = np.asarray(q_seed, dtype=float).copy()
+        n = len(waypoints)
 
-        for wp in waypoints:
+        for i, wp in enumerate(waypoints):
+            if progress_cb is not None:
+                progress_cb(i, n)
+
             T = wp.to_transform()
             q, ok = self.kin.inverse(T, q_init=q_prev)
             if not ok or q is None:
@@ -3589,12 +3637,18 @@ class MainWindow:
                 q_prev = q
                 continue
 
-            # 代替シードを試して床干渉のない解を探す
-            best_q  = q
+            # 代替シードを並列に試して床干渉のない解を探す（scipy は GIL 外で真の並列化）
+            best_q     = q
             best_min_z = float(self.kin.get_joint_positions(q)[:, 2].min())
             found_safe = False
-            for seed in arm_up_seeds:
-                q_alt, ok_alt = self.kin.inverse(T, q_init=seed)
+
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=len(arm_up_seeds)) as ex:
+                alt_results = list(
+                    ex.map(lambda seed: self.kin.inverse(T, q_init=seed),
+                           arm_up_seeds))
+
+            for q_alt, ok_alt in alt_results:
                 if not ok_alt or q_alt is None:
                     continue
                 if _floor_ok(q_alt):
