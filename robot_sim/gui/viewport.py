@@ -7,6 +7,7 @@ route waypoints, user frame axes, TCP marker, and workspace boundary.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional, List, TYPE_CHECKING
 
 import numpy as np
@@ -220,6 +221,16 @@ class Viewport3D:
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
         self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
         self._pre_img = None           # 事前描画再生中の figimage（None=通常描画）
+
+        # ── 再描画スロットリング（低スペックPCでのカクつき抑制） ──
+        # スライダー連打・視点回転・ライブ再生で _redraw が無制限に発火すると
+        # 描画が積み上がり操作が重くなる。最低描画間隔を設け、間隔内の連続要求は
+        # 末尾1回にまとめる（trailing-edge throttle）。_draw_scene は常に最新の
+        # インスタンス状態を読むため、最後の状態は必ず描画される。
+        self._min_redraw_interval = 1.0 / 30.0   # 最大 ~30fps
+        self._last_draw_time      = 0.0
+        self._redraw_pending_id   = None
+
         self._load_robot_meshes()
 
         self.fig = plt.figure(facecolor="#161B22")
@@ -454,8 +465,29 @@ class Viewport3D:
         # 事前描画再生中は 3D シーンを触らない（figimage を表示し続ける）
         if self._pre_img is not None:
             return
+        # スロットリング: 前回描画から最低間隔が経過していれば即描画、
+        # まだなら末尾1回だけスケジュール（連続要求を1フレームに集約）。
+        now = time.monotonic()
+        elapsed = now - self._last_draw_time
+        if elapsed >= self._min_redraw_interval:
+            self._do_redraw()
+        elif self._redraw_pending_id is None:
+            delay_ms = int((self._min_redraw_interval - elapsed) * 1000) + 1
+            self._redraw_pending_id = self.canvas_widget.after(
+                delay_ms, self._redraw_trailing)
+
+    def _do_redraw(self):
+        """実際の再描画（タイムスタンプ更新つき）。"""
+        self._last_draw_time = time.monotonic()
         self._draw_scene()
         self.canvas.draw_idle()
+
+    def _redraw_trailing(self):
+        """スロットリングの末尾コールバック: 最新状態を1回だけ描画する。"""
+        self._redraw_pending_id = None
+        if self._pre_img is not None:
+            return
+        self._do_redraw()
 
     # ── 事前描画（プリレンダリング）再生 ──────────────────────────────
     # 案1: 再生前に全フレームをオフスクリーン描画して RGBA 画像として保持し、
