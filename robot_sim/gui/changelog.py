@@ -2,10 +2,21 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.19.8"
+APP_VERSION = "0.19.9"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.19.9", "2026-06-16", "19:30 JST", [
+        "パフォーマンス（描画最適化 Step4/5）: ロボットメッシュ Poly3DCollection を"
+        "永続保持し、毎フレームの生成・破棄コストを省く。"
+        "_robot_mesh_coll にコレクション参照を保持し、ロボット層更新時は"
+        "set_verts(new_tris) + set_facecolor(new_colors) による in-place 更新を行う。"
+        "古い matplotlib で set_verts() が効かない場合は except で再生成にフォールバックし"
+        "（以降そのセッションでは再生成パスを維持）。"
+        "ax.cla() または fast_mode 切替後は参照を None にリセットして再生成する。"
+        "_clear_robot_artists() は永続コレクションをスキップし（nc_start=nc+1）"
+        "後続のロボット層アーティスト（影・トライアド・ナイフ等）のみを除去する",
+    ]),
     ("0.19.8", "2026-06-16", "19:05 JST", [
         "パフォーマンス（描画最適化 Step3/5）: STL/CSVオーバーレイのLambert"
         "シェーディングキャッシュを導入。STL の頂点変換(R@verts.T+t)・法線計算・"

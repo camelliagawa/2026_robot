@@ -229,6 +229,12 @@ class Viewport3D:
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
         self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
         self._pre_img = None           # 事前描画再生中の figimage（None=通常描画）
+        # ── ロボットメッシュ Poly3DCollection の永続保持（Step 4）──────────
+        # ax.cla() 後または fast_mode 切替後は None にリセット。
+        # set_verts() / set_facecolor() で in-place 更新し、コレクション
+        # オブジェクトの生成・破棄コストを省く。古い matplotlib で
+        # set_verts() が効かない場合は except で再生成にフォールバックする。
+        self._robot_mesh_coll = None   # Poly3DCollection | None
 
         # ── 再描画スロットリング（低スペックPCでのカクつき抑制） ──
         # スライダー連打・視点回転・ライブ再生で _redraw が無制限に発火すると
@@ -300,6 +306,11 @@ class Viewport3D:
         if self._fast_mode == enabled:
             return
         self._fast_mode = enabled
+        # fast_mode=True に切替: 永続メッシュは _clear_robot_artists() で除去される。
+        # 参照を先に None にしておくことで、_clear_robot_artists が
+        # nc_start=nc（スキップなし）として全ロボット層を除去できるようにする。
+        # fast_mode=False への切替も _robot_mesh_coll=None のまま → 再生成。
+        self._robot_mesh_coll = None
         # ロボット描画モードのみ変化 → static 層は汚さない
         self._redraw()
 
@@ -462,6 +473,8 @@ class Viewport3D:
         if self._static_dirty:
             # ── 静的層: 完全再構築 ──────────────────────────────────
             self.ax.cla()
+            # cla() でアーティストが axes から切り離されるため永続参照を破棄
+            self._robot_mesh_coll = None
             self._setup_axes()
             self.ax.view_init(elev=self._elev, azim=self._azim)
             self._draw_workspace()
@@ -496,11 +509,21 @@ class Viewport3D:
         """前フレームのロボット層アーティストを除去する（静的層は保持）。
 
         静的層描画後のアーティスト数スナップショット以降のものが
-        ロボット層に属する。index から順に remove() して全て除去する。
+        ロボット層に属する。_robot_mesh_coll が生きている（メッシュモード）
+        場合はその Poly3DCollection をスキップし、後続のアーティストのみ除去する。
+        Lines/Texts は毎フレーム除去・再生成する（影、トライアド、ナイフ等）。
         """
-        nc, nl, nt = self._static_nc, self._static_nl, self._static_nt
-        while len(self.ax.collections) > nc:
-            self.ax.collections[nc].remove()
+        nc = self._static_nc
+        nl = self._static_nl
+        nt = self._static_nt
+        # メッシュモードで永続コレクションが生きていればその分だけスキップ
+        nc_start = (nc + 1
+                    if (self._robot_mesh_coll is not None
+                        and self._link_meshes
+                        and not self._fast_mode)
+                    else nc)
+        while len(self.ax.collections) > nc_start:
+            self.ax.collections[nc_start].remove()
         lines = list(self.ax.lines)
         for line in lines[nl:]:
             line.remove()
@@ -774,21 +797,49 @@ class Viewport3D:
         全リンクを1つの Poly3DCollection に統合する — matplotlib の
         Zソートはコレクション内でのみ働くため、リンク間の前後関係を
         正しく描画するには統合が必須。
+
+        _robot_mesh_coll が生きているフレームでは set_verts() + set_facecolor()
+        による in-place 更新を試みる。古い matplotlib で API が効かない場合は
+        except で再生成にフォールバックし、次フレーム以降は再生成パスを使う
+        （_robot_mesh_coll=None のまま維持して set_verts() を使わない）。
         """
         Ts = self._urdf_link_transforms(q)
-        all_tris = []
+        all_tris   = []
         all_colors = []
         for (verts, normals, rgb), T in zip(self._link_meshes, Ts):
             R, t = T[:3, :3], T[:3, 3]
-            all_tris.append(verts @ R.T + t)     # (N,3,3) ワールド座標へ
-            tn = normals @ R.T                   # (N,3)  回転のみ
+            all_tris.append(verts @ R.T + t)   # (N,3,3) ワールド座標へ
+            tn = normals @ R.T                 # (N,3)  回転のみ
             all_colors.append(self._lambert_facecolors(
                 tn, rgb, self._LIGHT_DIR, ambient=0.30, diffuse=0.70))
-        poly = Poly3DCollection(np.concatenate(all_tris),
-                                facecolors=np.concatenate(all_colors),
-                                edgecolors="none", alpha=1.0)
-        poly.set_zsort("average")
-        self.ax.add_collection3d(poly)
+        new_tris   = np.concatenate(all_tris)
+        new_colors = np.concatenate(all_colors)
+
+        if self._robot_mesh_coll is None:
+            # 初回または cla()/fast_mode 切替後: 新規生成して ax に追加
+            coll = Poly3DCollection(new_tris, facecolors=new_colors,
+                                    edgecolors="none", alpha=1.0)
+            coll.set_zsort("average")
+            self.ax.add_collection3d(coll)
+            self._robot_mesh_coll = coll
+        else:
+            # 永続更新: コレクションオブジェクトを使い回し生成コストを省く
+            try:
+                self._robot_mesh_coll.set_verts(new_tris)
+                self._robot_mesh_coll.set_facecolor(new_colors)
+            except Exception:
+                # 古い matplotlib で set_verts() が動作しない場合の安全フォールバック。
+                # 以降も set_verts() を試みないよう None にリセットして再生成する。
+                try:
+                    self._robot_mesh_coll.remove()
+                except Exception:
+                    pass
+                self._robot_mesh_coll = None
+                coll = Poly3DCollection(new_tris, facecolors=new_colors,
+                                        edgecolors="none", alpha=1.0)
+                coll.set_zsort("average")
+                self.ax.add_collection3d(coll)
+                # フォールバック後は永続更新を行わない（None のまま維持）
 
     def _draw_robot(self, q: np.ndarray, T_ee: Optional[np.ndarray] = None):
         """Draw FANUC LR Mate 200iD/14L（実機メッシュ、欠落時は円柱形状）。"""
