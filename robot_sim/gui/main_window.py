@@ -43,7 +43,7 @@ from ..path.kenma_export import (
     parse_pose_expression, first_hover_T, enumerate_ik_branches,
     GenerationCancelled,
     load_blade_csv as load_blade_csv_file)
-from .viewport import Viewport3D
+from .viewport_factory import create_viewport
 from .route_editor import RouteEditor
 from .changelog import show_changelog, APP_VERSION, CHANGELOG
 from .undo import UndoManager
@@ -752,7 +752,7 @@ class MainWindow:
         # 3D ビューポートは残りの全スペースを使う
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.viewport = Viewport3D(left, self.kin)
+        self.viewport = create_viewport(left, self.kin)
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
