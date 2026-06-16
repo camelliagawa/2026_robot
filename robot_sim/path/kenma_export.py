@@ -399,6 +399,7 @@ def enumerate_ik_branches(kin, T: np.ndarray,
 
     branches: List[np.ndarray] = []
     seen: set = set()
+    lo, up = kin.dh.get_joint_limits()   # 候補ごとに再取得しないようループ外で1回
 
     def _try_add(q: Optional[np.ndarray]):
         if q is None:
@@ -406,7 +407,6 @@ def enumerate_ik_branches(kin, T: np.ndarray,
         perr, rerr = _ik_quality(kin, T, q)
         if perr >= pos_tol or rerr >= rot_tol:
             return
-        lo, up = kin.dh.get_joint_limits()
         qf = _fold_revolute(np.asarray(q, dtype=float), ref, lo, up)
         key = tuple(int(v) for v in np.round(np.degrees(qf)))
         if key in seen:

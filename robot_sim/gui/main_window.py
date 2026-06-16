@@ -1724,6 +1724,12 @@ class MainWindow:
         self._update_fk_display()
 
     def _on_slider_change(self, joint_idx: int, value_deg: float):
+        # プログラム由来のスライダー更新（_set_angles / _seek_to_fraction が
+        # var.set する分）は、各呼び出し側が明示的に1回だけ再描画するため、
+        # ここでの重複再描画・undo記録を抑制する。これを怠ると再生中・
+        # ジョグ中に1フレームあたり6回の余分な viewport/FK 再描画が走る。
+        if self._seek_updating or self._suppress_undo:
+            return
         self._push_undo("スライダー操作", coalesce=True)
         self._joint_angles[joint_idx] = np.deg2rad(value_deg)
         self._update_viewport_from_angles(self._joint_angles)
@@ -3092,25 +3098,24 @@ class MainWindow:
     # UF9 STONE 自動設定
     # ──────────────────────────────────────────────────────────────────
 
+    def _stl_world_z(self) -> Optional[np.ndarray]:
+        """ワールド変換後の STL 全頂点 Z 座標配列を返す（未読込なら None）。"""
+        if self.viewport.stl_bbox() is None or self.viewport._stl_verts is None:
+            return None
+        R = self.viewport._stl_T[:3, :3]
+        t = self.viewport._stl_T[:3, 3]
+        all_v = self.viewport._stl_verts.reshape(-1, 3)
+        return (R @ all_v.T).T[:, 2] + t[2]
+
     def _stl_top_z(self, fallback: float) -> float:
         """ワールド変換後の STL 上面 Z [mm] を返す（STL 未読込時は fallback）。"""
-        if self.viewport.stl_bbox() and self.viewport._stl_verts is not None:
-            R = self.viewport._stl_T[:3, :3]
-            t = self.viewport._stl_T[:3, 3]
-            all_v = self.viewport._stl_verts.reshape(-1, 3)
-            tv = ((R @ all_v.T).T + t)
-            return float(tv[:, 2].max())
-        return fallback
+        z = self._stl_world_z()
+        return float(z.max()) if z is not None else fallback
 
     def _stl_bottom_z(self, fallback: float) -> float:
         """ワールド変換後の STL 下面 Z [mm] を返す（STL 未読込時は fallback）。"""
-        if self.viewport.stl_bbox() and self.viewport._stl_verts is not None:
-            R = self.viewport._stl_T[:3, :3]
-            t = self.viewport._stl_T[:3, 3]
-            all_v = self.viewport._stl_verts.reshape(-1, 3)
-            tv = ((R @ all_v.T).T + t)
-            return float(tv[:, 2].min())
-        return fallback
+        z = self._stl_world_z()
+        return float(z.min()) if z is not None else fallback
 
     def _setup_stone_uframe(self):
         """STL を床 (Z=0) に置き、上面を UF9 STONE Z として自動設定する。"""
@@ -3648,6 +3653,22 @@ class MainWindow:
             return
         self._seek_to_fraction(idx_f)
 
+    @staticmethod
+    def _time_to_idx(t: float, cum: np.ndarray, total: float, n: int) -> float:
+        """単調増加の累積時間配列 cum 上で、時刻 t に対応する分数インデックスを
+        線形補間で返す（cum[i-1]〜cum[i] の区間内を按分）。"""
+        if t <= 0:
+            return 0.0
+        if t >= total:
+            return float(n - 1)
+        # cum[i] >= t となる最初の i を二分探索で求める（O(log n)）。
+        i = int(np.searchsorted(cum, t, side="left"))
+        i = max(1, min(i, n - 1))
+        seg = cum[i] - cum[i - 1]
+        if seg <= 1e-9:
+            return float(i)
+        return (i - 1) + (t - cum[i - 1]) / seg
+
     def _seek_to_fraction(self, idx_f: float):
         """分数インデックス idx_f の補間姿勢にロボットを設定する（IK計算なし）。"""
         sols = self._sim_solutions
@@ -3782,18 +3803,7 @@ class MainWindow:
             return cum[i0] + a * (cum[i1] - cum[i0])
 
         def time_to_idx(t):
-            # cum は単調増加。t に対応する分数インデックスを線形補間で求める。
-            if t <= 0:
-                return 0.0
-            if t >= total:
-                return float(n - 1)
-            for i in range(1, n):
-                if cum[i] >= t:
-                    seg = cum[i] - cum[i - 1]
-                    if seg <= 1e-9:
-                        return float(i)
-                    return (i - 1) + (t - cum[i - 1]) / seg
-            return float(n - 1)
+            return self._time_to_idx(t, cum, total, n)
 
         t_start = idx_to_time(start_idx)
         self._sim_start_time = time.time()
@@ -3940,17 +3950,7 @@ class MainWindow:
         times = np.linspace(0.0, total, n_frames)
 
         def time_to_idx(t):
-            if t <= 0:
-                return 0.0
-            if t >= total:
-                return float(ns - 1)
-            for i in range(1, ns):
-                if cum[i] >= t:
-                    seg = cum[i] - cum[i - 1]
-                    if seg <= 1e-9:
-                        return float(i)
-                    return (i - 1) + (t - cum[i - 1]) / seg
-            return float(ns - 1)
+            return self._time_to_idx(t, cum, total, ns)
 
         def idx_to_q(idx_f):
             idx_f = max(0.0, min(float(ns - 1), idx_f))

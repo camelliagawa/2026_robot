@@ -157,14 +157,11 @@ class Route:
         """Estimate total motion time assuming each segment runs at its speed."""
         if len(self.waypoints) < 2:
             return 0.0
-        total = 0.0
-        for i in range(1, len(self.waypoints)):
-            d = np.linalg.norm(
-                self.waypoints[i].position() - self.waypoints[i - 1].position()
-            )
-            speed = max(self.waypoints[i].speed, 1.0)
-            total += d / speed
-        return total
+        positions = self.positions_array()
+        seg_len = np.linalg.norm(np.diff(positions, axis=0), axis=1)
+        # segment i (1..N-1) はその終点 waypoint の速度で走る
+        speeds = np.array([max(wp.speed, 1.0) for wp in self.waypoints[1:]])
+        return float(np.sum(seg_len / speeds))
 
     def positions_array(self) -> np.ndarray:
         """Return (N, 3) array of waypoint positions."""

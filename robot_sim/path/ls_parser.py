@@ -12,13 +12,18 @@ from typing import List, Optional
 import numpy as np
 from .route import Route, Waypoint, MotionType
 
+# 符号付き・小数・指数表記 (1.5E+02, +90.0, -.5) を受け付ける浮動小数パターン。
+# 以前の [-\d.]+ は + 符号や E 表記を取りこぼし、PR 行や /POS 軸を黙って
+# 落としていた（欠落軸があると all([...]) で waypoint ごと消えていた）。
+_FLOAT = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
 
 def _parse_pr_registers(text: str) -> dict:
     """Parse PR[n,axis]=value lines from /MN section.
     Returns {reg_num: {1: x, 2: y, 3: z, 4: rx, 5: ry, 6: rz}} in mm/deg.
     """
     registers: dict = {}
-    for m in re.finditer(r"PR\[(\d+),(\d+)\]\s*=\s*([-\d.]+)\s*;", text):
+    for m in re.finditer(r"PR\[(\d+),(\d+)\]\s*=\s*(" + _FLOAT + r")\s*;", text):
         reg = int(m.group(1))
         axis = int(m.group(2))
         val = float(m.group(3))
@@ -44,17 +49,17 @@ def _parse_pos_section(text: str) -> dict:
         p_idx = int(b.group(1))
         body  = b.group(2)
         # Joint positions
-        joints = re.findall(r"J\d+\s*=\s*([-\d.]+)\s*deg", body)
+        joints = re.findall(r"J\d+\s*=\s*(" + _FLOAT + r")\s*deg", body)
         if len(joints) == 6:
             result[p_idx] = {"type": "joint", "data": [float(j) for j in joints]}
             continue
         # Cartesian positions
-        xm = re.search(r"\bX\s*=\s*([-\d.]+)\s*mm", body)
-        ym = re.search(r"\bY\s*=\s*([-\d.]+)\s*mm", body)
-        zm = re.search(r"\bZ\s*=\s*([-\d.]+)\s*mm", body)
-        wm = re.search(r"\bW\s*=\s*([-\d.]+)\s*deg", body)
-        pm = re.search(r"\bP\s*=\s*([-\d.]+)\s*deg", body)
-        rm = re.search(r"\bR\s*=\s*([-\d.]+)\s*deg", body)
+        xm = re.search(r"\bX\s*=\s*(" + _FLOAT + r")\s*mm", body)
+        ym = re.search(r"\bY\s*=\s*(" + _FLOAT + r")\s*mm", body)
+        zm = re.search(r"\bZ\s*=\s*(" + _FLOAT + r")\s*mm", body)
+        wm = re.search(r"\bW\s*=\s*(" + _FLOAT + r")\s*deg", body)
+        pm = re.search(r"\bP\s*=\s*(" + _FLOAT + r")\s*deg", body)
+        rm = re.search(r"\bR\s*=\s*(" + _FLOAT + r")\s*deg", body)
         if all([xm, ym, zm, wm, pm, rm]):
             result[p_idx] = {"type": "cart", "data": [
                 float(xm.group(1)), float(ym.group(1)), float(zm.group(1)),

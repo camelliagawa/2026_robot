@@ -172,7 +172,7 @@ class TPExporter:
         lines.append(f"/PROG  {prog_name}")
         lines.append("/ATTR")
         lines.append(f"OWNER\t\t= MNEDITOR;")
-        lines.append(f'COMMENT\t\t= "{route.comment[:24]}";')
+        lines.append(f'COMMENT\t\t= "{self._tp_comment(route.comment)}";')
         if ideal_attr:
             lines.append("PROG_SIZE\t= 0;")
         else:
@@ -302,7 +302,7 @@ class TPExporter:
 
         # Optional "!" comment lines (like RoboDK header comments)
         for c in (mn_comments or []):
-            lines.append(f"{line_num:4d}:  ! {c[:24]} ;")
+            lines.append(f"{line_num:4d}:  ! {self._tp_comment(c)} ;")
             line_num += 1
 
         p_idx = 0  # P[1]-based indexing (CALL entries consume no P index)
@@ -335,9 +335,11 @@ class TPExporter:
             else:
                 pct = int(min(100, max(1, wp.speed / 5.0 * scale)))
             return f"J P[{p_idx}] {pct}% {term}"
-        elif wp.motion_type == MotionType.CIRCULAR:
-            return f"C P[{p_idx}]"  # CIRCULAR needs two points; simplified
         else:
+            # CIRCULAR (C) は本来 2 点（経由点+終点）を必要とし、単点
+            # "C P[i]" は不正な TP となりコントローラがロードに失敗する。
+            # 当面は直線補間 (L) として有効な命令を出力し、ファイルが
+            # 必ずロード可能であることを優先する。
             speed_str = f"{int(wp.speed * scale)}mm/sec"
             return f"L P[{p_idx}] {speed_str} {term}"
 
@@ -379,7 +381,8 @@ class TPExporter:
             if wp.call is not None:
                 continue  # CALL entries have no position
             p_idx += 1
-            comment = f"  ; {wp.label}" if (wp.label and pos_comments) else ""
+            comment = (f"  ; {self._tp_comment(wp.label)}"
+                       if (wp.label and pos_comments) else "")
 
             if cart_pos and wp.motion_type != MotionType.JOINT:
                 # Cartesian position in user frame coordinates
@@ -422,6 +425,17 @@ class TPExporter:
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tp_comment(text, max_len: int = 24) -> str:
+        """TP の COMMENT/"!" 行へ埋め込む文字列を安全化する。
+
+        None を空文字に正規化し、二重引用符を除去（COMMENT = "..." の
+        引用符を壊さない）、セミコロンを置換、max_len で切り詰める。
+        """
+        s = "" if text is None else str(text)
+        s = s.replace('"', "").replace(";", ",")
+        return s[:max_len]
 
     @staticmethod
     def _sanitize_name(name: str, max_len: int = 24,
