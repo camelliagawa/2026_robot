@@ -56,6 +56,11 @@ _AX_B = (0.27, 0.27, 1.00, 1.0)
 KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
+ROUTE_COLOR = "#00E5FF"   # ルート経路線（シアン）
+WP_COLOR    = "#FF4422"   # 経路点（赤）
+WP_ACTIVE   = "#00FF88"   # 選択中経路点（緑）
+ROUTE_BIG_N = 25          # これを超えると per-point マーカー/ラベルを省略
+
 
 def _rgba(hexstr: str, a: float = 1.0):
     h = hexstr.lstrip("#")
@@ -221,6 +226,9 @@ class ViewportGPU:
         # 静的シーン用ノード（まとめて detach/再構築できるよう親ノードに集約）
         self._static_root = scene.Node(parent=self.view.scene)
         self._static_visuals: list = []
+        # ルート/選択用ノード（ルート編集・選択変更時に再構築）
+        self._route_root = scene.Node(parent=self.view.scene)
+        self._route_visuals: list = []
 
         # ── ロボットリンクメッシュ（持続）──────────────────────────────
         self._link_meshes = []
@@ -659,9 +667,74 @@ class ViewportGPU:
     # ── ルート / 選択（Phase 4）──────────────────────────────────────────
     def set_route(self, route: Optional["Route"]):
         self._route = route
+        self._rebuild_route()
 
     def set_selected_waypoint(self, idx: Optional[int]):
         self._selected_wp_idx = idx
+        self._rebuild_route()
+
+    def _clear_route(self):
+        for v in self._route_visuals:
+            try:
+                v.parent = None
+            except Exception:
+                pass
+        self._route_visuals = []
+
+    def _add_route(self, visual):
+        visual.parent = self._route_root
+        self._route_visuals.append(visual)
+        return visual
+
+    def _rebuild_route(self):
+        """ルート経路線・経路点マーカー・ラベル・選択ハイライトを再構築する。"""
+        self._clear_route()
+        route = self._route
+        if route is None or len(route) == 0:
+            self.canvas.update()
+            return
+
+        positions = np.asarray(route.positions_array(), dtype=np.float32)
+        n = len(positions)
+
+        # 経路線（ポリライン）
+        if n >= 2:
+            self._add_route(Line(pos=positions, connect="strip", width=2.5,
+                                 color=_rgba(ROUTE_COLOR, 1.0), antialias=True))
+
+        if n > ROUTE_BIG_N:
+            # 軽量モード: 始点(緑)・終点(赤)のみ
+            p0, p1 = positions[0], positions[-1]
+            self._add_route(Markers(pos=p0[None, :], face_color=WP_ACTIVE,
+                                    size=10, edge_width=0, symbol="disc"))
+            self._add_route(Markers(pos=p1[None, :], face_color=WP_COLOR,
+                                    size=10, edge_width=0, symbol="square"))
+            self._add_route(Text(f"START ({n}点)",
+                                 pos=(p0[0] + 10, p0[1] + 10, p0[2] + 10),
+                                 color=WP_ACTIVE, font_size=6))
+            self._add_route(Text("END", pos=(p1[0] + 10, p1[1] + 10, p1[2] + 10),
+                                 color=WP_COLOR, font_size=6))
+        else:
+            # 全点を均一スタイルで描画
+            self._add_route(Markers(pos=positions, face_color=WP_COLOR,
+                                    size=8, edge_width=0, symbol="disc"))
+            for i, wp in enumerate(route.waypoints):
+                label = f"{i+1}:{wp.label}" if getattr(wp, "label", "") else f"P[{i+1}]"
+                self._add_route(Text(label, pos=(wp.x + 10, wp.y + 10, wp.z + 10),
+                                     color="#AAAAAA", font_size=6))
+
+        # 選択ハイライト（緑の星 + 白ラベル）
+        sel = self._selected_wp_idx
+        if sel is not None and 0 <= sel < n:
+            wp = route.waypoints[sel]
+            self._add_route(Markers(pos=np.array([[wp.x, wp.y, wp.z]], dtype=np.float32),
+                                    face_color=WP_ACTIVE, size=16,
+                                    edge_width=0, symbol="star"))
+            label = f"{sel+1}:{wp.label}" if getattr(wp, "label", "") else f"P[{sel+1}]"
+            self._add_route(Text(label, pos=(wp.x + 10, wp.y + 10, wp.z + 10),
+                                 color="white", font_size=7))
+
+        self.canvas.update()
 
     # ── ピッキング（Phase 5）─────────────────────────────────────────────
     def set_pick_curves(self, curves: List[np.ndarray], callback,
