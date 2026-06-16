@@ -236,6 +236,11 @@ class ViewportGPU:
         # ルート/選択用ノード（ルート編集・選択変更時に再構築）
         self._route_root = scene.Node(parent=self.view.scene)
         self._route_visuals: list = []
+        # 選択可能曲線用ノード（Phase 5 ピッキング）
+        self._pick_root = scene.Node(parent=self.view.scene)
+        self._pick_visuals: list = []
+        self._pick_world: list = []   # 画面投影用のワールド座標曲線
+        self._press_pos = None        # マウス押下位置（クリック/ドラッグ判定）
 
         # ── ロボットリンクメッシュ（持続）──────────────────────────────
         self._link_meshes = []
@@ -264,6 +269,10 @@ class ViewportGPU:
                                  anchor_x="left", parent=self.view.scene)
         self._blade_label = Text("", color="#FF7799", font_size=7,
                                  anchor_x="left", parent=self.view.scene)
+
+        # クリックによる曲線ピッキング（TurntableCamera の回転と共存）
+        self.canvas.events.mouse_press.connect(self._on_mouse_press)
+        self.canvas.events.mouse_release.connect(self._on_mouse_release)
 
         self._rebuild_static()
         self.update_robot(self._joint_angles)
@@ -396,6 +405,9 @@ class ViewportGPU:
                 m.set_data(vertices=_xform(verts, T4), faces=faces, color=rgba)
 
         self._update_dynamic(q)
+        # 刃先ローカルの選択曲線はフランジ姿勢に追従するため再構築
+        if self._pick_curves and self._pick_curves_local:
+            self._rebuild_pick()
         self.canvas.update()
 
     def _blade_axes(self, T_ee):
@@ -750,15 +762,105 @@ class ViewportGPU:
         self._pick_curves_local = blade_local
         self._pick_orders = [None] * len(self._pick_curves)
         self._pick_callback = callback
+        self._rebuild_pick()
 
     def set_pick_orders(self, orders: List[Optional[int]]):
         self._pick_orders = list(orders)
+        self._rebuild_pick()
 
     def clear_pick_curves(self):
         self._pick_curves = []
         self._pick_curves_local = False
         self._pick_orders = []
         self._pick_callback = None
+        self._rebuild_pick()
+
+    def _clear_pick(self):
+        for v in self._pick_visuals:
+            try:
+                v.parent = None
+            except Exception:
+                pass
+        self._pick_visuals = []
+
+    def _rebuild_pick(self):
+        """選択可能曲線を描画する。未選択=シアン細線 / 選択=緑太線+順番号。
+
+        刃先ローカル指定の場合は現在のフランジ姿勢でワールドへ変換し、
+        画面投影によるクリック判定用に self._pick_world に保持する。
+        """
+        self._clear_pick()
+        self._pick_world = []
+        if not self._pick_curves:
+            self.canvas.update()
+            return
+
+        if self._pick_curves_local:
+            try:
+                T = self.kin.forward(self._joint_angles) @ self._blade_T
+            except Exception:
+                T = self._blade_T
+            Rw, tw = T[:3, :3], T[:3, 3]
+            curves = [(c @ Rw.T + tw) for c in self._pick_curves]
+        else:
+            curves = self._pick_curves
+
+        for i, pts in enumerate(curves):
+            pts = np.asarray(pts, dtype=np.float32)
+            self._pick_world.append(pts)
+            order = self._pick_orders[i] if i < len(self._pick_orders) else None
+            if order is not None:
+                color, w = _rgba("#00FF66", 1.0), 3.0
+            else:
+                color, w = _rgba("#00CCDD", 0.9), 2.0
+            v = Line(pos=pts, connect="strip", width=w, color=color,
+                     antialias=True)
+            v.parent = self._pick_root
+            self._pick_visuals.append(v)
+            if order is not None:
+                p = pts[0]
+                t = Text(str(order), pos=(p[0] + 5, p[1] + 5, p[2] + 5),
+                         color="#00FF66", font_size=8, bold=True)
+                t.parent = self._pick_root
+                self._pick_visuals.append(t)
+
+        self.canvas.update()
+
+    def _pick_at(self, x: float, y: float) -> Optional[int]:
+        """クリック画面座標 (x,y) に最も近い曲線の index を返す（閾値外は None）。"""
+        if not self._pick_world:
+            return None
+        try:
+            tr = self._ee_triad.get_transform("visual", "canvas")
+        except Exception:
+            return None
+        best_i, best_d = None, 14.0   # 許容ピクセル距離
+        for i, pts in enumerate(self._pick_world):
+            proj = tr.map(pts)                       # (M,4)
+            w = proj[:, 3:4]
+            w[np.abs(w) < 1e-9] = 1e-9
+            xy = proj[:, :2] / w
+            d = np.sqrt((xy[:, 0] - x) ** 2 + (xy[:, 1] - y) ** 2).min()
+            if d < best_d:
+                best_d, best_i = d, i
+        return best_i
+
+    def _on_mouse_press(self, event):
+        if event.button == 1:
+            self._press_pos = np.asarray(event.pos, dtype=float)
+
+    def _on_mouse_release(self, event):
+        if event.button != 1 or self._press_pos is None:
+            return
+        rel = np.asarray(event.pos, dtype=float)
+        moved = float(np.hypot(*(rel - self._press_pos)))
+        self._press_pos = None
+        # ドラッグ（回転）は無視。クリック（5px未満）のみピック判定。
+        if moved >= 5.0 or self._pick_callback is None or not self._pick_world:
+            return
+        idx = self._pick_at(rel[0], rel[1])
+        if idx is not None:
+            self._pick_callback(idx)
 
     # ── 事前描画再生 / 動画（Phase 6）────────────────────────────────────
     def render_frame(self, joint_angles) -> np.ndarray:
