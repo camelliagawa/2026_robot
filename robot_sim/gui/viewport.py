@@ -231,6 +231,19 @@ class Viewport3D:
         self._last_draw_time      = 0.0
         self._redraw_pending_id   = None
 
+        # ── Dirty フラグ（選択的再描画）──────────────────────────────
+        # 床/ルート/STL 等の「静的層」はポーズ変化で再描画不要。
+        # _static_dirty=True のフレームのみ ax.cla()+全要素再構築を行い、
+        # それ以外はロボット層アーティストのみを差し替える。
+        # _gizmo_dirty はギズモ（視点インジケータ）の再描画要否。
+        # スナップショット (_static_nc/nl/nt) は静的描画完了後の ax 内
+        # アーティスト数を記録し、それ以降がロボット層に属する。
+        self._static_dirty  = True
+        self._gizmo_dirty   = True
+        self._static_nc: int = 0   # ax.collections 数（静的描画後）
+        self._static_nl: int = 0   # ax.lines 数（静的描画後）
+        self._static_nt: int = 0   # ax.texts 数（静的描画後）
+
         self._load_robot_meshes()
 
         self.fig = plt.figure(facecolor="#161B22")
@@ -265,6 +278,7 @@ class Viewport3D:
     # ── Public interface ───────────────────────────────────────────────
 
     def update_robot(self, joint_angles: np.ndarray):
+        # ポーズのみ変化 → static 層は汚さない
         self._joint_angles = np.asarray(joint_angles)
         self._redraw()
 
@@ -278,31 +292,38 @@ class Viewport3D:
         if self._fast_mode == enabled:
             return
         self._fast_mode = enabled
-        self._redraw()  # 表示モードを即時反映
+        # ロボット描画モードのみ変化 → static 層は汚さない
+        self._redraw()
 
     def set_route(self, route: Optional["Route"]):
         self._route = route
+        self._static_dirty = True
         self._redraw()
 
     def set_selected_waypoint(self, idx: Optional[int]):
         if idx == self._selected_wp_idx:
             return  # 同一選択は再描画しない（シミュ再生中の冗長再描画防止）
         self._selected_wp_idx = idx
+        # 選択ハイライトは動的層で描画するため static は汚さない
         self._redraw()
 
     def set_tool_frame(self, tool_frame: Optional["ToolFrame"]):
         self._tool_frame = tool_frame
+        self._static_dirty = True
         self._redraw()
 
     def set_user_frame(self, user_frame: Optional["UserFrame"]):
         self._user_frame = user_frame
+        self._static_dirty = True
         self._redraw()
 
     def set_jog_target(self, position: Optional[np.ndarray]):
         self._jog_target = position
+        self._static_dirty = True
         self._redraw()
 
     def refresh(self):
+        self._static_dirty = True
         self._redraw()
 
     # ── Drawing ────────────────────────────────────────────────────────
@@ -366,6 +387,7 @@ class Viewport3D:
             self._pan_cy = float(np.clip(W[1] + r * (self._pan_cy - W[1]), -3000, 3000))
             self._pan_cz = float(np.clip(W[2] + r * (self._pan_cz - W[2]), -2000, 4000))
         self._zoom_scale = new
+        self._static_dirty = True   # 軸リミット・目盛りが変わる
         self._redraw()
 
     def _on_mpress(self, event):
@@ -401,6 +423,9 @@ class Viewport3D:
             dy = event.y - self._rotate_start[1]
             self._azim = self._rotate_start[3] - dx * 0.5
             self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
+            # 回転は view_init のみ更新 → 軸リミット/目盛りは変わらない
+            # 静的層のアーティストはそのまま保持し、ギズモのみ再描画する。
+            self._gizmo_dirty = True
             self._redraw()
         elif self._pan_start is not None and event.button in (2, 3):
             # 掴んだ点がカーソルに追従する画面平面パン（上下ドラッグでZも移動）
@@ -412,25 +437,89 @@ class Viewport3D:
             self._pan_cx = float(np.clip(self._pan_start[2] - delta[0], -3000, 3000))
             self._pan_cy = float(np.clip(self._pan_start[3] - delta[1], -3000, 3000))
             self._pan_cz = float(np.clip(self._pan_start[4] - delta[2], -2000, 4000))
+            self._static_dirty = True   # 軸リミット・目盛りが変わる
             self._redraw()
 
     def _draw_scene(self):
-        """現在の状態で 3D シーンを完全に再構築する（canvas へは描画しない）。"""
-        self.ax.cla()
-        self._setup_axes()
-        self.ax.view_init(elev=self._elev, azim=self._azim)
-        self._draw_workspace()
-        self._draw_user_frame()
+        """3D シーンを描画する。
+
+        静的層（床/ルート/STL 等）は _static_dirty=True のフレームのみ
+        ax.cla() + 全要素再構築を行う。それ以外はロボット層アーティストを
+        差し替えるだけで済み、ax.cla() と静的描画コストを省く。
+        ギズモは視点角度変化時（_gizmo_dirty=True）のみ再描画する。
+        """
         # FK は重描画ごとに1回だけ計算し、ロボット描画とピック曲線描画で共有する
         T_ee = self.kin.forward(self._joint_angles)
+
+        if self._static_dirty:
+            # ── 静的層: 完全再構築 ──────────────────────────────────
+            self.ax.cla()
+            self._setup_axes()
+            self.ax.view_init(elev=self._elev, azim=self._azim)
+            self._draw_workspace()
+            self._draw_user_frame()
+            self._draw_overlay()
+            self._draw_ref_frames()
+            self._draw_markers()
+            self._draw_route()
+            self._draw_jog_target()
+            self._static_dirty = False
+            # ロボット層の開始点を記録（以降が動的アーティスト）
+            self._static_nc = len(self.ax.collections)
+            self._static_nl = len(self.ax.lines)
+            self._static_nt = len(self.ax.texts)
+            self._gizmo_dirty = True   # cla() でギズモもクリアされるため
+        else:
+            # ── ロボット層のみ差し替え ───────────────────────────────
+            self._clear_robot_artists()
+            self.ax.view_init(elev=self._elev, azim=self._azim)
+
+        # ── 動的層: 毎フレーム描画 ──────────────────────────────────
         self._draw_robot(self._joint_angles, T_ee)
-        self._draw_overlay()
-        self._draw_ref_frames()
-        self._draw_markers()
-        self._draw_route()
+        self._draw_selection_highlight()
         self._draw_pick_curves(T_ee)
-        self._draw_jog_target()
-        self._draw_gizmo()
+
+        # ── ギズモ: 視点角度変化時のみ再描画 ────────────────────────
+        if self._gizmo_dirty:
+            self._draw_gizmo()
+            self._gizmo_dirty = False
+
+    def _clear_robot_artists(self):
+        """前フレームのロボット層アーティストを除去する（静的層は保持）。
+
+        静的層描画後のアーティスト数スナップショット以降のものが
+        ロボット層に属する。index から順に remove() して全て除去する。
+        """
+        nc, nl, nt = self._static_nc, self._static_nl, self._static_nt
+        while len(self.ax.collections) > nc:
+            self.ax.collections[nc].remove()
+        lines = list(self.ax.lines)
+        for line in lines[nl:]:
+            line.remove()
+        texts = list(self.ax.texts)
+        for text in texts[nt:]:
+            text.remove()
+
+    def _draw_selection_highlight(self):
+        """選択中の経路点のハイライトを描画する（動的層: 毎フレーム更新）。
+
+        選択状態はポーズ変化と同じ頻度で変わるため、route の再描画を
+        伴わない動的層で処理し静的層の再構築を回避する。
+        """
+        sel = self._selected_wp_idx
+        if sel is None or self._route is None:
+            return
+        n = len(self._route)
+        if n == 0 or not (0 <= sel < n):
+            return
+        ZTOP = 1000
+        wp = self._route.waypoints[sel]
+        self.ax.plot([wp.x], [wp.y], [wp.z],
+                     color=WP_ACTIVE, marker="*", markersize=12,
+                     linestyle="none", zorder=ZTOP)
+        label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
+        self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
+                     label_text, color="white", fontsize=6, alpha=0.9, zorder=ZTOP)
 
     def _draw_gizmo(self):
         """左下隅の向きインジケータ（X=赤 / Y=緑 / Z=青）を本体ビューに同期描画。
@@ -532,6 +621,8 @@ class Viewport3D:
         self._pre_img = None
         self.ax.set_visible(True)
         self._gizmo_ax.set_visible(True)
+        # figimage を外した後は静的層を含めた完全再構築が必要
+        self._static_dirty = True
         self._redraw()
 
     def _setup_axes(self):
@@ -940,8 +1031,8 @@ class Viewport3D:
                      color=ROUTE_COLOR, lw=2.5, alpha=1.0, zorder=ZTOP)
 
         if n > self.ROUTE_BIG_N:
-            # 軽量モード: 始点(緑)・終点(赤)と選択中の1点のみマーカー表示
-            # scatter→plot変換: Line3D は computed_zorder に左右されず確実に最前面へ
+            # 軽量モード: 始点(緑)・終点(赤)のみマーカー表示
+            # 選択中点のハイライトは動的層の _draw_selection_highlight() が担う。
             p0, p1 = positions[0], positions[-1]
             self.ax.plot([p0[0]], [p0[1]], [p0[2]],
                          color=WP_ACTIVE, marker="o", markersize=8,
@@ -954,30 +1045,16 @@ class Viewport3D:
                          fontsize=6, alpha=0.85, zorder=ZTOP)
             self.ax.text(p1[0] + 10, p1[1] + 10, p1[2] + 10,
                          "END", color=WP_COLOR, fontsize=6, alpha=0.85, zorder=ZTOP)
-            sel = self._selected_wp_idx
-            if sel is not None and 0 <= sel < n:
-                wp = self._route.waypoints[sel]
-                self.ax.plot([wp.x], [wp.y], [wp.z],
-                             color=WP_ACTIVE, marker="*", markersize=12,
-                             linestyle="none", zorder=ZTOP)
-                label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
-                self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                             label_text, color="white", fontsize=6, alpha=0.9,
-                             zorder=ZTOP)
             return
 
+        # 小規模ルート: 全点を均一スタイルで描画。選択ハイライトは動的層で描く。
         for i, wp in enumerate(self._route.waypoints):
-            selected = (i == self._selected_wp_idx)
-            color    = WP_ACTIVE if selected else WP_COLOR
-            ms       = 10 if selected else 7
-            marker   = "*" if selected else "o"
             self.ax.plot([wp.x], [wp.y], [wp.z],
-                         color=color, marker=marker, markersize=ms,
+                         color=WP_COLOR, marker="o", markersize=7,
                          linestyle="none", zorder=ZTOP)
             label_text = f"{i+1}:{wp.label}" if wp.label else f"P[{i+1}]"
-            fg = "white" if selected else "#AAAAAA"
             self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                         label_text, color=fg, fontsize=6, alpha=0.85, zorder=ZTOP)
+                         label_text, color="#AAAAAA", fontsize=6, alpha=0.85, zorder=ZTOP)
 
     # ── Overlay ────────────────────────────────────────────────────────
 
@@ -988,6 +1065,7 @@ class Viewport3D:
         self._stl_verts = verts
         self._stl_name = os.path.basename(path)
         self._stl_path = path
+        self._static_dirty = True
         self._redraw()
         return True
 
@@ -1006,6 +1084,7 @@ class Viewport3D:
             self._csv_points = np.array(pts)
             self._csv_name = os.path.basename(path)
             self._csv_path = path
+            self._static_dirty = True
             self._redraw()
             return True
         return False
@@ -1044,6 +1123,7 @@ class Viewport3D:
         self._blade_normals = nrm_arr / lens
         self._blade_name    = os.path.basename(path)
         self._blade_path    = path
+        self._static_dirty  = True
         self._redraw()
         return len(pts)
 
@@ -1051,6 +1131,7 @@ class Viewport3D:
         """フランジから刃先CSVローカル原点へのオフセットを設定する。"""
         from ..robot.kinematics import Kinematics
         self._blade_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        # blade はロボット層（_draw_robot → _draw_blade_csv）で描くので static 不要
         self._redraw()
 
     def clear_blade(self):
@@ -1059,6 +1140,7 @@ class Viewport3D:
         self._blade_name = ""
         self._blade_path = ""
         self._blade_T = np.eye(4)
+        # blade は動的層のみなので static は汚さない
         self._redraw()
 
     def has_blade(self) -> bool:
@@ -1097,11 +1179,13 @@ class Viewport3D:
     def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._static_dirty = True
         self._redraw()
 
     def set_csv_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._static_dirty = True
         self._redraw()
 
     def clear_stl(self):
@@ -1109,6 +1193,7 @@ class Viewport3D:
         self._stl_name = ""
         self._stl_path = ""
         self._stl_T = np.eye(4)
+        self._static_dirty = True
         self._redraw()
 
     def clear_csv(self):
@@ -1116,6 +1201,7 @@ class Viewport3D:
         self._csv_name = ""
         self._csv_path = ""
         self._csv_T = np.eye(4)
+        self._static_dirty = True
         self._redraw()
 
     # ── レイヤー状態のスナップショット（Undo/Redo 用） ────────────────
@@ -1153,6 +1239,7 @@ class Viewport3D:
             {"name": rf["name"], "T": rf["T"].copy(), "color": rf["color"]}
             for rf in snap["ref_frames"]
         ]
+        self._static_dirty = True
         self._redraw()
 
     def _draw_overlay(self):
@@ -1203,6 +1290,7 @@ class Viewport3D:
         self._target_markers = [
             {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in target_markers
         ]
+        self._static_dirty = True
         self._redraw()
 
     def _draw_markers(self):
@@ -1307,16 +1395,19 @@ class Viewport3D:
         from ..robot.kinematics import Kinematics
         T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
         self._ref_frames.append({"name": name, "T": T, "color": color})
+        self._static_dirty = True
         self._redraw()
 
     def remove_ref_frame(self, name: str):
         """Remove a reference frame by name."""
         self._ref_frames = [f for f in self._ref_frames if f["name"] != name]
+        self._static_dirty = True
         self._redraw()
 
     def clear_ref_frames(self):
         """Remove all reference frames."""
         self._ref_frames.clear()
+        self._static_dirty = True
         self._redraw()
 
     def get_ref_frames(self) -> list:
