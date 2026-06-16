@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import struct
+import warnings
 import tkinter as tk
 from typing import List, Optional, TYPE_CHECKING
 
@@ -26,6 +27,12 @@ import numpy as np
 
 from vispy import scene
 from vispy.scene.visuals import Mesh, Line, Markers, Text
+
+# VisPy tkinter バックエンドは未対応キー押下のたびに無害な UserWarning を出す
+# （埋め込みでは VisPy のキー処理は使わない）。コンソールが埋まるため抑制する。
+warnings.filterwarnings(
+    "ignore",
+    message="The key you typed is not supported by the tkinter backend.")
 
 if TYPE_CHECKING:
     from ..robot.kinematics import Kinematics
