@@ -7,6 +7,7 @@ route waypoints, user frame axes, TCP marker, and workspace boundary.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional, List, TYPE_CHECKING
 
 import numpy as np
@@ -192,10 +193,18 @@ class Viewport3D:
         self._stl_name: str = ""
         self._stl_path: str = ""
         self._stl_T: np.ndarray = np.eye(4)
+        # Lambert シェーディングキャッシュ: STL データ/ポーズ変化時に None でリセット。
+        # ルート変更やカメラ操作では STL 自体は変わらないため再利用する。
+        # keys: tris (N,3,3), facecolors (N,4), ctr (3,), zmax (float)
+        self._stl_cache: Optional[dict] = None
+
         self._csv_points: Optional[np.ndarray] = None  # (N,3) CSV points
         self._csv_name: str = ""
         self._csv_path: str = ""
         self._csv_T: np.ndarray = np.eye(4)
+        # 変換済み CSV 点群キャッシュ: データ/ポーズ変化時に None でリセット。
+        # keys: pts (N,3), ctr (3,)
+        self._csv_cache: Optional[dict] = None
 
         self._tcp_markers: List[dict] = []    # [{"name": str, "pos": np.ndarray}]
         self._target_markers: List[dict] = [] # [{"name": str, "pos": np.ndarray}]
@@ -220,6 +229,35 @@ class Viewport3D:
         self._link_meshes: list = []   # [(verts (N,3,3), normals (N,3), rgb)]
         self._fast_mode: bool = False  # 再生中は軽量表示（円柱）へ切替
         self._pre_img = None           # 事前描画再生中の figimage（None=通常描画）
+        # ── ロボットメッシュ Poly3DCollection の永続保持（Step 4）──────────
+        # ax.cla() 後または fast_mode 切替後は None にリセット。
+        # set_verts() / set_facecolor() で in-place 更新し、コレクション
+        # オブジェクトの生成・破棄コストを省く。古い matplotlib で
+        # set_verts() が効かない場合は except で再生成にフォールバックする。
+        self._robot_mesh_coll = None   # Poly3DCollection | None
+
+        # ── 再描画スロットリング（低スペックPCでのカクつき抑制） ──
+        # スライダー連打・視点回転・ライブ再生で _redraw が無制限に発火すると
+        # 描画が積み上がり操作が重くなる。最低描画間隔を設け、間隔内の連続要求は
+        # 末尾1回にまとめる（trailing-edge throttle）。_draw_scene は常に最新の
+        # インスタンス状態を読むため、最後の状態は必ず描画される。
+        self._min_redraw_interval = 1.0 / 30.0   # 最大 ~30fps
+        self._last_draw_time      = 0.0
+        self._redraw_pending_id   = None
+
+        # ── Dirty フラグ（選択的再描画）──────────────────────────────
+        # 床/ルート/STL 等の「静的層」はポーズ変化で再描画不要。
+        # _static_dirty=True のフレームのみ ax.cla()+全要素再構築を行い、
+        # それ以外はロボット層アーティストのみを差し替える。
+        # _gizmo_dirty はギズモ（視点インジケータ）の再描画要否。
+        # スナップショット (_static_nc/nl/nt) は静的描画完了後の ax 内
+        # アーティスト数を記録し、それ以降がロボット層に属する。
+        self._static_dirty  = True
+        self._gizmo_dirty   = True
+        self._static_nc: int = 0   # ax.collections 数（静的描画後）
+        self._static_nl: int = 0   # ax.lines 数（静的描画後）
+        self._static_nt: int = 0   # ax.texts 数（静的描画後）
+
         self._load_robot_meshes()
 
         self.fig = plt.figure(facecolor="#161B22")
@@ -254,6 +292,7 @@ class Viewport3D:
     # ── Public interface ───────────────────────────────────────────────
 
     def update_robot(self, joint_angles: np.ndarray):
+        # ポーズのみ変化 → static 層は汚さない
         self._joint_angles = np.asarray(joint_angles)
         self._redraw()
 
@@ -267,31 +306,43 @@ class Viewport3D:
         if self._fast_mode == enabled:
             return
         self._fast_mode = enabled
-        self._redraw()  # 表示モードを即時反映
+        # fast_mode=True に切替: 永続メッシュは _clear_robot_artists() で除去される。
+        # 参照を先に None にしておくことで、_clear_robot_artists が
+        # nc_start=nc（スキップなし）として全ロボット層を除去できるようにする。
+        # fast_mode=False への切替も _robot_mesh_coll=None のまま → 再生成。
+        self._robot_mesh_coll = None
+        # ロボット描画モードのみ変化 → static 層は汚さない
+        self._redraw()
 
     def set_route(self, route: Optional["Route"]):
         self._route = route
+        self._static_dirty = True
         self._redraw()
 
     def set_selected_waypoint(self, idx: Optional[int]):
         if idx == self._selected_wp_idx:
             return  # 同一選択は再描画しない（シミュ再生中の冗長再描画防止）
         self._selected_wp_idx = idx
+        # 選択ハイライトは動的層で描画するため static は汚さない
         self._redraw()
 
     def set_tool_frame(self, tool_frame: Optional["ToolFrame"]):
         self._tool_frame = tool_frame
+        self._static_dirty = True
         self._redraw()
 
     def set_user_frame(self, user_frame: Optional["UserFrame"]):
         self._user_frame = user_frame
+        self._static_dirty = True
         self._redraw()
 
     def set_jog_target(self, position: Optional[np.ndarray]):
         self._jog_target = position
+        self._static_dirty = True
         self._redraw()
 
     def refresh(self):
+        self._static_dirty = True
         self._redraw()
 
     # ── Drawing ────────────────────────────────────────────────────────
@@ -355,6 +406,7 @@ class Viewport3D:
             self._pan_cy = float(np.clip(W[1] + r * (self._pan_cy - W[1]), -3000, 3000))
             self._pan_cz = float(np.clip(W[2] + r * (self._pan_cz - W[2]), -2000, 4000))
         self._zoom_scale = new
+        self._static_dirty = True   # 軸リミット・目盛りが変わる
         self._redraw()
 
     def _on_mpress(self, event):
@@ -390,6 +442,9 @@ class Viewport3D:
             dy = event.y - self._rotate_start[1]
             self._azim = self._rotate_start[3] - dx * 0.5
             self._elev = float(np.clip(self._rotate_start[2] + dy * 0.5, -89.0, 89.0))
+            # 回転は view_init のみ更新 → 軸リミット/目盛りは変わらない
+            # 静的層のアーティストはそのまま保持し、ギズモのみ再描画する。
+            self._gizmo_dirty = True
             self._redraw()
         elif self._pan_start is not None and event.button in (2, 3):
             # 掴んだ点がカーソルに追従する画面平面パン（上下ドラッグでZも移動）
@@ -401,25 +456,101 @@ class Viewport3D:
             self._pan_cx = float(np.clip(self._pan_start[2] - delta[0], -3000, 3000))
             self._pan_cy = float(np.clip(self._pan_start[3] - delta[1], -3000, 3000))
             self._pan_cz = float(np.clip(self._pan_start[4] - delta[2], -2000, 4000))
+            self._static_dirty = True   # 軸リミット・目盛りが変わる
             self._redraw()
 
     def _draw_scene(self):
-        """現在の状態で 3D シーンを完全に再構築する（canvas へは描画しない）。"""
-        self.ax.cla()
-        self._setup_axes()
-        self.ax.view_init(elev=self._elev, azim=self._azim)
-        self._draw_workspace()
-        self._draw_user_frame()
+        """3D シーンを描画する。
+
+        静的層（床/ルート/STL 等）は _static_dirty=True のフレームのみ
+        ax.cla() + 全要素再構築を行う。それ以外はロボット層アーティストを
+        差し替えるだけで済み、ax.cla() と静的描画コストを省く。
+        ギズモは視点角度変化時（_gizmo_dirty=True）のみ再描画する。
+        """
         # FK は重描画ごとに1回だけ計算し、ロボット描画とピック曲線描画で共有する
         T_ee = self.kin.forward(self._joint_angles)
+
+        if self._static_dirty:
+            # ── 静的層: 完全再構築 ──────────────────────────────────
+            self.ax.cla()
+            # cla() でアーティストが axes から切り離されるため永続参照を破棄
+            self._robot_mesh_coll = None
+            self._setup_axes()
+            self.ax.view_init(elev=self._elev, azim=self._azim)
+            self._draw_workspace()
+            self._draw_user_frame()
+            self._draw_overlay()
+            self._draw_ref_frames()
+            self._draw_markers()
+            self._draw_route()
+            self._draw_jog_target()
+            self._static_dirty = False
+            # ロボット層の開始点を記録（以降が動的アーティスト）
+            self._static_nc = len(self.ax.collections)
+            self._static_nl = len(self.ax.lines)
+            self._static_nt = len(self.ax.texts)
+            self._gizmo_dirty = True   # cla() でギズモもクリアされるため
+        else:
+            # ── ロボット層のみ差し替え ───────────────────────────────
+            self._clear_robot_artists()
+            self.ax.view_init(elev=self._elev, azim=self._azim)
+
+        # ── 動的層: 毎フレーム描画 ──────────────────────────────────
         self._draw_robot(self._joint_angles, T_ee)
-        self._draw_overlay()
-        self._draw_ref_frames()
-        self._draw_markers()
-        self._draw_route()
+        self._draw_selection_highlight()
         self._draw_pick_curves(T_ee)
-        self._draw_jog_target()
-        self._draw_gizmo()
+
+        # ── ギズモ: 視点角度変化時のみ再描画 ────────────────────────
+        if self._gizmo_dirty:
+            self._draw_gizmo()
+            self._gizmo_dirty = False
+
+    def _clear_robot_artists(self):
+        """前フレームのロボット層アーティストを除去する（静的層は保持）。
+
+        静的層描画後のアーティスト数スナップショット以降のものが
+        ロボット層に属する。_robot_mesh_coll が生きている（メッシュモード）
+        場合はその Poly3DCollection をスキップし、後続のアーティストのみ除去する。
+        Lines/Texts は毎フレーム除去・再生成する（影、トライアド、ナイフ等）。
+        """
+        nc = self._static_nc
+        nl = self._static_nl
+        nt = self._static_nt
+        # メッシュモードで永続コレクションが生きていればその分だけスキップ
+        nc_start = (nc + 1
+                    if (self._robot_mesh_coll is not None
+                        and self._link_meshes
+                        and not self._fast_mode)
+                    else nc)
+        while len(self.ax.collections) > nc_start:
+            self.ax.collections[nc_start].remove()
+        lines = list(self.ax.lines)
+        for line in lines[nl:]:
+            line.remove()
+        texts = list(self.ax.texts)
+        for text in texts[nt:]:
+            text.remove()
+
+    def _draw_selection_highlight(self):
+        """選択中の経路点のハイライトを描画する（動的層: 毎フレーム更新）。
+
+        選択状態はポーズ変化と同じ頻度で変わるため、route の再描画を
+        伴わない動的層で処理し静的層の再構築を回避する。
+        """
+        sel = self._selected_wp_idx
+        if sel is None or self._route is None:
+            return
+        n = len(self._route)
+        if n == 0 or not (0 <= sel < n):
+            return
+        ZTOP = 1000
+        wp = self._route.waypoints[sel]
+        self.ax.plot([wp.x], [wp.y], [wp.z],
+                     color=WP_ACTIVE, marker="*", markersize=12,
+                     linestyle="none", zorder=ZTOP)
+        label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
+        self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
+                     label_text, color="white", fontsize=6, alpha=0.9, zorder=ZTOP)
 
     def _draw_gizmo(self):
         """左下隅の向きインジケータ（X=赤 / Y=緑 / Z=青）を本体ビューに同期描画。
@@ -454,8 +585,29 @@ class Viewport3D:
         # 事前描画再生中は 3D シーンを触らない（figimage を表示し続ける）
         if self._pre_img is not None:
             return
+        # スロットリング: 前回描画から最低間隔が経過していれば即描画、
+        # まだなら末尾1回だけスケジュール（連続要求を1フレームに集約）。
+        now = time.monotonic()
+        elapsed = now - self._last_draw_time
+        if elapsed >= self._min_redraw_interval:
+            self._do_redraw()
+        elif self._redraw_pending_id is None:
+            delay_ms = int((self._min_redraw_interval - elapsed) * 1000) + 1
+            self._redraw_pending_id = self.canvas_widget.after(
+                delay_ms, self._redraw_trailing)
+
+    def _do_redraw(self):
+        """実際の再描画（タイムスタンプ更新つき）。"""
+        self._last_draw_time = time.monotonic()
         self._draw_scene()
         self.canvas.draw_idle()
+
+    def _redraw_trailing(self):
+        """スロットリングの末尾コールバック: 最新状態を1回だけ描画する。"""
+        self._redraw_pending_id = None
+        if self._pre_img is not None:
+            return
+        self._do_redraw()
 
     # ── 事前描画（プリレンダリング）再生 ──────────────────────────────
     # 案1: 再生前に全フレームをオフスクリーン描画して RGBA 画像として保持し、
@@ -500,6 +652,8 @@ class Viewport3D:
         self._pre_img = None
         self.ax.set_visible(True)
         self._gizmo_ax.set_visible(True)
+        # figimage を外した後は静的層を含めた完全再構築が必要
+        self._static_dirty = True
         self._redraw()
 
     def _setup_axes(self):
@@ -643,21 +797,49 @@ class Viewport3D:
         全リンクを1つの Poly3DCollection に統合する — matplotlib の
         Zソートはコレクション内でのみ働くため、リンク間の前後関係を
         正しく描画するには統合が必須。
+
+        _robot_mesh_coll が生きているフレームでは set_verts() + set_facecolor()
+        による in-place 更新を試みる。古い matplotlib で API が効かない場合は
+        except で再生成にフォールバックし、次フレーム以降は再生成パスを使う
+        （_robot_mesh_coll=None のまま維持して set_verts() を使わない）。
         """
         Ts = self._urdf_link_transforms(q)
-        all_tris = []
+        all_tris   = []
         all_colors = []
         for (verts, normals, rgb), T in zip(self._link_meshes, Ts):
             R, t = T[:3, :3], T[:3, 3]
-            all_tris.append(verts @ R.T + t)     # (N,3,3) ワールド座標へ
-            tn = normals @ R.T                   # (N,3)  回転のみ
+            all_tris.append(verts @ R.T + t)   # (N,3,3) ワールド座標へ
+            tn = normals @ R.T                 # (N,3)  回転のみ
             all_colors.append(self._lambert_facecolors(
                 tn, rgb, self._LIGHT_DIR, ambient=0.30, diffuse=0.70))
-        poly = Poly3DCollection(np.concatenate(all_tris),
-                                facecolors=np.concatenate(all_colors),
-                                edgecolors="none", alpha=1.0)
-        poly.set_zsort("average")
-        self.ax.add_collection3d(poly)
+        new_tris   = np.concatenate(all_tris)
+        new_colors = np.concatenate(all_colors)
+
+        if self._robot_mesh_coll is None:
+            # 初回または cla()/fast_mode 切替後: 新規生成して ax に追加
+            coll = Poly3DCollection(new_tris, facecolors=new_colors,
+                                    edgecolors="none", alpha=1.0)
+            coll.set_zsort("average")
+            self.ax.add_collection3d(coll)
+            self._robot_mesh_coll = coll
+        else:
+            # 永続更新: コレクションオブジェクトを使い回し生成コストを省く
+            try:
+                self._robot_mesh_coll.set_verts(new_tris)
+                self._robot_mesh_coll.set_facecolor(new_colors)
+            except Exception:
+                # 古い matplotlib で set_verts() が動作しない場合の安全フォールバック。
+                # 以降も set_verts() を試みないよう None にリセットして再生成する。
+                try:
+                    self._robot_mesh_coll.remove()
+                except Exception:
+                    pass
+                self._robot_mesh_coll = None
+                coll = Poly3DCollection(new_tris, facecolors=new_colors,
+                                        edgecolors="none", alpha=1.0)
+                coll.set_zsort("average")
+                self.ax.add_collection3d(coll)
+                # フォールバック後は永続更新を行わない（None のまま維持）
 
     def _draw_robot(self, q: np.ndarray, T_ee: Optional[np.ndarray] = None):
         """Draw FANUC LR Mate 200iD/14L（実機メッシュ、欠落時は円柱形状）。"""
@@ -908,8 +1090,8 @@ class Viewport3D:
                      color=ROUTE_COLOR, lw=2.5, alpha=1.0, zorder=ZTOP)
 
         if n > self.ROUTE_BIG_N:
-            # 軽量モード: 始点(緑)・終点(赤)と選択中の1点のみマーカー表示
-            # scatter→plot変換: Line3D は computed_zorder に左右されず確実に最前面へ
+            # 軽量モード: 始点(緑)・終点(赤)のみマーカー表示
+            # 選択中点のハイライトは動的層の _draw_selection_highlight() が担う。
             p0, p1 = positions[0], positions[-1]
             self.ax.plot([p0[0]], [p0[1]], [p0[2]],
                          color=WP_ACTIVE, marker="o", markersize=8,
@@ -922,30 +1104,16 @@ class Viewport3D:
                          fontsize=6, alpha=0.85, zorder=ZTOP)
             self.ax.text(p1[0] + 10, p1[1] + 10, p1[2] + 10,
                          "END", color=WP_COLOR, fontsize=6, alpha=0.85, zorder=ZTOP)
-            sel = self._selected_wp_idx
-            if sel is not None and 0 <= sel < n:
-                wp = self._route.waypoints[sel]
-                self.ax.plot([wp.x], [wp.y], [wp.z],
-                             color=WP_ACTIVE, marker="*", markersize=12,
-                             linestyle="none", zorder=ZTOP)
-                label_text = f"{sel+1}:{wp.label}" if wp.label else f"P[{sel+1}]"
-                self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                             label_text, color="white", fontsize=6, alpha=0.9,
-                             zorder=ZTOP)
             return
 
+        # 小規模ルート: 全点を均一スタイルで描画。選択ハイライトは動的層で描く。
         for i, wp in enumerate(self._route.waypoints):
-            selected = (i == self._selected_wp_idx)
-            color    = WP_ACTIVE if selected else WP_COLOR
-            ms       = 10 if selected else 7
-            marker   = "*" if selected else "o"
             self.ax.plot([wp.x], [wp.y], [wp.z],
-                         color=color, marker=marker, markersize=ms,
+                         color=WP_COLOR, marker="o", markersize=7,
                          linestyle="none", zorder=ZTOP)
             label_text = f"{i+1}:{wp.label}" if wp.label else f"P[{i+1}]"
-            fg = "white" if selected else "#AAAAAA"
             self.ax.text(wp.x + 10, wp.y + 10, wp.z + 10,
-                         label_text, color=fg, fontsize=6, alpha=0.85, zorder=ZTOP)
+                         label_text, color="#AAAAAA", fontsize=6, alpha=0.85, zorder=ZTOP)
 
     # ── Overlay ────────────────────────────────────────────────────────
 
@@ -956,6 +1124,8 @@ class Viewport3D:
         self._stl_verts = verts
         self._stl_name = os.path.basename(path)
         self._stl_path = path
+        self._stl_cache = None   # データ変化 → Lambert キャッシュ破棄
+        self._static_dirty = True
         self._redraw()
         return True
 
@@ -974,6 +1144,8 @@ class Viewport3D:
             self._csv_points = np.array(pts)
             self._csv_name = os.path.basename(path)
             self._csv_path = path
+            self._csv_cache = None   # データ変化 → 変換キャッシュ破棄
+            self._static_dirty = True
             self._redraw()
             return True
         return False
@@ -1012,6 +1184,7 @@ class Viewport3D:
         self._blade_normals = nrm_arr / lens
         self._blade_name    = os.path.basename(path)
         self._blade_path    = path
+        self._static_dirty  = True
         self._redraw()
         return len(pts)
 
@@ -1019,6 +1192,7 @@ class Viewport3D:
         """フランジから刃先CSVローカル原点へのオフセットを設定する。"""
         from ..robot.kinematics import Kinematics
         self._blade_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        # blade はロボット層（_draw_robot → _draw_blade_csv）で描くので static 不要
         self._redraw()
 
     def clear_blade(self):
@@ -1027,6 +1201,7 @@ class Viewport3D:
         self._blade_name = ""
         self._blade_path = ""
         self._blade_T = np.eye(4)
+        # blade は動的層のみなので static は汚さない
         self._redraw()
 
     def has_blade(self) -> bool:
@@ -1065,11 +1240,15 @@ class Viewport3D:
     def set_stl_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._stl_cache = None   # ポーズ変化 → Lambert キャッシュ破棄
+        self._static_dirty = True
         self._redraw()
 
     def set_csv_pose(self, x, y, z, rx, ry, rz):
         from ..robot.kinematics import Kinematics
         self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._csv_cache = None   # ポーズ変化 → 変換キャッシュ破棄
+        self._static_dirty = True
         self._redraw()
 
     def clear_stl(self):
@@ -1077,6 +1256,8 @@ class Viewport3D:
         self._stl_name = ""
         self._stl_path = ""
         self._stl_T = np.eye(4)
+        self._stl_cache = None
+        self._static_dirty = True
         self._redraw()
 
     def clear_csv(self):
@@ -1084,6 +1265,8 @@ class Viewport3D:
         self._csv_name = ""
         self._csv_path = ""
         self._csv_T = np.eye(4)
+        self._csv_cache = None
+        self._static_dirty = True
         self._redraw()
 
     # ── レイヤー状態のスナップショット（Undo/Redo 用） ────────────────
@@ -1121,42 +1304,58 @@ class Viewport3D:
             {"name": rf["name"], "T": rf["T"].copy(), "color": rf["color"]}
             for rf in snap["ref_frames"]
         ]
+        # STL/CSV データ・ポーズが変わった可能性があるためキャッシュを破棄
+        self._stl_cache = None
+        self._csv_cache = None
+        self._static_dirty = True
         self._redraw()
 
     def _draw_overlay(self):
+        """STL / CSV オーバーレイを描画する。
+
+        頂点変換・法線計算・Lambert シェーディングは STL/CSV データまたは
+        ポーズが変わった時だけ再計算し、_stl_cache / _csv_cache に保持する。
+        ルート変更・カメラ操作などでは numpy 重計算をスキップして描画のみ行う。
+        """
         ZTOP = 1000
         if self._stl_verts is not None:
-            R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
-            all_verts = self._stl_verts.reshape(-1, 3)
-            tv = ((R @ all_verts.T).T + t)
-            tverts = tv.reshape(-1, 3, 3)
-
-            # 三角形を間引いてソリッド面で描画（法線による簡易シェーディング）
-            max_tris = 1500
-            step = max(1, len(tverts) // max_tris)
-            tris = tverts[::step]
-
-            normals = self._face_normals(tris)
-            light = np.array([0.4, -0.3, 0.85])
-            light /= np.linalg.norm(light)
-            base = np.array([0.45, 0.58, 0.75])  # 青灰色（機械色）
-            facecolors = self._lambert_facecolors(normals, base, light)
-
-            poly = Poly3DCollection(tris, facecolors=facecolors,
+            if self._stl_cache is None:
+                # データまたはポーズ変化時のみ再計算
+                R, t = self._stl_T[:3, :3], self._stl_T[:3, 3]
+                all_verts = self._stl_verts.reshape(-1, 3)
+                tv = ((R @ all_verts.T).T + t)
+                tverts = tv.reshape(-1, 3, 3)
+                max_tris = 1500
+                step = max(1, len(tverts) // max_tris)
+                tris = tverts[::step]
+                normals = self._face_normals(tris)
+                light = np.array([0.4, -0.3, 0.85])
+                light /= np.linalg.norm(light)
+                base = np.array([0.45, 0.58, 0.75])
+                self._stl_cache = {
+                    "tris":       tris,
+                    "facecolors": self._lambert_facecolors(normals, base, light),
+                    "ctr":        tv.mean(axis=0),
+                    "zmax":       float(tv[:, 2].max()),
+                }
+            sc = self._stl_cache
+            poly = Poly3DCollection(sc["tris"], facecolors=sc["facecolors"],
                                     edgecolors="none", alpha=0.45)
             self.ax.add_collection3d(poly)
-
-            ctr = tv.mean(axis=0)
-            zmax = tv[:, 2].max()
+            ctr, zmax = sc["ctr"], sc["zmax"]
             self.ax.text(ctr[0], ctr[1], zmax + 25,
                          self._stl_name, color="#99BBFF", fontsize=7)
+
         if self._csv_points is not None:
-            R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
-            pts = (R @ self._csv_points.T).T + t
-            self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
+            if self._csv_cache is None:
+                R, t = self._csv_T[:3, :3], self._csv_T[:3, 3]
+                pts = (R @ self._csv_points.T).T + t
+                self._csv_cache = {"pts": pts, "ctr": pts.mean(axis=0)}
+            cc = self._csv_cache
+            self.ax.scatter(cc["pts"][:, 0], cc["pts"][:, 1], cc["pts"][:, 2],
                             c="#FF9944", s=8, alpha=0.6, depthshade=False,
                             zorder=ZTOP)
-            ctr = pts.mean(axis=0)
+            ctr = cc["ctr"]
             self.ax.text(ctr[0], ctr[1], ctr[2],
                          self._csv_name, color="#FFBB66", fontsize=6,
                          zorder=ZTOP)
@@ -1171,6 +1370,7 @@ class Viewport3D:
         self._target_markers = [
             {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in target_markers
         ]
+        self._static_dirty = True
         self._redraw()
 
     def _draw_markers(self):
@@ -1275,16 +1475,19 @@ class Viewport3D:
         from ..robot.kinematics import Kinematics
         T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
         self._ref_frames.append({"name": name, "T": T, "color": color})
+        self._static_dirty = True
         self._redraw()
 
     def remove_ref_frame(self, name: str):
         """Remove a reference frame by name."""
         self._ref_frames = [f for f in self._ref_frames if f["name"] != name]
+        self._static_dirty = True
         self._redraw()
 
     def clear_ref_frames(self):
         """Remove all reference frames."""
         self._ref_frames.clear()
+        self._static_dirty = True
         self._redraw()
 
     def get_ref_frames(self) -> list:
