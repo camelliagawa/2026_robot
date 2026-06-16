@@ -753,6 +753,11 @@ class MainWindow:
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = create_viewport(left, self.kin)
+        self._is_gpu = getattr(self.viewport, "realtime", False)
+        if self._is_gpu:
+            left.config(
+                text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  右・中ドラッグ: パン"
+                     "  /  ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
@@ -1564,34 +1569,42 @@ class MainWindow:
         ttk.Button(sim_inner, text="■  停止",
                    style="Danger.TButton",
                    command=self._stop_simulation).pack(pady=1, fill=tk.X)
+        _smooth_label = ("▶  リアルタイム再生（GPU）" if self._is_gpu
+                         else "🎬  滑らか再生（事前描画）")
         self._smooth_btn = ttk.Button(
-            sim_inner, text="🎬  滑らか再生（事前描画）",
+            sim_inner, text=_smooth_label,
             command=self._smooth_play)
         self._smooth_btn.pack(pady=1, fill=tk.X)
-        _tip(self._smooth_btn,
-             "再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
-             "再描画をやめて画像を差し替えるだけにします（最も滑らか・高品質）。\n"
-             "・初回のみ「描画中…」の待ち時間が発生します（キャンセル可）\n"
-             "・2回目以降はキャッシュから即再生（ルート変更時は再描画）\n"
-             "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
-        fps_row = ttk.Frame(sim_inner)
-        fps_row.pack(fill=tk.X, pady=(1, 0))
-        tk.Label(fps_row, text="FPS:", bg=BG_PANEL, fg=FG_SUB,
-                 font=("", 8)).pack(side=tk.LEFT)
+        if self._is_gpu:
+            _tip(self._smooth_btn,
+                 "GPU リアルタイム描画（60fps超）でそのまま再生します。\n"
+                 "事前描画は不要です。「▶ 実行」と同等の動作をします。")
+        else:
+            _tip(self._smooth_btn,
+                 "再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
+                 "再描画をやめて画像を差し替えるだけにします（最も滑らか・高品質）。\n"
+                 "・初回のみ「描画中…」の待ち時間が発生します（キャンセル可）\n"
+                 "・2回目以降はキャッシュから即再生（ルート変更時は再描画）\n"
+                 "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
         self._pre_fps_var = tk.IntVar(value=int(self._pre_fps))
-        fps_spin = tk.Spinbox(
-            fps_row, from_=5, to=30, increment=1,
-            textvariable=self._pre_fps_var, width=4, font=("", 8),
-            bg=BG_WIDGET, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
-            command=self._on_pre_fps_change)
-        fps_spin.pack(side=tk.LEFT, padx=2)
-        fps_spin.bind("<Return>", lambda e: self._on_pre_fps_change())
-        _tip(fps_spin,
-             "事前描画のフレームレートを設定します（5〜30 fps）。\n"
-             "低くするほど事前描画が速く終わります（画質は下がります）。\n"
-             "変更するとフレームキャッシュが無効化され再描画が必要になります。")
-        tk.Label(fps_row, text="fps（事前描画）", bg=BG_PANEL, fg=FG_SUB,
-                 font=("", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        if not self._is_gpu:
+            fps_row = ttk.Frame(sim_inner)
+            fps_row.pack(fill=tk.X, pady=(1, 0))
+            tk.Label(fps_row, text="FPS:", bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8)).pack(side=tk.LEFT)
+            fps_spin = tk.Spinbox(
+                fps_row, from_=5, to=30, increment=1,
+                textvariable=self._pre_fps_var, width=4, font=("", 8),
+                bg=BG_WIDGET, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
+                command=self._on_pre_fps_change)
+            fps_spin.pack(side=tk.LEFT, padx=2)
+            fps_spin.bind("<Return>", lambda e: self._on_pre_fps_change())
+            _tip(fps_spin,
+                 "事前描画のフレームレートを設定します（5〜30 fps）。\n"
+                 "低くするほど事前描画が速く終わります（画質は下がります）。\n"
+                 "変更するとフレームキャッシュが無効化され再描画が必要になります。")
+            tk.Label(fps_row, text="fps（事前描画）", bg=BG_PANEL, fg=FG_SUB,
+                     font=("", 8)).pack(side=tk.LEFT, padx=(0, 2))
         self._save_video_btn = ttk.Button(
             sim_inner, text="💾  動画保存（MP4 / GIF）",
             command=self._save_smooth_video, state="disabled")
@@ -1608,31 +1621,31 @@ class MainWindow:
         self._sim_time_var = tk.StringVar(value="⏱  0.0s / 0.0s")
         tk.Label(sim_inner, textvariable=self._sim_time_var,
                  bg=BG_PANEL, fg=ACCENT, font=("", 9, "bold")).pack()
-        # 軽量表示トグル（停止中・再生中いずれも即時切替）
+        # 軽量表示トグル（mpl バックエンドのみ — GPU は常にフルメッシュ描画）
         self._fast_mode_var = tk.BooleanVar(value=False)
-        fm_cb = tk.Checkbutton(
-            sim_inner, text="軽量表示（高速・円柱）",
-            variable=self._fast_mode_var,
-            command=self._toggle_fast_mode,
-            bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
-            selectcolor=BG_WIDGET, font=("", 8))
-        fm_cb.pack(anchor="w", pady=(2, 0))
-        _tip(fm_cb,
-             "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
-             "OFF: 実機メッシュで描画（高品質）。\n"
-             "停止中・再生中いずれもチェックで即座に切り替わります。")
-        # 案2: 再生中は自動で軽量表示へ切り替え（停止時に元へ戻す）
         self._auto_fast_var = tk.BooleanVar(value=True)
-        af_cb = tk.Checkbutton(
-            sim_inner, text="再生中は自動で軽量表示",
-            variable=self._auto_fast_var,
-            bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
-            selectcolor=BG_WIDGET, font=("", 8))
-        af_cb.pack(anchor="w", pady=(0, 0))
-        _tip(af_cb,
-             "ON: シミュレーション再生の間だけ自動で軽量表示（円柱）に切り替え、\n"
-             "    停止すると実機メッシュ表示へ戻します。滑らかな再生向け。\n"
-             "OFF: 再生中も上の「軽量表示」設定のまま描画します。")
+        if not self._is_gpu:
+            fm_cb = tk.Checkbutton(
+                sim_inner, text="軽量表示（高速・円柱）",
+                variable=self._fast_mode_var,
+                command=self._toggle_fast_mode,
+                bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
+                selectcolor=BG_WIDGET, font=("", 8))
+            fm_cb.pack(anchor="w", pady=(2, 0))
+            _tip(fm_cb,
+                 "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
+                 "OFF: 実機メッシュで描画（高品質）。\n"
+                 "停止中・再生中いずれもチェックで即座に切り替わります。")
+            af_cb = tk.Checkbutton(
+                sim_inner, text="再生中は自動で軽量表示",
+                variable=self._auto_fast_var,
+                bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
+                selectcolor=BG_WIDGET, font=("", 8))
+            af_cb.pack(anchor="w", pady=(0, 0))
+            _tip(af_cb,
+                 "ON: シミュレーション再生の間だけ自動で軽量表示（円柱）に切り替え、\n"
+                 "    停止すると実機メッシュ表示へ戻します。滑らかな再生向け。\n"
+                 "OFF: 再生中も上の「軽量表示」設定のまま描画します。")
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -3528,7 +3541,9 @@ class MainWindow:
             self._pre_frames = None
             self._pre_idxs = None
             if hasattr(self, "_smooth_btn"):
-                self._smooth_btn.config(text="🎬  滑らか再生（事前描画）")
+                _t = ("▶  リアルタイム再生（GPU）" if self._is_gpu
+                      else "🎬  滑らか再生（事前描画）")
+                self._smooth_btn.config(text=_t)
             if hasattr(self, "_save_video_btn"):
                 self._save_video_btn.config(state="disabled")
 
@@ -3544,7 +3559,9 @@ class MainWindow:
         if hasattr(self, "_save_video_btn"):
             self._save_video_btn.config(state="disabled")
         if hasattr(self, "_smooth_btn"):
-            self._smooth_btn.config(text="🎬  滑らか再生（事前描画）")
+            _t = ("▶  リアルタイム再生（GPU）" if self._is_gpu
+                  else "🎬  滑らか再生（事前描画）")
+            self._smooth_btn.config(text=_t)
         self._sim_precompute_token += 1
         token = self._sim_precompute_token
         self._set_seek_enabled(False)
