@@ -1,19 +1,19 @@
-"""VisPy(OpenGL/GPU) 版 3D ビューポート — 段階移行 Phase 2。
+"""VisPy(OpenGL/GPU) 版 3D ビューポート — 段階移行 Phase 3。
 
 matplotlib(CPU) 版 `Viewport3D` と同じ公開 API を実装し、GPU 描画により
-回転・パン・ズーム・アニメーションを滑らかにする。低スペック PC でも
-内蔵 GPU(Intel UHD 620) で 70fps 超を確認済み（PoC/埋め込み検証）。
+回転・パン・ズーム・アニメーションを滑らかにする。内蔵 GPU(Intel UHD 620)
+でも 70fps 超を確認済み（PoC/埋め込み検証）。
 
 移行ステータス:
-  Phase 2 (このコミット): 埋め込み + ロボットメッシュ + カメラ + update_robot
-  Phase 3: 静的シーン（床/作業領域/フレーム/STL/CSV/マーカー/ラベル）
+  Phase 2: 埋め込み + ロボットメッシュ + カメラ + update_robot   ← 完了
+  Phase 3 (このコミット): 静的シーン（床/作業領域/フレーム/STL/CSV/
+          マーカー/ラベル）＋ ロボット追従要素（EEフレーム/ナイフ/刃先/TCP/影）
   Phase 4: ルート表示 + 選択ハイライト
   Phase 5: ピッキング（クリック選択）
-  Phase 6: アニメーション + 動画保存
+  Phase 6: アニメーション最適化 + 動画保存
 
-Phase 2 では未実装の公開メソッドは「安全なスタブ」（no-op / 妥当な既定値）
-として用意し、GPU バックエンドでもアプリがクラッシュせず起動・操作できる
-ことを保証する。未実装機能（ルート線・STL 等の表示）は後続フェーズで追加する。
+未実装（ルート線・選択・ピッキング・動画）は安全なスタブとして用意し、
+GPU バックエンドでもクラッシュせず起動・操作できることを保証する。
 """
 from __future__ import annotations
 
@@ -24,9 +24,8 @@ from typing import List, Optional, TYPE_CHECKING
 
 import numpy as np
 
-# VisPy 本体（未インストール/初期化失敗時は factory が matplotlib にフォールバック）
 from vispy import scene
-from vispy.scene.visuals import Mesh
+from vispy.scene.visuals import Mesh, Line, Markers, Text
 
 if TYPE_CHECKING:
     from ..robot.kinematics import Kinematics
@@ -40,21 +39,32 @@ _ROBOT_MESH_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "assets", "robot")
 _ROBOT_LINKS = [
-    ("base_link", (0.282, 0.301, 0.317, 1.0)),   # ベース: グレー
-    ("link_1",    (0.960, 0.768, 0.000, 1.0)),   # J1〜J5: FANUC イエロー
+    ("base_link", (0.282, 0.301, 0.317, 1.0)),
+    ("link_1",    (0.960, 0.768, 0.000, 1.0)),
     ("link_2",    (0.960, 0.768, 0.000, 1.0)),
     ("link_3",    (0.960, 0.768, 0.000, 1.0)),
     ("link_4",    (0.960, 0.768, 0.000, 1.0)),
     ("link_5",    (0.960, 0.768, 0.000, 1.0)),
-    ("link_6",    (0.180, 0.180, 0.190, 1.0)),   # フランジ: ブラック
+    ("link_6",    (0.180, 0.180, 0.190, 1.0)),
 ]
+
+# 軸トライアド色（X=赤 / Y=緑 / Z=青）
+_AX_R = (1.00, 0.27, 0.27, 1.0)
+_AX_G = (0.27, 1.00, 0.27, 1.0)
+_AX_B = (0.27, 0.27, 1.00, 1.0)
+
+KNIFE_BLADE_LEN   = 200.0
+KNIFE_BLADE_WIDTH = 45.0
+
+
+def _rgba(hexstr: str, a: float = 1.0):
+    h = hexstr.lstrip("#")
+    return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0,
+            int(h[4:6], 16) / 255.0, a)
 
 
 def _load_stl_tris(path: str):
-    """バイナリ STL を読み込み (vertices(N*3,3) float32, faces(N,3) uint32) を返す。
-
-    各三角形に固有の3頂点を割り当てる（flat shading 向け）。失敗時は None。
-    """
+    """バイナリ/ASCII STL を (vertices(N*3,3) float32, faces(N,3) uint32) で返す。失敗時 None。"""
     try:
         with open(path, "rb") as f:
             if len(f.read(80)) < 80:
@@ -64,22 +74,31 @@ def _load_stl_tris(path: str):
                 return None
             (n_tri,) = struct.unpack("<I", data)
             buf = f.read(n_tri * 50)
-        if len(buf) < n_tri * 50:
-            return None
-        raw  = np.frombuffer(buf, dtype=np.uint8).reshape(n_tri, 50)
-        tris = raw[:, 12:48].view(np.float32).reshape(n_tri, 3, 3)
-        verts = tris.reshape(-1, 3).astype(np.float32)
-        faces = np.arange(n_tri * 3, dtype=np.uint32).reshape(n_tri, 3)
-        return verts, faces
+        if len(buf) == n_tri * 50 and n_tri > 0:
+            raw  = np.frombuffer(buf, dtype=np.uint8).reshape(n_tri, 50)
+            tris = raw[:, 12:48].view(np.float32).reshape(n_tri, 3, 3)
+            verts = tris.reshape(-1, 3).astype(np.float32)
+            faces = np.arange(n_tri * 3, dtype=np.uint32).reshape(n_tri, 3)
+            return verts, faces
+        # ASCII フォールバック
+        vs = []
+        with open(path, "r", errors="ignore") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("vertex"):
+                    p = s.split()
+                    vs.append([float(p[1]), float(p[2]), float(p[3])])
+        if len(vs) >= 3 and len(vs) % 3 == 0:
+            verts = np.array(vs, dtype=np.float32)
+            faces = np.arange(len(vs), dtype=np.uint32).reshape(-1, 3)
+            return verts, faces
     except Exception:
         return None
+    return None
 
 
 def _urdf_link_transforms(q: np.ndarray) -> list:
-    """各リンク(base_link, link_1..6)のワールド 4x4 変換を返す。
-
-    viewport.py の _urdf_link_transforms と同一の規約（MDH→URDF 変換）。
-    """
+    """各リンク(base_link, link_1..6)のワールド 4x4 変換（viewport.py と同一規約）。"""
     t1, t2, t3, t4, t5, t6 = (q[0], q[1] + np.pi / 2,
                                -q[2], -q[3], -q[4], -q[5])
 
@@ -90,35 +109,40 @@ def _urdf_link_transforms(q: np.ndarray) -> list:
             T[:2, :2] = [[c, -s], [s, c]]
         elif axis == "y":
             T[0, 0], T[0, 2], T[2, 0], T[2, 2] = c, s, -s, c
-        else:  # x
+        else:
             T[1, 1], T[1, 2], T[2, 1], T[2, 2] = c, -s, s, c
         return T
 
     def tr(x, y, z):
         T = np.eye(4); T[:3, 3] = [x, y, z]; return T
 
-    Ts = [np.eye(4)]                                       # base_link
-    T = tr(0, 0, 330) @ rot("z", t1);      Ts.append(T)    # link_1
-    T = T @ tr(50, 0, 0) @ rot("y", t2);   Ts.append(T)    # link_2
-    T = T @ tr(0, 0, 440) @ rot("y", -t3); Ts.append(T)    # link_3
-    T = T @ tr(0, 0, 35)  @ rot("x", -t4); Ts.append(T)    # link_4
-    T = T @ tr(420, 0, 0) @ rot("y", -t5); Ts.append(T)    # link_5
-    T = T @ tr(80, 0, 0)  @ rot("x", -t6); Ts.append(T)    # link_6
+    Ts = [np.eye(4)]
+    T = tr(0, 0, 330) @ rot("z", t1);      Ts.append(T)
+    T = T @ tr(50, 0, 0) @ rot("y", t2);   Ts.append(T)
+    T = T @ tr(0, 0, 440) @ rot("y", -t3); Ts.append(T)
+    T = T @ tr(0, 0, 35)  @ rot("x", -t4); Ts.append(T)
+    T = T @ tr(420, 0, 0) @ rot("y", -t5); Ts.append(T)
+    T = T @ tr(80, 0, 0)  @ rot("x", -t6); Ts.append(T)
     return Ts
 
 
 def _xform(verts: np.ndarray, T4: np.ndarray) -> np.ndarray:
-    """(N,3) 頂点に 4x4 変換を適用。"""
     return (verts @ T4[:3, :3].T + T4[:3, 3]).astype(np.float32)
 
 
-class _FigShim:
-    """main_window が viewport.fig の図サイズ（ピクセル数）を参照するための互換シム。
+def _triad_segments(T: np.ndarray, scale: float):
+    """4x4 変換から XYZ トライアドの線分 (pos(6,3), color(6,4)) を返す。"""
+    o = T[:3, 3]
+    R = T[:3, :3]
+    pos = np.array([o, o + scale * R[:, 0],
+                    o, o + scale * R[:, 1],
+                    o, o + scale * R[:, 2]], dtype=np.float32)
+    col = np.array([_AX_R, _AX_R, _AX_G, _AX_G, _AX_B, _AX_B], dtype=np.float32)
+    return pos, col
 
-    matplotlib 版は self.fig（Figure）を持つが GPU 版には無いため、
-    動画/事前描画のフレーム枚数計算 (figwidth*dpi 等) が成立するよう
-    キャンバスのピクセルサイズを返す最小オブジェクトを提供する。
-    """
+
+class _FigShim:
+    """main_window が viewport.fig のピクセルサイズを参照するための互換シム。"""
     dpi = 100.0
 
     def __init__(self, canvas):
@@ -139,7 +163,7 @@ class ViewportGPU:
         self._joint_angles = np.zeros(6)
         self._fast_mode = False
 
-        # ── 状態（後続フェーズで描画に使用）──────────────────────────────
+        # ── レイヤー状態 ──────────────────────────────────────────────────
         self._route: Optional["Route"] = None
         self._selected_wp_idx: Optional[int] = None
         self._tool_frame: Optional["ToolFrame"] = None
@@ -148,37 +172,45 @@ class ViewportGPU:
         self._ref_frames: list = []
         self._tcp_markers: list = []
         self._target_markers: list = []
-        self._pick_curves: list = []
-        self._pick_callback = None
 
-        # ── main_window が直接参照する内部属性の互換用既定値 ──────────────
-        # （いずれも「未読込/非再生」を表す安全な初期値。後続フェーズで本実装）
-        self._stl_verts: Optional[np.ndarray] = None
+        self._stl_verts: Optional[np.ndarray] = None   # (N*3,3)
+        self._stl_faces: Optional[np.ndarray] = None
+        self._stl_name: str = ""
+        self._stl_path: str = ""
         self._stl_T: np.ndarray = np.eye(4)
+
+        self._csv_points: Optional[np.ndarray] = None  # (N,3)
+        self._csv_name: str = ""
+        self._csv_path: str = ""
+        self._csv_T: np.ndarray = np.eye(4)
+
         self._blade_pts: Optional[np.ndarray] = None
         self._blade_normals: Optional[np.ndarray] = None
-        self._pre_img = None   # 事前描画再生中フラグ（None=通常描画）
+        self._blade_name: str = ""
+        self._blade_path: str = ""
+        self._blade_T: np.ndarray = np.eye(4)
 
-        # ── 実機リンクメッシュ（素の頂点・面・色）を読み込み ──────────────
-        self._link_base = []   # [(verts(N*3,3), faces(N,3), rgba)]
+        self._pick_curves: list = []
+        self._pick_curves_local = False
+        self._pick_orders: list = []
+        self._pick_callback = None
+
+        self._pre_img = None   # 事前描画再生フラグ（None=通常描画）
+
+        # ── 実機リンクメッシュ（素データ）読み込み ────────────────────────
+        self._link_base = []
         for name, rgba in _ROBOT_LINKS:
             res = _load_stl_tris(os.path.join(_ROBOT_MESH_DIR, name + ".stl"))
             if res is None:
-                self._link_base = []   # 1つでも欠けたら全て無効（mpl 版と同じ方針）
+                self._link_base = []
                 break
             self._link_base.append((res[0], res[1], rgba))
 
         # ── VisPy キャンバスを Tk フレームへ埋め込み ──────────────────────
-        # app="tkinter" が pyopengltk 経由で Tk ウィジェットを生成する。
-        # keys=None: 埋め込みでは VisPy 組込キー処理（Escで閉じる等）は不要。
-        # "interactive" だと tkinter バックエンドで未対応キーの警告が出るため無効化。
         self.canvas = scene.SceneCanvas(
-            parent=parent, app="tkinter",
-            bgcolor="#161B22", keys=None)
-        # main_window 側が pack / DnD バインドに使う Tk ウィジェット
+            parent=parent, app="tkinter", bgcolor="#0D1117", keys=None)
         self.canvas_widget = self.canvas.native
         self.canvas_widget.pack(fill=tk.BOTH, expand=True)
-        # main_window が図サイズ参照に使う fig 互換シム
         self.fig = _FigShim(self.canvas)
 
         self.view = self.canvas.central_widget.add_view()
@@ -186,7 +218,11 @@ class ViewportGPU:
             elevation=22, azimuth=-50, distance=1700,
             center=(150, 0, 350), fov=35, up="+z")
 
-        # ── ロボットメッシュ（リンクごとに Mesh を保持し set_data で更新）──
+        # 静的シーン用ノード（まとめて detach/再構築できるよう親ノードに集約）
+        self._static_root = scene.Node(parent=self.view.scene)
+        self._static_visuals: list = []
+
+        # ── ロボットリンクメッシュ（持続）──────────────────────────────
         self._link_meshes = []
         Ts = _urdf_link_transforms(self._joint_angles)
         for (verts, faces, rgba), T4 in zip(self._link_base, Ts):
@@ -194,26 +230,256 @@ class ViewportGPU:
                      color=rgba, shading="flat", parent=self.view.scene)
             self._link_meshes.append(m)
 
-        # 向き参照（簡易 XYZ 軸）— Phase 3 で本格的な床/フレームに置換予定
-        scene.visuals.XYZAxis(parent=self.view.scene)
+        # ── ロボット追従の動的ビジュアル（持続・set_data で更新）──────────
+        self._ee_triad = Line(parent=self.view.scene, width=2.5,
+                              connect="segments", antialias=True)
+        self._shadow   = Line(parent=self.view.scene, width=3,
+                              color=(0.2, 0.2, 0.2, 0.25))
+        self._knife_lines = Line(parent=self.view.scene, width=4,
+                                 connect="segments", antialias=True)
+        self._knife_face  = Mesh(parent=self.view.scene)
+        self._blade_markers  = Markers(parent=self.view.scene)
+        self._blade_whiskers = Line(parent=self.view.scene, width=1,
+                                    connect="segments",
+                                    color=_rgba("#FF99AA", 0.5))
+        self._tcp_marker = Markers(parent=self.view.scene)
+        self._tcp_line   = Line(parent=self.view.scene, width=1.5,
+                                color=_rgba("#00FFCC", 0.9))
+        self._tcp_label   = Text("", color="#00FFCC", font_size=8,
+                                 anchor_x="left", parent=self.view.scene)
+        self._blade_label = Text("", color="#FF7799", font_size=7,
+                                 anchor_x="left", parent=self.view.scene)
 
+        self._rebuild_static()
         self.update_robot(self._joint_angles)
 
-    # ── ロボット姿勢（Phase 2 実装済み）────────────────────────────────
-    def update_robot(self, joint_angles: np.ndarray):
-        self._joint_angles = np.asarray(joint_angles, dtype=float)
-        if not self._link_meshes:
-            return
-        Ts = _urdf_link_transforms(self._joint_angles)
-        for m, (verts, faces, rgba), T4 in zip(
-                self._link_meshes, self._link_base, Ts):
-            m.set_data(vertices=_xform(verts, T4), faces=faces, color=rgba)
+    # ────────────────────────────────────────────────────────────────────
+    # 静的シーン
+    # ────────────────────────────────────────────────────────────────────
+    def _clear_static(self):
+        for v in self._static_visuals:
+            try:
+                v.parent = None
+            except Exception:
+                pass
+        self._static_visuals = []
+
+    def _add_static(self, visual):
+        visual.parent = self._static_root
+        self._static_visuals.append(visual)
+        return visual
+
+    def _rebuild_static(self):
+        """床/作業領域/フレーム/マーカー/STL/CSV/ジョグ目標を再構築する。"""
+        self._clear_static()
+
+        # ── 床グリッド（z=0・空間把握の参考）──────────────────────────
+        seg = []
+        for c in range(-700, 701, 100):
+            seg += [[c, -700, 0], [c, 700, 0], [-700, c, 0], [700, c, 0]]
+        self._add_static(Line(pos=np.array(seg, dtype=np.float32),
+                              connect="segments", width=1,
+                              color=_rgba("#21262D", 0.9)))
+
+        # ── 作業領域円（肩高さ）─────────────────────────────────────────
+        try:
+            reach = float(self.kin.dh.REACH_MM)
+            base_z = float(self.kin.dh.joints[0].d)
+        except Exception:
+            reach, base_z = 700.0, 330.0
+        th = np.linspace(0, 2 * np.pi, 73)
+        circ = np.column_stack([reach * np.cos(th), reach * np.sin(th),
+                                np.full_like(th, base_z)]).astype(np.float32)
+        self._add_static(Line(pos=circ, connect="strip", width=1,
+                              color=_rgba("#1E3A5F", 0.5)))
+        self._add_static(Text(f"{int(reach)}mm", pos=(reach * 0.72, 0, base_z + 30),
+                             color=_rgba("#1E5A8F", 0.6), font_size=6))
+
+        # ── ユーザーフレーム ──────────────────────────────────────────
+        if self._user_frame is not None:
+            T = self._user_frame.to_transform()
+            pos, col = _triad_segments(T, 120)
+            self._add_static(Line(pos=pos, color=col, connect="segments",
+                                  width=2.5))
+            o = T[:3, 3]
+            self._add_static(Markers(pos=o[None, :], face_color="#FF88FF",
+                                     size=10, edge_width=0, symbol="diamond"))
+            nm = getattr(self._user_frame, "name", "UF")
+            self._add_static(Text(f"[{nm}]", pos=(o[0] + 15, o[1] + 15, o[2] + 15),
+                                  color="#FF88FF", font_size=8))
+
+        # ── 参照フレーム ──────────────────────────────────────────────
+        for rf in self._ref_frames:
+            T = rf["T"]
+            pos, col = _triad_segments(T, 90)
+            self._add_static(Line(pos=pos, color=col, connect="segments", width=2))
+            o = T[:3, 3]
+            self._add_static(Text(rf.get("name", ""),
+                                  pos=(o[0] + 12, o[1] + 12, o[2] + 12),
+                                  color=rf.get("color", "#FF88FF"), font_size=7))
+
+        # ── マーカー（TCP / ターゲット）─────────────────────────────────
+        for m in self._tcp_markers:
+            p = np.asarray(m["pos"], float)
+            self._add_static(Markers(pos=p[None, :], face_color="#00FFCC",
+                                     size=16, edge_width=0, symbol="star"))
+            self._add_static(Text(f"[TCP] {m['name']}",
+                                  pos=(p[0] + 14, p[1] + 14, p[2] + 14),
+                                  color="#00FFCC", font_size=8, bold=True))
+        for m in self._target_markers:
+            p = np.asarray(m["pos"], float)
+            self._add_static(Markers(pos=p[None, :], face_color="#FF8800",
+                                     size=12, edge_width=0, symbol="disc"))
+            self._add_static(Text(f"[TGT] {m['name']}",
+                                  pos=(p[0] + 14, p[1] + 14, p[2] + 14),
+                                  color="#FF8800", font_size=8, bold=True))
+
+        # ── STL オーバーレイ（半透明）──────────────────────────────────
+        if self._stl_verts is not None and self._stl_faces is not None:
+            vw = _xform(self._stl_verts, self._stl_T)
+            self._add_static(Mesh(vertices=vw, faces=self._stl_faces,
+                                  color=(0.45, 0.58, 0.75, 0.45),
+                                  shading="flat"))
+            ctr = vw.mean(axis=0)
+            zmax = float(vw[:, 2].max())
+            self._add_static(Text(self._stl_name,
+                                  pos=(ctr[0], ctr[1], zmax + 25),
+                                  color="#99BBFF", font_size=7))
+
+        # ── CSV 点群 ──────────────────────────────────────────────────
+        if self._csv_points is not None:
+            pw = _xform(self._csv_points, self._csv_T)
+            self._add_static(Markers(pos=pw, face_color=_rgba("#FF9944", 0.7),
+                                     size=6, edge_width=0, symbol="disc"))
+            ctr = pw.mean(axis=0)
+            self._add_static(Text(self._csv_name, pos=tuple(ctr),
+                                  color="#FFBB66", font_size=6))
+
+        # ── ジョグ目標 ──────────────────────────────────────────────────
+        if self._jog_target is not None:
+            x, y, z = self._jog_target
+            s = 30
+            cross = np.array([[x - s, y, z], [x + s, y, z],
+                              [x, y - s, z], [x, y + s, z],
+                              [x, y, z - s], [x, y, z + s]], dtype=np.float32)
+            self._add_static(Line(pos=cross, connect="segments", width=1.5,
+                                  color=_rgba("#44FF44", 0.9)))
+
         self.canvas.update()
 
+    # ────────────────────────────────────────────────────────────────────
+    # ロボット姿勢 + 追従要素
+    # ────────────────────────────────────────────────────────────────────
+    def update_robot(self, joint_angles: np.ndarray):
+        self._joint_angles = np.asarray(joint_angles, dtype=float)
+        q = self._joint_angles
+
+        if self._link_meshes:
+            Ts = _urdf_link_transforms(q)
+            for m, (verts, faces, rgba), T4 in zip(
+                    self._link_meshes, self._link_base, Ts):
+                m.set_data(vertices=_xform(verts, T4), faces=faces, color=rgba)
+
+        self._update_dynamic(q)
+        self.canvas.update()
+
+    def _blade_axes(self, T_ee):
+        T = T_ee @ self._blade_T
+        o = T[:3, 3]; R = T[:3, :3]
+        blade_dir = R[:, 1]; width_dir = R[:, 2]
+        if self._blade_pts is not None and len(self._blade_pts):
+            blade_len = float(np.max(self._blade_pts[:, 1]))
+            if blade_len < 1.0:
+                blade_len = KNIFE_BLADE_LEN
+        else:
+            blade_len = KNIFE_BLADE_LEN
+        return o, blade_dir, width_dir, blade_len
+
+    def _update_dynamic(self, q):
+        try:
+            T_ee = self.kin.forward(q)
+        except Exception:
+            return
+
+        # EE フレームトライアド
+        pos, col = _triad_segments(T_ee, 70)
+        self._ee_triad.set_data(pos=pos, color=col)
+
+        # 地面の影（関節原点の z=0 投影ポリライン）
+        try:
+            jp = self.kin.get_joint_positions(q)
+            sp = jp.copy().astype(np.float32); sp[:, 2] = 0.0
+            self._shadow.set_data(pos=sp)
+            self._shadow.visible = True
+        except Exception:
+            self._shadow.visible = False
+
+        # ナイフ（柄: フランジ→刃元 / 刃: 刃元→刃先）
+        flange = T_ee[:3, 3]
+        origin, blade_dir, width_dir, blade_len = self._blade_axes(T_ee)
+        tip = origin + blade_len * blade_dir
+        kpos = np.array([flange, origin, origin, tip], dtype=np.float32)
+        kcol = np.array([_rgba("#3A2010"), _rgba("#3A2010"),
+                         _rgba("#C8C8D0"), _rgba("#C8C8D0")], dtype=np.float32)
+        self._knife_lines.set_data(pos=kpos, color=kcol)
+
+        hw = KNIFE_BLADE_WIDTH / 2.0
+        quad = np.array([origin - hw * width_dir, origin + hw * width_dir,
+                         tip + hw * width_dir, tip - hw * width_dir],
+                        dtype=np.float32)
+        self._knife_face.set_data(vertices=quad,
+                                  faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32),
+                                  color=(0.78, 0.78, 0.82, 0.22))
+
+        # 刃先CSV点群（フランジ追従）
+        if self._blade_pts is not None and len(self._blade_pts):
+            T = T_ee @ self._blade_T
+            R, t = T[:3, :3], T[:3, 3]
+            pw = (self._blade_pts @ R.T + t).astype(np.float32)
+            self._blade_markers.set_data(pos=pw, face_color=_rgba("#FF5577", 0.85),
+                                         size=4, edge_width=0, symbol="disc")
+            self._blade_markers.visible = True
+            if self._blade_normals is not None:
+                nw = (self._blade_normals @ R.T)
+                p0 = pw[::8]; p1 = (pw[::8] + 8.0 * nw[::8]).astype(np.float32)
+                seg = np.empty((len(p0) * 2, 3), dtype=np.float32)
+                seg[0::2] = p0; seg[1::2] = p1
+                self._blade_whiskers.set_data(pos=seg)
+                self._blade_whiskers.visible = len(p0) > 0
+            else:
+                self._blade_whiskers.visible = False
+            ctr = pw.mean(axis=0)
+            self._blade_label.text = f"{self._blade_name} ({len(pw)} pts)"
+            self._blade_label.pos = (ctr[0] + 10, ctr[1] + 10, ctr[2] + 10)
+            self._blade_label.visible = True
+        else:
+            self._blade_markers.visible = False
+            self._blade_whiskers.visible = False
+            self._blade_label.visible = False
+
+        # TCP マーカー（刃先端 or ツールフレーム）
+        tcp_pos = None
+        if self._blade_pts is not None and len(self._blade_pts):
+            tcp_pos = origin + blade_len * blade_dir
+        elif self._tool_frame is not None and getattr(self._tool_frame, "z", 0.0) != 0.0:
+            tcp_pos = (T_ee @ self._tool_frame.to_transform())[:3, 3]
+        if tcp_pos is not None:
+            self._tcp_marker.set_data(pos=np.asarray(tcp_pos, float)[None, :],
+                                      face_color="#00FFCC", size=14,
+                                      edge_width=0, symbol="star")
+            self._tcp_marker.visible = True
+            self._tcp_line.set_data(pos=np.array([flange, tcp_pos], dtype=np.float32))
+            self._tcp_line.visible = True
+            self._tcp_label.text = "TCP"
+            self._tcp_label.pos = (tcp_pos[0] + 8, tcp_pos[1] + 8, tcp_pos[2] + 8)
+            self._tcp_label.visible = True
+        else:
+            self._tcp_marker.visible = False
+            self._tcp_line.visible = False
+            self._tcp_label.visible = False
+
     def set_fast_mode(self, enabled: bool):
-        # GPU 版では実機メッシュのまま十分滑らかなため軽量表示は不要。
-        # 互換のためフラグのみ保持する（描画は常にフルメッシュ）。
-        self._fast_mode = enabled
+        self._fast_mode = enabled   # GPU 版は常にフルメッシュ（互換のため保持）
 
     def refresh(self):
         self.canvas.update()
@@ -224,97 +490,197 @@ class ViewportGPU:
         except Exception:
             pass
 
-    # ── 以下は後続フェーズで実装するスタブ（GPU 版が落ちないための最小実装）──
+    # ────────────────────────────────────────────────────────────────────
+    # フレーム / マーカー / オーバーレイ
+    # ────────────────────────────────────────────────────────────────────
+    def set_tool_frame(self, tool_frame: Optional["ToolFrame"]):
+        self._tool_frame = tool_frame
+        self.update_robot(self._joint_angles)
 
-    # Phase 4: ルート / 選択
+    def set_user_frame(self, user_frame: Optional["UserFrame"]):
+        self._user_frame = user_frame
+        self._rebuild_static()
+
+    def set_jog_target(self, position: Optional[np.ndarray]):
+        self._jog_target = position
+        self._rebuild_static()
+
+    def set_markers(self, tcp_markers: list, target_markers: list):
+        self._tcp_markers = [
+            {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in tcp_markers]
+        self._target_markers = [
+            {"name": m["name"], "pos": np.asarray(m["pos"], float)} for m in target_markers]
+        self._rebuild_static()
+
+    def add_ref_frame(self, name, x, y, z, rx, ry, rz, color="#FF88FF"):
+        from ..robot.kinematics import Kinematics
+        T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._ref_frames.append({"name": name, "T": T, "color": color})
+        self._rebuild_static()
+
+    def remove_ref_frame(self, name: str):
+        self._ref_frames = [r for r in self._ref_frames if r.get("name") != name]
+        self._rebuild_static()
+
+    def clear_ref_frames(self):
+        self._ref_frames = []
+        self._rebuild_static()
+
+    def get_ref_frames(self) -> list:
+        return list(self._ref_frames)
+
+    # STL
+    def load_stl(self, path: str):
+        res = _load_stl_tris(path)
+        if res is None:
+            return False
+        self._stl_verts, self._stl_faces = res[0], res[1]
+        self._stl_name = os.path.basename(path)
+        self._stl_path = path
+        self._rebuild_static()
+        return True
+
+    def set_stl_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._stl_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._rebuild_static()
+
+    def clear_stl(self):
+        self._stl_verts = None; self._stl_faces = None
+        self._stl_name = ""; self._stl_path = ""; self._stl_T = np.eye(4)
+        self._rebuild_static()
+
+    def stl_bbox(self):
+        if self._stl_verts is None:
+            return None
+        v = self._stl_verts.reshape(-1, 3)
+        return (v[:, 0].min(), v[:, 0].max(), v[:, 1].min(), v[:, 1].max(),
+                v[:, 2].min(), v[:, 2].max())
+
+    # CSV
+    def load_csv_points(self, path: str):
+        import csv
+        pts = []
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                for row in csv.reader(f):
+                    if len(row) >= 3:
+                        try:
+                            pts.append([float(row[0]), float(row[1]), float(row[2])])
+                        except ValueError:
+                            pass
+        except OSError:
+            return False
+        if not pts:
+            return False
+        self._csv_points = np.array(pts, dtype=float)
+        self._csv_name = os.path.basename(path)
+        self._csv_path = path
+        self._rebuild_static()
+        return True
+
+    def set_csv_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._csv_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self._rebuild_static()
+
+    def clear_csv(self):
+        self._csv_points = None
+        self._csv_name = ""; self._csv_path = ""; self._csv_T = np.eye(4)
+        self._rebuild_static()
+
+    # 刃先CSV（フランジ追従・動的層）
+    def load_blade_csv(self, path: str) -> int:
+        import csv
+        pts, nrm = [], []
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                for row in csv.reader(f):
+                    if len(row) >= 6:
+                        try:
+                            vals = [float(v) for v in row[:6]]
+                        except ValueError:
+                            continue
+                        pts.append(vals[:3]); nrm.append(vals[3:6])
+        except OSError:
+            return 0
+        if not pts:
+            return 0
+        self._blade_pts = np.array(pts, dtype=float)
+        na = np.array(nrm, dtype=float)
+        lens = np.linalg.norm(na, axis=1, keepdims=True); lens[lens < 1e-9] = 1.0
+        self._blade_normals = na / lens
+        self._blade_name = os.path.basename(path)
+        self._blade_path = path
+        self.update_robot(self._joint_angles)
+        return len(pts)
+
+    def set_blade_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._blade_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self.update_robot(self._joint_angles)
+
+    def clear_blade(self):
+        self._blade_pts = None; self._blade_normals = None
+        self._blade_name = ""; self._blade_path = ""; self._blade_T = np.eye(4)
+        self.update_robot(self._joint_angles)
+
+    def has_blade(self) -> bool:
+        return self._blade_pts is not None
+
+    # レイヤースナップショット（Undo/Redo）
+    _LAYER_FIELDS = (
+        "_stl_verts", "_stl_faces", "_stl_name", "_stl_path", "_stl_T",
+        "_csv_points", "_csv_name", "_csv_path", "_csv_T",
+        "_blade_pts", "_blade_normals", "_blade_name", "_blade_path", "_blade_T",
+    )
+
+    def snapshot_layers(self) -> dict:
+        snap = {}
+        for f in self._LAYER_FIELDS:
+            v = getattr(self, f)
+            snap[f] = v.copy() if f.endswith("_T") else v
+        snap["ref_frames"] = [
+            {"name": r["name"], "T": r["T"].copy(), "color": r.get("color", "#FF88FF")}
+            for r in self._ref_frames]
+        return snap
+
+    def restore_layers(self, snap: dict):
+        for f in self._LAYER_FIELDS:
+            if f in snap:
+                v = snap[f]
+                setattr(self, f, v.copy() if (f.endswith("_T") and v is not None) else v)
+        self._ref_frames = [
+            {"name": r["name"], "T": r["T"].copy(), "color": r["color"]}
+            for r in snap.get("ref_frames", [])]
+        self._rebuild_static()
+        self.update_robot(self._joint_angles)
+
+    # ── ルート / 選択（Phase 4）──────────────────────────────────────────
     def set_route(self, route: Optional["Route"]):
         self._route = route
 
     def set_selected_waypoint(self, idx: Optional[int]):
         self._selected_wp_idx = idx
 
-    def set_jog_target(self, position: Optional[np.ndarray]):
-        self._jog_target = position
-
-    # Phase 3: フレーム / マーカー / オーバーレイ
-    def set_tool_frame(self, tool_frame: Optional["ToolFrame"]):
-        self._tool_frame = tool_frame
-
-    def set_user_frame(self, user_frame: Optional["UserFrame"]):
-        self._user_frame = user_frame
-
-    def set_markers(self, tcp_markers: list, target_markers: list):
-        self._tcp_markers = tcp_markers
-        self._target_markers = target_markers
-
-    def add_ref_frame(self, name, x, y, z, rx, ry, rz, color="#FF88FF"):
-        self._ref_frames.append({"name": name})
-
-    def remove_ref_frame(self, name: str):
-        self._ref_frames = [r for r in self._ref_frames if r.get("name") != name]
-
-    def clear_ref_frames(self):
-        self._ref_frames = []
-
-    def get_ref_frames(self) -> list:
-        return list(self._ref_frames)
-
-    # STL / CSV オーバーレイ（Phase 3）
-    def load_stl(self, path: str):
-        return None
-
-    def set_stl_pose(self, x, y, z, rx, ry, rz):
-        pass
-
-    def clear_stl(self):
-        pass
-
-    def stl_bbox(self):
-        return None
-
-    def load_csv_points(self, path: str):
-        return None
-
-    def set_csv_pose(self, x, y, z, rx, ry, rz):
-        pass
-
-    def clear_csv(self):
-        pass
-
-    # 刃先 CSV（Phase 3）
-    def load_blade_csv(self, path: str) -> int:
-        return 0
-
-    def set_blade_pose(self, x, y, z, rx, ry, rz):
-        pass
-
-    def clear_blade(self):
-        pass
-
-    def has_blade(self) -> bool:
-        return False
-
-    # レイヤースナップショット（Undo/Redo 用・Phase 3）
-    def snapshot_layers(self) -> dict:
-        return {}
-
-    def restore_layers(self, snap: dict):
-        pass
-
-    # ピッキング（Phase 5）
+    # ── ピッキング（Phase 5）─────────────────────────────────────────────
     def set_pick_curves(self, curves: List[np.ndarray], callback,
-                        local: bool = False):
-        self._pick_curves = curves
+                        *, blade_local: bool = False):
+        self._pick_curves = [np.asarray(c, dtype=float) for c in curves]
+        self._pick_curves_local = blade_local
+        self._pick_orders = [None] * len(self._pick_curves)
         self._pick_callback = callback
 
     def set_pick_orders(self, orders: List[Optional[int]]):
-        pass
+        self._pick_orders = list(orders)
 
     def clear_pick_curves(self):
         self._pick_curves = []
+        self._pick_curves_local = False
+        self._pick_orders = []
         self._pick_callback = None
 
-    # 事前描画再生 / 動画（Phase 6）— GPU はリアルタイムで十分なため当面は簡易対応
+    # ── 事前描画再生 / 動画（Phase 6）────────────────────────────────────
     def render_frame(self, joint_angles) -> np.ndarray:
         self.update_robot(joint_angles)
         return self.canvas.render(alpha=True)
