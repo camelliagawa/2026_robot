@@ -173,7 +173,6 @@ class ViewportGPU:
     def __init__(self, parent: tk.Widget, kinematics: "Kinematics"):
         self.kin = kinematics
         self._joint_angles = np.zeros(6)
-        self._fast_mode = False
         # GPU はリアルタイム描画が十分滑らかなため「事前描画再生」が不要。
         # main_window はこのフラグを見て滑らか再生をリアルタイム再生に切替える。
         self.realtime = True
@@ -209,8 +208,6 @@ class ViewportGPU:
         self._pick_curves_local = False
         self._pick_orders: list = []
         self._pick_callback = None
-
-        self._pre_img = None   # 事前描画再生フラグ（None=通常描画）
 
         # ── 実機リンクメッシュ（素データ）読み込み ────────────────────────
         self._link_base = []
@@ -507,9 +504,6 @@ class ViewportGPU:
             self._tcp_marker.visible = False
             self._tcp_line.visible = False
             self._tcp_label.visible = False
-
-    def set_fast_mode(self, enabled: bool):
-        self._fast_mode = enabled   # GPU 版は常にフルメッシュ（互換のため保持）
 
     def refresh(self):
         self.canvas.update()
@@ -865,16 +859,7 @@ class ViewportGPU:
         if idx is not None:
             self._pick_callback(idx)
 
-    # ── 事前描画再生 / 動画（Phase 6）────────────────────────────────────
+    # ── 動画保存用フレーム描画 ──────────────────────────────────────────
     def render_frame(self, joint_angles) -> np.ndarray:
         self.update_robot(joint_angles)
         return self.canvas.render(alpha=True)
-
-    def begin_prerendered_playback(self, first_frame: np.ndarray):
-        pass
-
-    def show_prerendered_frame(self, frame: np.ndarray):
-        pass
-
-    def end_prerendered_playback(self):
-        pass
