@@ -1,52 +1,49 @@
-"""3D ビューポートのバックエンド選択（ストラングラー・パターン）。
+"""3D ビューポートの生成（VisPy/OpenGL バックエンド）。
 
-このアプリの 3D ビューは長らく matplotlib(CPU) 版 `Viewport3D` を使ってきた。
-高速化のため VisPy(OpenGL/GPU) 版 `ViewportGPU` への移行を進めているが、
-移行中も既存版を壊さず、環境差（GPU/ドライバ無し）でも必ず起動できるよう、
-ここでバックエンドを一元的に選択する。
+このアプリの 3D ビューは VisPy(OpenGL/GPU) 版 `ViewportGPU` を使用する。
+かつては matplotlib(CPU) 版 `Viewport3D` を併用しストラングラー・パターンで
+段階移行していたが、GPU 版が安定したため CPU 版は廃止し、GPU 単独構成にした。
 
-選択方法（環境変数 ROBOT_VIEWPORT）:
-    "mpl" (既定) … matplotlib(CPU) 版 Viewport3D
-    "gpu"         … VisPy(OpenGL) 版 ViewportGPU
-                    初期化に失敗した場合は自動で matplotlib 版にフォールバックする。
-
-両バックエンドは同一の公開 API（update_robot / set_route / load_stl /
-set_pick_curves / canvas_widget 等）を実装するため、呼び出し側
-（main_window）はどちらが使われているかを意識しなくてよい。
+GPU/OpenGL ドライバが利用できず初期化に失敗した場合は、原因が利用者に伝わる
+エラーダイアログを表示してアプリを終了する（黙ってクラッシュさせない）。
 """
 from __future__ import annotations
 
-import os
+import sys
 import traceback
 from typing import TYPE_CHECKING
 
 import tkinter as tk
+from tkinter import messagebox
 
 if TYPE_CHECKING:                       # 型チェック時のみ（実行時 import を避ける）
     from ..robot.kinematics import Kinematics
 
 
-def create_viewport(parent: tk.Widget, kinematics: "Kinematics",
-                    backend: str | None = None):
-    """選択されたバックエンドの 3D ビューポートを生成して返す。
+def create_viewport(parent: tk.Widget, kinematics: "Kinematics"):
+    """VisPy(OpenGL) 版 3D ビューポートを生成して返す。
 
-    backend を明示しない場合は環境変数 ROBOT_VIEWPORT（既定 "mpl"）に従う。
-    "gpu" 指定時に VisPy 版の生成へ失敗したら matplotlib 版へ自動フォールバックし、
-    どの環境でもアプリが起動できることを保証する。
+    初期化に失敗した場合は、GPU/OpenGL ドライバの問題である旨を示す
+    エラーダイアログを表示し、SystemExit でアプリを終了する。
     """
-    backend = (backend or os.environ.get("ROBOT_VIEWPORT", "gpu")).strip().lower()
-
-    if backend == "gpu":
+    try:
+        from .viewport_gpu import ViewportGPU
+        vp = ViewportGPU(parent, kinematics)
+        print("[viewport] GPU バックエンド（VisPy/OpenGL）を使用します。")
+        return vp
+    except Exception:
+        print("[viewport] GPU バックエンド（VisPy/OpenGL）の初期化に失敗しました:")
+        traceback.print_exc()
+        detail = traceback.format_exc()
         try:
-            from .viewport_gpu import ViewportGPU
-            vp = ViewportGPU(parent, kinematics)
-            print("[viewport] GPU バックエンド（VisPy/OpenGL）を使用します。")
-            return vp
+            messagebox.showerror(
+                "3D ビューの初期化に失敗しました",
+                "3D ビューポート（VisPy/OpenGL）の初期化に失敗しました。\n"
+                "GPU / OpenGL ドライバが利用可能かご確認ください。\n\n"
+                "必要なライブラリ:\n"
+                "    pip install vispy pyopengl pyopengltk\n\n"
+                "──── 詳細 ────\n"
+                f"{detail}")
         except Exception:
-            print("[viewport] GPU バックエンドの初期化に失敗しました。"
-                  " matplotlib 版にフォールバックします:")
-            traceback.print_exc()
-
-    # 既定 / フォールバック: matplotlib(CPU) 版
-    from .viewport import Viewport3D
-    return Viewport3D(parent, kinematics)
+            pass
+        raise SystemExit(1)

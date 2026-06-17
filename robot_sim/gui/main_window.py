@@ -6,7 +6,7 @@ Layout:
   │  Menu bar                                                             │
   ├────────────────────────────┬─────────────────────────────────────────┤
   │  3D Viewport               │  経路点リスト (Waypoint List)            │
-  │  (matplotlib 3D)           │  追加/編集/削除/並べ替え                  │
+  │  (VisPy/OpenGL 3D)         │  追加/編集/削除/並べ替え                  │
   │                            │  Selected Waypoint Details               │
   │                            │  更新履歴パネル                           │
   ├────────────────────────────┴─────────────────────────────────────────┤
@@ -753,11 +753,9 @@ class MainWindow:
         left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = create_viewport(left, self.kin)
-        self._is_gpu = getattr(self.viewport, "realtime", False)
-        if self._is_gpu:
-            left.config(
-                text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  右・中ドラッグ: パン"
-                     "  /  ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
+        left.config(
+            text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  右・中ドラッグ: パン"
+                 "  /  ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
@@ -1569,42 +1567,13 @@ class MainWindow:
         ttk.Button(sim_inner, text="■  停止",
                    style="Danger.TButton",
                    command=self._stop_simulation).pack(pady=1, fill=tk.X)
-        _smooth_label = ("▶  リアルタイム再生（GPU）" if self._is_gpu
-                         else "🎬  滑らか再生（事前描画）")
         self._smooth_btn = ttk.Button(
-            sim_inner, text=_smooth_label,
+            sim_inner, text="▶  リアルタイム再生（GPU）",
             command=self._smooth_play)
         self._smooth_btn.pack(pady=1, fill=tk.X)
-        if self._is_gpu:
-            _tip(self._smooth_btn,
-                 "GPU リアルタイム描画（60fps超）でそのまま再生します。\n"
-                 "事前描画は不要です。「▶ 実行」と同等の動作をします。")
-        else:
-            _tip(self._smooth_btn,
-                 "再生前に全フレームを画像として事前描画し、再生中は重い 3D\n"
-                 "再描画をやめて画像を差し替えるだけにします（最も滑らか・高品質）。\n"
-                 "・初回のみ「描画中…」の待ち時間が発生します（キャンセル可）\n"
-                 "・2回目以降はキャッシュから即再生（ルート変更時は再描画）\n"
-                 "・実機メッシュのまま滑らかに再生できます（軽量表示への切替不要）")
-        self._pre_fps_var = tk.IntVar(value=int(self._pre_fps))
-        if not self._is_gpu:
-            fps_row = ttk.Frame(sim_inner)
-            fps_row.pack(fill=tk.X, pady=(1, 0))
-            tk.Label(fps_row, text="FPS:", bg=BG_PANEL, fg=FG_SUB,
-                     font=("", 8)).pack(side=tk.LEFT)
-            fps_spin = tk.Spinbox(
-                fps_row, from_=5, to=30, increment=1,
-                textvariable=self._pre_fps_var, width=4, font=("", 8),
-                bg=BG_WIDGET, fg=FG_PRIMARY, insertbackground=FG_PRIMARY,
-                command=self._on_pre_fps_change)
-            fps_spin.pack(side=tk.LEFT, padx=2)
-            fps_spin.bind("<Return>", lambda e: self._on_pre_fps_change())
-            _tip(fps_spin,
-                 "事前描画のフレームレートを設定します（5〜30 fps）。\n"
-                 "低くするほど事前描画が速く終わります（画質は下がります）。\n"
-                 "変更するとフレームキャッシュが無効化され再描画が必要になります。")
-            tk.Label(fps_row, text="fps（事前描画）", bg=BG_PANEL, fg=FG_SUB,
-                     font=("", 8)).pack(side=tk.LEFT, padx=(0, 2))
+        _tip(self._smooth_btn,
+             "GPU リアルタイム描画（60fps超）でそのまま再生します。\n"
+             "事前描画は不要です。「▶ 実行」と同等の動作をします。")
         self._save_video_btn = ttk.Button(
             sim_inner, text="💾  動画保存（MP4 / GIF）",
             command=self._save_smooth_video, state="disabled")
@@ -1621,31 +1590,6 @@ class MainWindow:
         self._sim_time_var = tk.StringVar(value="⏱  0.0s / 0.0s")
         tk.Label(sim_inner, textvariable=self._sim_time_var,
                  bg=BG_PANEL, fg=ACCENT, font=("", 9, "bold")).pack()
-        # 軽量表示トグル（mpl バックエンドのみ — GPU は常にフルメッシュ描画）
-        self._fast_mode_var = tk.BooleanVar(value=False)
-        self._auto_fast_var = tk.BooleanVar(value=True)
-        if not self._is_gpu:
-            fm_cb = tk.Checkbutton(
-                sim_inner, text="軽量表示（高速・円柱）",
-                variable=self._fast_mode_var,
-                command=self._toggle_fast_mode,
-                bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
-                selectcolor=BG_WIDGET, font=("", 8))
-            fm_cb.pack(anchor="w", pady=(2, 0))
-            _tip(fm_cb,
-                 "ON: ロボットを円柱ジオメトリで高速描画（描画が重いPC向け）。\n"
-                 "OFF: 実機メッシュで描画（高品質）。\n"
-                 "停止中・再生中いずれもチェックで即座に切り替わります。")
-            af_cb = tk.Checkbutton(
-                sim_inner, text="再生中は自動で軽量表示",
-                variable=self._auto_fast_var,
-                bg=BG_PANEL, fg=FG_SUB, activebackground=BG_PANEL,
-                selectcolor=BG_WIDGET, font=("", 8))
-            af_cb.pack(anchor="w", pady=(0, 0))
-            _tip(af_cb,
-                 "ON: シミュレーション再生の間だけ自動で軽量表示（円柱）に切り替え、\n"
-                 "    停止すると実機メッシュ表示へ戻します。滑らかな再生向け。\n"
-                 "OFF: 再生中も上の「軽量表示」設定のまま描画します。")
 
         # 逆運動学 (IK)
         ik_lf = ttk.LabelFrame(mid_col, text="  逆運動学 (IK)")
@@ -3529,24 +3473,6 @@ class MainWindow:
         if hasattr(self, "_seek_play_btn"):
             self._seek_play_btn.config(state=state)
 
-    def _on_pre_fps_change(self):
-        """FPS スピンボックス変更時: _pre_fps を更新してフレームキャッシュを無効化。"""
-        try:
-            v = int(self._pre_fps_var.get())
-        except (ValueError, tk.TclError):
-            v = 20
-        self._pre_fps = float(max(5, min(30, v)))
-        self._pre_fps_var.set(int(self._pre_fps))
-        if self._pre_frames is not None:
-            self._pre_frames = None
-            self._pre_idxs = None
-            if hasattr(self, "_smooth_btn"):
-                _t = ("▶  リアルタイム再生（GPU）" if self._is_gpu
-                      else "🎬  滑らか再生（事前描画）")
-                self._smooth_btn.config(text=_t)
-            if hasattr(self, "_save_video_btn"):
-                self._save_video_btn.config(state="disabled")
-
     # ── IK 事前計算（バックグラウンド） ───────────────────────────────
 
     def _invalidate_sim_solutions(self):
@@ -3559,9 +3485,7 @@ class MainWindow:
         if hasattr(self, "_save_video_btn"):
             self._save_video_btn.config(state="disabled")
         if hasattr(self, "_smooth_btn"):
-            _t = ("▶  リアルタイム再生（GPU）" if self._is_gpu
-                  else "🎬  滑らか再生（事前描画）")
-            self._smooth_btn.config(text=_t)
+            self._smooth_btn.config(text="▶  リアルタイム再生（GPU）")
         self._sim_precompute_token += 1
         token = self._sim_precompute_token
         self._set_seek_enabled(False)
@@ -3601,10 +3525,9 @@ class MainWindow:
                 self._sim_solutions_ready = True
                 self._set_seek_enabled(True)
                 self._update_seek_info(0.0)
-                # GPU(リアルタイム)版は事前描画キャッシュ無しでも動画保存できる
+                # GPU 版は事前描画キャッシュ無しでも動画保存できる
                 # （保存時にオンデマンドで事前描画する）ため、IK完了で有効化する。
-                if getattr(self.viewport, "realtime", False) \
-                        and len(sols) >= 2 and hasattr(self, "_save_video_btn"):
+                if len(sols) >= 2 and hasattr(self, "_save_video_btn"):
                     self._save_video_btn.config(state="normal")
                 if n_warn > 0:
                     self._set_status(
@@ -3807,12 +3730,6 @@ class MainWindow:
         self._seek_to_start()
         self.viewport.set_selected_waypoint(None)
 
-    def _toggle_fast_mode(self):
-        """軽量表示チェックボックス: 停止中・再生中いずれも即座に反映する。"""
-        # 手動操作が入ったら自動切替の一時状態を解除し、手動設定を優先する。
-        self._auto_fast_active = False
-        self.viewport.set_fast_mode(self._fast_mode_var.get())
-
     def _pause_play(self):
         self._sim_playing = False
         self._sim_running = False
@@ -3858,13 +3775,6 @@ class MainWindow:
         self._sim_running = True
         self._play_btn_var.set("⏸")
         self._sim_btn.config(state="disabled")
-
-        # 案2: 再生中は自動で軽量表示へ切替（手動でONでない場合のみ）。
-        # 停止時に _playback_done で元の表示へ戻す。
-        self._auto_fast_active = False
-        if self._auto_fast_var.get() and not self._fast_mode_var.get():
-            self._auto_fast_active = True
-            self.viewport.set_fast_mode(True)
 
         cum, total = self._segment_times()
         start_idx = float(self._seek_var.get())
@@ -3938,10 +3848,6 @@ class MainWindow:
         self._sim_running = False
         self._play_btn_var.set("▶")
         self._sim_btn.config(state="normal")
-        # 案2: 自動軽量表示を解除し、手動設定の表示モードへ戻す
-        if getattr(self, "_auto_fast_active", False):
-            self._auto_fast_active = False
-            self.viewport.set_fast_mode(self._fast_mode_var.get())
         n = len(self.route.waypoints)
         if was_running and n:
             # 末尾まで再生し切った場合は末尾に合わせる
@@ -4003,37 +3909,22 @@ class MainWindow:
         if self._sim_playing or (self._sim_thread and self._sim_thread.is_alive()):
             return
 
-        sols = self._sim_solutions
-        ns = len(sols)
-        cum, total = self._segment_times()
+        _cum, total = self._segment_times()
         if total <= 1e-6:
             messagebox.showinfo(
                 "再生不可", "総再生時間が 0 秒です。経路点の速度を確認してください。")
             return
 
-        # ── GPU(リアルタイム)バックエンドでは事前描画は不要 ──────────────
-        # 実機メッシュのまま 60fps 超で再生できるため、リアルタイム再生へ委譲する。
-        if getattr(self.viewport, "realtime", False):
-            self._seek_var.set(0.0)
-            self._play_from_current()
-            return
-
-        # ── キャッシュがあれば即再生 ──────────────────────────────────
-        if self._pre_frames is not None and len(self._pre_frames) >= 2:
-            self._smooth_start_playback(ns, total)
-            return
-
-        if not self._prerender_frames(ns, cum, total):
-            return
-        self._smooth_btn.config(text="🎬  滑らか再生（キャッシュ済み）")
-        self._save_video_btn.config(state="normal")
-        self._smooth_start_playback(ns, total)
+        # GPU 版は実機メッシュのまま 60fps 超で再生できるため、
+        # 事前描画は行わずリアルタイム再生へ委譲する。
+        self._seek_var.set(0.0)
+        self._play_from_current()
 
     def _prerender_frames(self, ns: int, cum, total: float) -> bool:
         """全フレームを render_frame で画像化し _pre_frames/_pre_idxs に格納する。
 
         進捗ダイアログを表示し、キャンセル・失敗時は False を返す（キャッシュ未更新）。
-        matplotlib 版の滑らか再生と GPU 版の動画保存の双方から使用する。
+        GPU 版の動画保存（MP4 / GIF）から使用する。
         """
         sols = self._sim_solutions
 
@@ -4090,7 +3981,7 @@ class MainWindow:
             pass
         dlg.grab_set()
 
-        # ── 同期レンダリング（matplotlib はメインスレッド限定） ──
+        # ── 同期レンダリング（GUI 描画はメインスレッド限定） ──
         frames = []
         saved_pose = self._joint_angles.copy()
         self._set_status("🎬  事前描画中…")
@@ -4128,92 +4019,13 @@ class MainWindow:
         self._pre_idxs = idxs
         return True
 
-    def _smooth_start_playback(self, ns: int, total: float):
-        """キャッシュ済みフレームで再生ループを起動する。"""
-        frames = self._pre_frames
-        idxs = self._pre_idxs
-        n_frames = len(frames)
-        fps = self._pre_fps
-
-        self.viewport.begin_prerendered_playback(frames[0])
-        self._sim_playing = True
-        self._sim_running = True
-        self._play_btn_var.set("⏸")
-        self._sim_btn.config(state="disabled")
-        self._smooth_btn.config(state="disabled")
-        self._save_video_btn.config(state="disabled")
-        self._sim_start_time = time.time()
-        self._sim_total_est = total
-        self._sim_play_t0 = 0.0
-
-        def run():
-            while self._sim_running:
-                wall = time.time() - self._sim_start_time
-                fi = int(round(wall * fps))
-                if fi >= n_frames:
-                    fi = n_frames - 1
-
-                def _update(fi=fi):
-                    if not self._sim_running or self.viewport._pre_img is None:
-                        return
-                    self.viewport.show_prerendered_frame(frames[fi])
-                    idx = idxs[fi]
-                    self._seek_updating = True
-                    try:
-                        self._seek_var.set(idx)
-                    finally:
-                        self._seek_updating = False
-                    pct = int(idx / max(ns - 1, 1) * 100)
-                    self._sim_progress_var.set(f"P[{int(idx)+1}]/{ns}  {pct}%")
-                self.root.after(0, _update)
-
-                if wall >= total:
-                    break
-                time.sleep(1.0 / fps)
-            self.root.after(0, self._smooth_playback_done)
-
-        self._sim_thread = threading.Thread(target=run, daemon=True)
-        self._sim_thread.start()
-        self._sim_tick()
-
-    def _smooth_playback_done(self):
-        """事前描画再生が末尾に到達した／停止された後の後処理。"""
-        was_running = self._sim_running
-        self._sim_playing = False
-        self._sim_running = False
-        self._play_btn_var.set("▶")
-        self._sim_btn.config(state="normal")
-        # キャッシュが残っていれば「キャッシュ済み」表示のまま、動画保存も有効
-        cached = self._pre_frames is not None and len(self._pre_frames) >= 2
-        self._smooth_btn.config(
-            state="normal",
-            text="🎬  滑らか再生（キャッシュ済み）" if cached
-                 else "🎬  滑らか再生（事前描画）")
-        self._save_video_btn.config(state="normal" if cached else "disabled")
-        n_done = len(self._pre_frames) if self._pre_frames else 0
-        self.viewport.end_prerendered_playback()
-        n = len(self.route.waypoints)
-        if was_running and n:
-            self._seek_updating = True
-            try:
-                self._seek_var.set(float(n - 1))
-            finally:
-                self._seek_updating = False
-            self._seek_to_fraction(float(n - 1))
-        elapsed = self._sim_total_est
-        self._sim_progress_var.set("完了" if was_running else "一時停止")
-        self._sim_time_var.set(f"⏱  完了 {elapsed:.1f}s")
-        self._set_status(
-            f"✔  滑らか再生完了（{n_done} フレーム キャッシュ済み・繰り返し再生可）")
-
     def _save_smooth_video(self):
-        """キャッシュ済みフレームを動画ファイル（MP4 / GIF）として保存する。
+        """動画ファイル（MP4 / GIF）として保存する。
 
-        GPU(リアルタイム)バックエンドでは滑らか再生で事前描画を行わないため、
-        フレーム未キャッシュ時はここで動画用に一度だけ事前描画する。
+        GPU 版はリアルタイム再生で事前描画を行わないため、フレーム未キャッシュ時は
+        ここで動画用に一度だけ全フレームを事前描画（render_frame）する。
         """
-        if (not self._pre_frames or len(self._pre_frames) < 2) \
-                and getattr(self.viewport, "realtime", False):
+        if not self._pre_frames or len(self._pre_frames) < 2:
             if not self._sim_solutions_ready or len(self._sim_solutions) < 2:
                 messagebox.showwarning("フレームなし",
                                        "経路点が2つ以上必要です（IK計算の完了もお待ちください）。")
@@ -5227,7 +5039,7 @@ class MainWindow:
             f"FANUC LR Mate 200iD/14L\n"
             f"刃付けロボットシミュレータ  v{APP_VERSION}\n\n"
             f"Knife Sharpening Robot Simulator\n\n"
-            f"Python  ·  matplotlib  ·  tkinter\n"
+            f"Python  ·  VisPy / OpenGL  ·  tkinter\n"
             f"運動学: Modified DH 法 (6-DOF, Z-up)\n"
             f"IK: 解析解 + scipy 数値フォールバック")
 
