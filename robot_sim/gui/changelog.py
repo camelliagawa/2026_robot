@@ -2,10 +2,22 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.20.0"
+APP_VERSION = "0.21.0"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.21.0", "2026-06-17", "10:00 JST", [
+        "matplotlib(CPU) 版 3D ビューポート（Viewport3D）を完全に削除し、"
+        "VisPy/OpenGL（GPU）版に一本化。両実機での GPU 動作確認を経ての整理。",
+        "バックエンド選択（環境変数 ROBOT_VIEWPORT）と CPU フォールバックを廃止。"
+        "GPU/OpenGL の初期化に失敗した場合は、原因（ドライバ・必要ライブラリ）を示す"
+        "エラーダイアログを表示してアプリを終了する（黙ってクラッシュさせない）。",
+        "シミュレーションパネルから mpl 専用 UI（事前描画 FPS スピンボックス・"
+        "軽量表示／再生中の自動軽量表示チェック）を完全撤去。"
+        "動画保存（MP4 / GIF）は GPU 版のオンデマンド事前描画でそのまま利用可能。",
+        "GPU/OpenGL が必須要件になりました。別環境では"
+        " pip install vispy pyopengl pyopengltk が必要です。",
+    ]),
     ("0.20.0", "2026-06-16", "21:30 JST", [
         "3D ビューポートを VisPy/OpenGL（GPU）バックエンドへ完全移行。"
         "Intel UHD 620 などの内蔵 GPU でも 60fps 超の滑らかな描画を実現。"

@@ -11,7 +11,7 @@ FANUC LR Mate 200iD/14L ロボットアームに包丁（エンドエフェク�
 
 - **順運動学（FK）**: DH パラメータに基づく変換行列計算
 - **逆運動学（IK）**: 解析解 + 数値解フォールバック（scipy 最適化）
-- **3D ビジュアライゼーション**: matplotlib による対話型 3D ビューポート
+- **3D ビジュアライゼーション**: VisPy/OpenGL（GPU）による対話型 3D ビューポート
 - **経路計画**: GUI による 3D ウェイポイント設定 / CSV インポート・エクスポート
 - **FANUC TP エクスポート**: `.ls` 形式のプログラム出力
 - **PyBullet シミュレーション**: 物理シミュレーションエンジン統合
@@ -55,7 +55,7 @@ pip install -r requirements.txt
 - scipy >= 1.10
 - pybullet >= 3.2.5
 - open3d >= 0.17
-- matplotlib >= 3.7
+- vispy >= 0.14 / pyopengl >= 3.1 / pyopengltk >= 0.0.4（GPU/OpenGL 3D ビュー・必須）
 
 ---
 
