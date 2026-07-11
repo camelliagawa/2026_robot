@@ -63,6 +63,9 @@ _AX_B = (0.27, 0.27, 1.00, 1.0)
 KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
+# 中ボタンドラッグでのパン速度倍率（1.0 = TurntableCamera 既定の Shift+左ドラッグと同じ）
+_PAN_SPEED = 3.0
+
 ROUTE_COLOR = "#00E5FF"   # ルート経路線（シアン）
 WP_COLOR    = "#FF4422"   # 経路点（赤）
 WP_ACTIVE   = "#00FF88"   # 選択中経路点（緑）
@@ -905,7 +908,7 @@ class ViewportGPU:
         norm = float(np.mean(self.canvas.size))
         if norm <= 0:
             return
-        dist = (p1 - p2) / norm * cam.scale_factor
+        dist = (p1 - p2) / norm * cam.scale_factor * _PAN_SPEED
         dist[1] *= -1
         dx, dy, dz = cam._dist_to_trans(dist)
         up, forward, right = cam._get_dim_vectors()
