@@ -227,11 +227,15 @@ class MainWindow:
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
 
-        # 研磨機（Tormek T8 STL）を起動時から表示（研削経路CSVは読み込まない）
+        # 研磨機（Tormek T8 STL）・riki_Assem2（ハンド取付ツール）を起動時から表示
         # 起動時の初期化は undo 履歴に積まない
         self._suppress_undo = True
         try:
             self._load_tormek_stl()
+        except Exception:
+            pass
+        try:
+            self._load_riki_assem2_stl()
         except Exception:
             pass
         finally:
@@ -4387,7 +4391,7 @@ class MainWindow:
             return
         if self._riki_assem2_offset is None:
             self._riki_assem2_offset = ToolFrame(
-                number=99, name="RIKI_ASSEM2", x=0, y=0, z=70, rx=90, ry=90, rz=0,
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=62, rx=90, ry=90, rz=0,
                 comment="riki_Assem2.stl 取付オフセット")
         with self._undo_group("riki_Assem2 STL 取付"):
             ok = self.viewport.load_tool_stl(stl_path)
@@ -4410,7 +4414,7 @@ class MainWindow:
             return
         if self._riki_assem2_offset is None:
             self._riki_assem2_offset = ToolFrame(
-                number=99, name="RIKI_ASSEM2", x=0, y=0, z=70, rx=90, ry=90, rz=0,
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=62, rx=90, ry=90, rz=0,
                 comment="riki_Assem2.stl 取付オフセット")
         off = self._riki_assem2_offset
 

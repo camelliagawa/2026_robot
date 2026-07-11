@@ -63,8 +63,9 @@ _AX_B = (0.27, 0.27, 1.00, 1.0)
 KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
-# 中ボタンドラッグでのパン速度倍率（1.0 = TurntableCamera 既定の Shift+左ドラッグと同じ）
-_PAN_SPEED = 6.0
+# 中ボタンドラッグでのパン速度倍率
+# （1.0 = カメラ距離・画角から算出した「マウス移動量と1:1」の理論値）
+_PAN_SPEED = 1.0
 
 ROUTE_COLOR = "#00E5FF"   # ルート経路線（シアン）
 WP_COLOR    = "#FF4422"   # 経路点（赤）
@@ -917,7 +918,16 @@ class ViewportGPU:
         norm = float(np.mean((w, h)))
         if norm <= 0:
             return
-        dist = (p1 - p2) / norm * cam.scale_factor * _PAN_SPEED
+        # scale_factor は初期化タイミング次第で実際のカメラ距離と無関係な値になりうる
+        # ため使わず、実際に描画へ使われているカメラ距離(distance)と画角(fov)から
+        # 「画面 norm px に写る奥行き位置の世界座標幅」を直接算出する
+        # （= マウスの移動量とドラッグ量が画面上で一致する、真の1:1パン）。
+        actual_dist = cam.distance
+        if actual_dist is None:
+            actual_dist = getattr(cam, "_actual_distance", 1000.0)
+        fov = max(0.01, cam.fov)
+        world_span = 2.0 * float(actual_dist) * np.tan(np.radians(fov) / 2.0)
+        dist = (p1 - p2) / norm * world_span * _PAN_SPEED
         dist[1] *= -1
         dx, dy, dz = cam._dist_to_trans(dist)
         up, forward, right = cam._get_dim_vectors()
