@@ -63,6 +63,10 @@ _AX_B = (0.27, 0.27, 1.00, 1.0)
 KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
+# 中ボタンドラッグでのパン速度倍率
+# （1.0 = カメラ距離・画角から算出した「マウス移動量と1:1」の理論値）
+_PAN_SPEED = 1.0
+
 ROUTE_COLOR = "#00E5FF"   # ルート経路線（シアン）
 WP_COLOR    = "#FF4422"   # 経路点（赤）
 WP_ACTIVE   = "#00FF88"   # 選択中経路点（緑）
@@ -204,6 +208,13 @@ class ViewportGPU:
         self._blade_path: str = ""
         self._blade_T: np.ndarray = np.eye(4)
 
+        # ハンド取付ツール STL（フランジ追従・動的層）
+        self._tool_verts: Optional[np.ndarray] = None
+        self._tool_faces: Optional[np.ndarray] = None
+        self._tool_name: str = ""
+        self._tool_path: str = ""
+        self._tool_T: np.ndarray = np.eye(4)
+
         self._pick_curves: list = []
         self._pick_curves_local = False
         self._pick_orders: list = []
@@ -258,6 +269,7 @@ class ViewportGPU:
         self._knife_lines = Line(parent=self.view.scene, width=4,
                                  connect="segments", antialias=True)
         self._knife_face  = Mesh(parent=self.view.scene)
+        self._tool_mesh   = Mesh(parent=self.view.scene, shading="flat")
         self._blade_markers  = Markers(parent=self.view.scene)
         self._blade_whiskers = Line(parent=self.view.scene, width=1,
                                     connect="segments",
@@ -271,7 +283,11 @@ class ViewportGPU:
                                  anchor_x="left", parent=self.view.scene)
 
         # クリックによる曲線ピッキング（TurntableCamera の回転と共存）
+        # 中ボタンドラッグでのパン（TurntableCamera は既定で左=回転/右=ズームのみの
+        # ため、中ボタンは未使用。左右・上下に視点を動かせるよう独自に実装する）
+        self._pan_start = None   # (press_pos, camera.center) or None
         self.canvas.events.mouse_press.connect(self._on_mouse_press)
+        self.canvas.events.mouse_move.connect(self._on_mouse_move)
         self.canvas.events.mouse_release.connect(self._on_mouse_release)
 
         self._rebuild_static()
@@ -457,6 +473,16 @@ class ViewportGPU:
         self._knife_face.set_data(vertices=quad,
                                   faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32),
                                   color=(0.78, 0.78, 0.82, 0.22))
+
+        # ハンド取付ツール STL（フランジ追従）
+        if self._tool_verts is not None and self._tool_faces is not None:
+            T = T_ee @ self._tool_T
+            self._tool_mesh.set_data(vertices=_xform(self._tool_verts, T),
+                                     faces=self._tool_faces,
+                                     color=(0.75, 0.76, 0.80, 1.0))
+            self._tool_mesh.visible = True
+        else:
+            self._tool_mesh.visible = False
 
         # 刃先CSV点群（フランジ追従）
         if self._blade_pts is not None and len(self._blade_pts):
@@ -652,11 +678,36 @@ class ViewportGPU:
     def has_blade(self) -> bool:
         return self._blade_pts is not None
 
+    # ハンド取付ツール STL（フランジ追従・動的層）
+    def load_tool_stl(self, path: str) -> bool:
+        res = _load_stl_tris(path)
+        if res is None:
+            return False
+        self._tool_verts, self._tool_faces = res[0], res[1]
+        self._tool_name = os.path.basename(path)
+        self._tool_path = path
+        self.update_robot(self._joint_angles)
+        return True
+
+    def set_tool_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._tool_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self.update_robot(self._joint_angles)
+
+    def clear_tool_stl(self):
+        self._tool_verts = None; self._tool_faces = None
+        self._tool_name = ""; self._tool_path = ""; self._tool_T = np.eye(4)
+        self.update_robot(self._joint_angles)
+
+    def has_tool_stl(self) -> bool:
+        return self._tool_verts is not None
+
     # レイヤースナップショット（Undo/Redo）
     _LAYER_FIELDS = (
         "_stl_verts", "_stl_faces", "_stl_name", "_stl_path", "_stl_T",
         "_csv_points", "_csv_name", "_csv_path", "_csv_T",
         "_blade_pts", "_blade_normals", "_blade_name", "_blade_path", "_blade_T",
+        "_tool_verts", "_tool_faces", "_tool_name", "_tool_path", "_tool_T",
     )
 
     def snapshot_layers(self) -> dict:
@@ -845,8 +896,50 @@ class ViewportGPU:
     def _on_mouse_press(self, event):
         if event.button == 1:
             self._press_pos = np.asarray(event.pos, dtype=float)
+        elif event.button == 3:
+            cam = self.view.camera
+            self._pan_start = (np.asarray(event.pos, dtype=float), tuple(cam.center))
+
+    def _on_mouse_move(self, event):
+        if self._pan_start is None or 3 not in event.buttons:
+            return
+        cam = self.view.camera
+        p1, center0 = self._pan_start
+        p2 = np.asarray(event.pos, dtype=float)
+        # canvas.size は環境によって Tk のウィジェット座標系（マウス座標の単位）と
+        # 一致しない場合があるため、実ウィジェットのピクセルサイズを直接使う。
+        try:
+            w = self.canvas_widget.winfo_width()
+            h = self.canvas_widget.winfo_height()
+        except Exception:
+            w = h = 0
+        if w <= 1 or h <= 1:
+            w, h = self.canvas.size
+        norm = float(np.mean((w, h)))
+        if norm <= 0:
+            return
+        # scale_factor は初期化タイミング次第で実際のカメラ距離と無関係な値になりうる
+        # ため使わず、実際に描画へ使われているカメラ距離(distance)と画角(fov)から
+        # 「画面 norm px に写る奥行き位置の世界座標幅」を直接算出する
+        # （= マウスの移動量とドラッグ量が画面上で一致する、真の1:1パン）。
+        actual_dist = cam.distance
+        if actual_dist is None:
+            actual_dist = getattr(cam, "_actual_distance", 1000.0)
+        fov = max(0.01, cam.fov)
+        world_span = 2.0 * float(actual_dist) * np.tan(np.radians(fov) / 2.0)
+        dist = (p1 - p2) / norm * world_span * _PAN_SPEED
+        dist[1] *= -1
+        dx, dy, dz = cam._dist_to_trans(dist)
+        up, forward, right = cam._get_dim_vectors()
+        ff = cam._flip_factors
+        dx, dy, dz = right * dx + forward * dy + up * dz
+        dx, dy, dz = ff[0] * dx, ff[1] * dy, dz * ff[2]
+        cam.center = (center0[0] + dx, center0[1] + dy, center0[2] + dz)
 
     def _on_mouse_release(self, event):
+        if event.button == 3:
+            self._pan_start = None
+            return
         if event.button != 1 or self._press_pos is None:
             return
         rel = np.asarray(event.pos, dtype=float)

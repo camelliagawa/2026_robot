@@ -227,11 +227,15 @@ class MainWindow:
         self._update_viewport_from_angles(self._joint_angles)
         self._update_fk_display()
 
-        # 研磨機（Tormek T8 STL）を起動時から表示（研削経路CSVは読み込まない）
+        # 研磨機（Tormek T8 STL）・riki_Assem2（ハンド取付ツール）を起動時から表示
         # 起動時の初期化は undo 履歴に積まない
         self._suppress_undo = True
         try:
             self._load_tormek_stl()
+        except Exception:
+            pass
+        try:
+            self._load_riki_assem2_stl()
         except Exception:
             pass
         finally:
@@ -453,6 +457,10 @@ class MainWindow:
         rb.add_separator()
         rb.add_command(label="  🔧  ツールフレーム (UTool) 編集...", command=self._edit_tool_frame)
         rb.add_command(label="  📐  ユーザーフレーム (UFrame) 編集...", command=self._edit_user_frame)
+        rb.add_separator()
+        rb.add_command(label="  🖐   riki_Assem2 をハンド(J6)に取り付け", command=self._load_riki_assem2_stl)
+        rb.add_command(label="  🎛   riki_Assem2 取付位置・向きを調整...", command=self._edit_riki_assem2_pose)
+        rb.add_command(label="  🗑   ハンド取付ツールを外す", command=self._clear_riki_assem2_stl)
         rb.add_separator()
         rb.add_command(label="  📊  DH パラメータを表示",     command=self._show_dh_params)
         rb.add_command(label="  📋  ロボット仕様を表示",       command=self._show_robot_specs)
@@ -750,12 +758,12 @@ class MainWindow:
         self._build_workflow_bar(left_container)
 
         # 3D ビューポートは残りの全スペースを使う
-        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
+        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  中ドラッグ: パン  /  右ドラッグ・ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = create_viewport(left, self.kin)
         left.config(
-            text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  右・中ドラッグ: パン"
-                 "  /  ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
+            text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  中ドラッグ: パン"
+                 "  /  右ドラッグ・ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
@@ -4370,6 +4378,60 @@ class MainWindow:
                     f"✔  Tormek T8 STL 読込済（底面=床 Z=0, 上面=UF9 z={stone_top_z:.0f}mm, Rz=-90°）")
             else:
                 self._set_status("⚠  STL 読込失敗")
+
+    # riki_Assem2.stl の取付オフセット（フランジ→STL 原点、mm / deg）。
+    # ToolFrame を流用し _frame_editor_dialog でそのまま編集できるようにする。
+    _riki_assem2_offset = None
+
+    def _load_riki_assem2_stl(self):
+        """riki_Assem2.stl をロボットハンド(J6フランジ)に取り付けて表示する（見た目のみ）。"""
+        stl_path = os.path.realpath(_asset_path(os.path.join("robot", "riki_Assem2.stl")))
+        if not os.path.isfile(stl_path):
+            self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
+            return
+        if self._riki_assem2_offset is None:
+            self._riki_assem2_offset = ToolFrame(
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=62, rx=90, ry=90, rz=0,
+                comment="riki_Assem2.stl 取付オフセット")
+        with self._undo_group("riki_Assem2 STL 取付"):
+            ok = self.viewport.load_tool_stl(stl_path)
+            if ok:
+                off = self._riki_assem2_offset
+                self.viewport.set_tool_pose(off.x, off.y, off.z, off.rx, off.ry, off.rz)
+                self._set_status("✔  riki_Assem2.stl をハンド(J6)に取付済（フランジ追従）")
+            else:
+                self._set_status("⚠  STL 読込失敗")
+
+    def _clear_riki_assem2_stl(self):
+        with self._undo_group("ハンド取付ツール解除"):
+            self.viewport.clear_tool_stl()
+        self._set_status("ハンド取付ツールを外しました")
+
+    def _edit_riki_assem2_pose(self):
+        """riki_Assem2.stl の取付位置・向きを調整するダイアログ（即時反映）。"""
+        if not self.viewport.has_tool_stl():
+            self._set_status("⚠  先に「riki_Assem2 をハンド(J6)に取り付け」を実行してください")
+            return
+        if self._riki_assem2_offset is None:
+            self._riki_assem2_offset = ToolFrame(
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=62, rx=90, ry=90, rz=0,
+                comment="riki_Assem2.stl 取付オフセット")
+        off = self._riki_assem2_offset
+
+        def _apply():
+            self.viewport.set_tool_pose(off.x, off.y, off.z, off.rx, off.ry, off.rz)
+
+        self._frame_editor_dialog(
+            title="riki_Assem2 取付位置・向き調整",
+            desc="フランジ（J6先端）から見た riki_Assem2.stl の原点位置・向きを調整します。"
+                 "向きがおかしい場合は Rx/Ry/Rz を 90° 刻みなどで試してみてください。",
+            obj=off,
+            fields=["x", "y", "z", "rx", "ry", "rz"],
+            labels=["X オフセット (mm)", "Y オフセット (mm)", "Z オフセット (mm)",
+                    "Rx 回転 (°)", "Ry 回転 (°)", "Rz 回転 (°)"],
+            on_apply=_apply,
+            undo_label="riki_Assem2 取付位置調整",
+        )
 
     def _load_tormek_csv(self):
         """Tormek 研削経路 CSV のみ読み込む（STLは触らない）。"""
