@@ -64,7 +64,7 @@ KNIFE_BLADE_LEN   = 200.0
 KNIFE_BLADE_WIDTH = 45.0
 
 # 中ボタンドラッグでのパン速度倍率（1.0 = TurntableCamera 既定の Shift+左ドラッグと同じ）
-_PAN_SPEED = 3.0
+_PAN_SPEED = 6.0
 
 ROUTE_COLOR = "#00E5FF"   # ルート経路線（シアン）
 WP_COLOR    = "#FF4422"   # 経路点（赤）
@@ -905,7 +905,16 @@ class ViewportGPU:
         cam = self.view.camera
         p1, center0 = self._pan_start
         p2 = np.asarray(event.pos, dtype=float)
-        norm = float(np.mean(self.canvas.size))
+        # canvas.size は環境によって Tk のウィジェット座標系（マウス座標の単位）と
+        # 一致しない場合があるため、実ウィジェットのピクセルサイズを直接使う。
+        try:
+            w = self.canvas_widget.winfo_width()
+            h = self.canvas_widget.winfo_height()
+        except Exception:
+            w = h = 0
+        if w <= 1 or h <= 1:
+            w, h = self.canvas.size
+        norm = float(np.mean((w, h)))
         if norm <= 0:
             return
         dist = (p1 - p2) / norm * cam.scale_factor * _PAN_SPEED
