@@ -754,12 +754,12 @@ class MainWindow:
         self._build_workflow_bar(left_container)
 
         # 3D ビューポートは残りの全スペースを使う
-        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  右・中ドラッグ: パン  /  ホイール: カーソル位置へズーム  /  STL・CSV・設定JSON をドロップで読込")
+        left = ttk.LabelFrame(left_container, text="  3D ビューポート — 左ドラッグ: 回転  /  中ドラッグ: パン  /  右ドラッグ・ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
         left.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.viewport = create_viewport(left, self.kin)
         left.config(
-            text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  右・中ドラッグ: パン"
-                 "  /  ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
+            text="  3D ビューポート [GPU/OpenGL] — 左ドラッグ: 回転  /  中ドラッグ: パン"
+                 "  /  右ドラッグ・ホイール: ズーム  /  STL・CSV・設定JSON をドロップで読込")
 
         self._build_markers_panel(right)
         self._build_ref_frames_panel(right)
@@ -4387,7 +4387,7 @@ class MainWindow:
             return
         if self._riki_assem2_offset is None:
             self._riki_assem2_offset = ToolFrame(
-                number=99, name="RIKI_ASSEM2", x=0, y=0, z=0, rx=0, ry=0, rz=0,
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=70, rx=90, ry=90, rz=0,
                 comment="riki_Assem2.stl 取付オフセット")
         with self._undo_group("riki_Assem2 STL 取付"):
             ok = self.viewport.load_tool_stl(stl_path)
@@ -4410,7 +4410,7 @@ class MainWindow:
             return
         if self._riki_assem2_offset is None:
             self._riki_assem2_offset = ToolFrame(
-                number=99, name="RIKI_ASSEM2", x=0, y=0, z=0, rx=0, ry=0, rz=0,
+                number=99, name="RIKI_ASSEM2", x=0, y=0, z=70, rx=90, ry=90, rz=0,
                 comment="riki_Assem2.stl 取付オフセット")
         off = self._riki_assem2_offset
 

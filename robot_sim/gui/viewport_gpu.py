@@ -279,7 +279,11 @@ class ViewportGPU:
                                  anchor_x="left", parent=self.view.scene)
 
         # クリックによる曲線ピッキング（TurntableCamera の回転と共存）
+        # 中ボタンドラッグでのパン（TurntableCamera は既定で左=回転/右=ズームのみの
+        # ため、中ボタンは未使用。左右・上下に視点を動かせるよう独自に実装する）
+        self._pan_start = None   # (press_pos, camera.center) or None
         self.canvas.events.mouse_press.connect(self._on_mouse_press)
+        self.canvas.events.mouse_move.connect(self._on_mouse_move)
         self.canvas.events.mouse_release.connect(self._on_mouse_release)
 
         self._rebuild_static()
@@ -888,8 +892,32 @@ class ViewportGPU:
     def _on_mouse_press(self, event):
         if event.button == 1:
             self._press_pos = np.asarray(event.pos, dtype=float)
+        elif event.button == 3:
+            cam = self.view.camera
+            self._pan_start = (np.asarray(event.pos, dtype=float), tuple(cam.center))
+
+    def _on_mouse_move(self, event):
+        if self._pan_start is None or 3 not in event.buttons:
+            return
+        cam = self.view.camera
+        p1, center0 = self._pan_start
+        p2 = np.asarray(event.pos, dtype=float)
+        norm = float(np.mean(self.canvas.size))
+        if norm <= 0:
+            return
+        dist = (p1 - p2) / norm * cam.scale_factor
+        dist[1] *= -1
+        dx, dy, dz = cam._dist_to_trans(dist)
+        up, forward, right = cam._get_dim_vectors()
+        ff = cam._flip_factors
+        dx, dy, dz = right * dx + forward * dy + up * dz
+        dx, dy, dz = ff[0] * dx, ff[1] * dy, dz * ff[2]
+        cam.center = (center0[0] + dx, center0[1] + dy, center0[2] + dz)
 
     def _on_mouse_release(self, event):
+        if event.button == 3:
+            self._pan_start = None
+            return
         if event.button != 1 or self._press_pos is None:
             return
         rel = np.asarray(event.pos, dtype=float)

@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.21.1"
+APP_VERSION = "0.21.2"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.21.2", "2026-07-11", "19:00 JST", [
+        "riki_Assem2.stl の取付デフォルト位置を確定"
+        "（X=0, Y=0, Z=70mm, Rx=90°, Ry=90°, Rz=0°）。",
+        "3D ビューポートに中ボタンドラッグでのパン操作を追加。"
+        "TurntableCamera は既定で左ドラッグ=回転・右ドラッグ=ズームのみのため、"
+        "未使用だった中ボタンドラッグに視点の左右・上下移動（パン）を割り当てた。",
+    ]),
     ("0.21.1", "2026-07-11", "18:00 JST", [
         "エンドエフェクタ: riki_Assem2.stl をロボットハンド(J6フランジ)に取り付けて"
         "表示する機能を追加。「ロボット」メニューの「riki_Assem2 をハンド(J6)に取り付け」"
