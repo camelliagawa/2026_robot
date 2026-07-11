@@ -204,6 +204,13 @@ class ViewportGPU:
         self._blade_path: str = ""
         self._blade_T: np.ndarray = np.eye(4)
 
+        # ハンド取付ツール STL（フランジ追従・動的層）
+        self._tool_verts: Optional[np.ndarray] = None
+        self._tool_faces: Optional[np.ndarray] = None
+        self._tool_name: str = ""
+        self._tool_path: str = ""
+        self._tool_T: np.ndarray = np.eye(4)
+
         self._pick_curves: list = []
         self._pick_curves_local = False
         self._pick_orders: list = []
@@ -258,6 +265,7 @@ class ViewportGPU:
         self._knife_lines = Line(parent=self.view.scene, width=4,
                                  connect="segments", antialias=True)
         self._knife_face  = Mesh(parent=self.view.scene)
+        self._tool_mesh   = Mesh(parent=self.view.scene, shading="flat")
         self._blade_markers  = Markers(parent=self.view.scene)
         self._blade_whiskers = Line(parent=self.view.scene, width=1,
                                     connect="segments",
@@ -458,6 +466,16 @@ class ViewportGPU:
                                   faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32),
                                   color=(0.78, 0.78, 0.82, 0.22))
 
+        # ハンド取付ツール STL（フランジ追従）
+        if self._tool_verts is not None and self._tool_faces is not None:
+            T = T_ee @ self._tool_T
+            self._tool_mesh.set_data(vertices=_xform(self._tool_verts, T),
+                                     faces=self._tool_faces,
+                                     color=(0.75, 0.76, 0.80, 1.0))
+            self._tool_mesh.visible = True
+        else:
+            self._tool_mesh.visible = False
+
         # 刃先CSV点群（フランジ追従）
         if self._blade_pts is not None and len(self._blade_pts):
             T = T_ee @ self._blade_T
@@ -652,11 +670,36 @@ class ViewportGPU:
     def has_blade(self) -> bool:
         return self._blade_pts is not None
 
+    # ハンド取付ツール STL（フランジ追従・動的層）
+    def load_tool_stl(self, path: str) -> bool:
+        res = _load_stl_tris(path)
+        if res is None:
+            return False
+        self._tool_verts, self._tool_faces = res[0], res[1]
+        self._tool_name = os.path.basename(path)
+        self._tool_path = path
+        self.update_robot(self._joint_angles)
+        return True
+
+    def set_tool_pose(self, x, y, z, rx, ry, rz):
+        from ..robot.kinematics import Kinematics
+        self._tool_T = Kinematics.pose_to_transform(x, y, z, rx, ry, rz)
+        self.update_robot(self._joint_angles)
+
+    def clear_tool_stl(self):
+        self._tool_verts = None; self._tool_faces = None
+        self._tool_name = ""; self._tool_path = ""; self._tool_T = np.eye(4)
+        self.update_robot(self._joint_angles)
+
+    def has_tool_stl(self) -> bool:
+        return self._tool_verts is not None
+
     # レイヤースナップショット（Undo/Redo）
     _LAYER_FIELDS = (
         "_stl_verts", "_stl_faces", "_stl_name", "_stl_path", "_stl_T",
         "_csv_points", "_csv_name", "_csv_path", "_csv_T",
         "_blade_pts", "_blade_normals", "_blade_name", "_blade_path", "_blade_T",
+        "_tool_verts", "_tool_faces", "_tool_name", "_tool_path", "_tool_T",
     )
 
     def snapshot_layers(self) -> dict:

@@ -454,6 +454,9 @@ class MainWindow:
         rb.add_command(label="  🔧  ツールフレーム (UTool) 編集...", command=self._edit_tool_frame)
         rb.add_command(label="  📐  ユーザーフレーム (UFrame) 編集...", command=self._edit_user_frame)
         rb.add_separator()
+        rb.add_command(label="  🖐   riki_Assem2 をハンド(J6)に取り付け", command=self._load_riki_assem2_stl)
+        rb.add_command(label="  🗑   ハンド取付ツールを外す", command=self._clear_riki_assem2_stl)
+        rb.add_separator()
         rb.add_command(label="  📊  DH パラメータを表示",     command=self._show_dh_params)
         rb.add_command(label="  📋  ロボット仕様を表示",       command=self._show_robot_specs)
 
@@ -4370,6 +4373,25 @@ class MainWindow:
                     f"✔  Tormek T8 STL 読込済（底面=床 Z=0, 上面=UF9 z={stone_top_z:.0f}mm, Rz=-90°）")
             else:
                 self._set_status("⚠  STL 読込失敗")
+
+    def _load_riki_assem2_stl(self):
+        """riki_Assem2.stl をロボットハンド(J6フランジ)に取り付けて表示する（見た目のみ）。"""
+        stl_path = os.path.realpath(_asset_path(os.path.join("robot", "riki_Assem2.stl")))
+        if not os.path.isfile(stl_path):
+            self._set_status("⚠  STL ファイルが見つかりません: " + stl_path)
+            return
+        with self._undo_group("riki_Assem2 STL 取付"):
+            ok = self.viewport.load_tool_stl(stl_path)
+            if ok:
+                self.viewport.set_tool_pose(0, 0, 0, 0, 0, 0)
+                self._set_status("✔  riki_Assem2.stl をハンド(J6)に取付済（フランジ追従）")
+            else:
+                self._set_status("⚠  STL 読込失敗")
+
+    def _clear_riki_assem2_stl(self):
+        with self._undo_group("ハンド取付ツール解除"):
+            self.viewport.clear_tool_stl()
+        self._set_status("ハンド取付ツールを外しました")
 
     def _load_tormek_csv(self):
         """Tormek 研削経路 CSV のみ読み込む（STLは触らない）。"""
