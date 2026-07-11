@@ -2,10 +2,17 @@
 import tkinter as tk
 from tkinter import ttk
 
-APP_VERSION = "0.21.0"
+APP_VERSION = "0.21.1"
 
 # (version, date, time JST, changes)
 CHANGELOG = [
+    ("0.21.1", "2026-07-11", "18:00 JST", [
+        "エンドエフェクタ: riki_Assem2.stl をロボットハンド(J6フランジ)に取り付けて"
+        "表示する機能を追加。「ロボット」メニューの「riki_Assem2 をハンド(J6)に取り付け」"
+        "から実行（フランジ姿勢に追従して描画・見た目のみ）。",
+        "「riki_Assem2 取付位置・向きを調整...」ダイアログを追加。X/Y/Z オフセットと"
+        "Rx/Ry/Rz 回転をその場で調整でき、3D ビューに即時反映される。",
+    ]),
     ("0.21.0", "2026-06-17", "10:00 JST", [
         "matplotlib(CPU) 版 3D ビューポート（Viewport3D）を完全に削除し、"
         "VisPy/OpenGL（GPU）版に一本化。両実機での GPU 動作確認を経ての整理。",
